@@ -343,6 +343,11 @@ function Find-Rule($policy, $dialog) {
         if ($rule.kind -and $dialog.kind -ne $rule.kind) { continue }
         return $rule
     }
+    # A native window with no buttons is a progress window (Unity's titles vary: "Reloading Domain", "Hold on...").
+    # There is nothing to press, and it closes by itself.
+    if ($dialog.kind -eq 'native' -and @($dialog.buttons).Count -eq 0) {
+        return [pscustomobject]@{ name = 'progress-window'; action = 'wait' }
+    }
     return $null
 }
 
@@ -383,12 +388,6 @@ function Get-Snapshot($editor, [string]$projectPath, $policy) {
     $heartbeat = $null
     if ($projectPath) { $heartbeat = Read-Heartbeat $projectPath }
 
-    $state = 'ready'
-    if ($dialogs.Count -gt 0) { $state = 'blocked-by-dialog' }
-    elseif (-not $editor.Main) { $state = 'starting' }
-    elseif (-not $responds) { $state = 'hung' }
-    elseif ($heartbeat -and $policy -and $heartbeat.ageSeconds -gt $policy.staleHeartbeatSeconds) { $state = 'busy' }
-
     $out = @()
     foreach ($d in $dialogs) {
         $rule = $null; if ($policy) { $rule = Find-Rule $policy $d }
@@ -397,6 +396,15 @@ function Get-Snapshot($editor, [string]$projectPath, $policy) {
             rule = $(if ($rule) { $rule.name } else { $null }); action = $(if ($rule) { $rule.action } else { 'escalate' })
         }
     }
+    # Progress windows ("Reloading Domain", "Compiling...") match a "wait" rule: the Editor is busy, not blocked.
+    $blocking = @($out | Where-Object { $_.action -ne 'wait' })
+
+    $state = 'ready'
+    if ($blocking.Count -gt 0) { $state = 'blocked-by-dialog' }
+    elseif ($out.Count -gt 0) { $state = 'busy' }
+    elseif (-not $editor.Main) { $state = 'starting' }
+    elseif (-not $responds) { $state = 'hung' }
+    elseif ($heartbeat -and $policy -and $heartbeat.ageSeconds -gt $policy.staleHeartbeatSeconds) { $state = 'busy' }
     return [ordered]@{
         time = [DateTime]::UtcNow.ToString('o'); state = $state; pid = $editor.Pid; project = $editor.Project
         windowResponds = $responds; mainWindowEnabled = $(if ($editor.Main) { $editor.Main.Enabled } else { $null })

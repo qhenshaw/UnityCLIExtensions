@@ -15,6 +15,8 @@ namespace UnityCLIExtensions
         public string playMode;
         public bool compiling;
         public bool updating;
+        /// <summary>Unity's own flag: the last script compile failed.</summary>
+        public bool compileFailed;
         public bool agentMode;
         public bool quitting;
     }
@@ -70,6 +72,7 @@ namespace UnityCLIExtensions
                 playMode = EditorApplication.isPlaying ? (EditorApplication.isPaused ? "paused" : "playing") : "edit",
                 compiling = EditorApplication.isCompiling,
                 updating = EditorApplication.isUpdating,
+                compileFailed = EditorUtility.scriptCompilationFailed,
                 agentMode = AgentMode.IsActive,
                 quitting = quitting
             };

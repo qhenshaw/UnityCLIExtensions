@@ -291,20 +291,24 @@ namespace UnityCLIExtensions
         // ---------------------------------------------------------------------------------------------------------
         // enter-play-mode-options
 
-        private const EnterPlayModeOptions FastPlayMode = EnterPlayModeOptions.DisableDomainReload | EnterPlayModeOptions.DisableSceneReload;
+        private static string StaticsSummary()
+        {
+            int unreset = StaticStateScanner.Scan().Count(f => !f.hasResetHook);
+            return unreset == 0
+                ? "No static state without a [RuntimeInitializeOnLoadMethod] reset was found in the project's runtime code."
+                : $"{unreset} static member(s) in the project's runtime code have no [RuntimeInitializeOnLoadMethod] reset and would keep their values between Play sessions (cliext.playmode check_statics lists them).";
+        }
 
         private static (string, string) CheckEnterPlayMode()
         {
-            if (EditorSettings.enterPlayModeOptionsEnabled && (EditorSettings.enterPlayModeOptions & FastPlayMode) == FastPlayMode)
-                return (Ok, "Domain and scene reload are skipped.");
-            return (FixAvailable, "Entering Play mode reloads the domain and scene. Skipping them is faster, but static fields keep their values between Play sessions, so only apply this when the project's code allows it.");
+            if (FastPlayMode.IsEnabled) return (Ok, "Domain and scene reload are skipped. " + StaticsSummary());
+            return (FixAvailable, "Entering Play mode reloads the domain and scene. Skipping them is much faster, but static fields keep their values between Play sessions. " + StaticsSummary());
         }
 
         private static string FixEnterPlayMode()
         {
-            EditorSettings.enterPlayModeOptionsEnabled = true;
-            EditorSettings.enterPlayModeOptions = FastPlayMode;
-            return "Enter Play Mode Options: Disable Domain Reload and Disable Scene Reload (Project Settings > Editor).";
+            UnityCLIExtensions.FastPlayMode.SetEnabled(true);
+            return "Enter Play Mode Options: Disable Domain Reload and Disable Scene Reload (Project Settings > Editor). Undo with cliext.playmode set_fast --enabled false.";
         }
     }
 }

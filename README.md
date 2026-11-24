@@ -28,6 +28,7 @@ This package works in three layers:
 - [AgentDialog and AgentProgress](#agentdialog-and-agentprogress)
 - [Watchdog](#watchdog)
 - [EditorDeferred](#editordeferred)
+- [Waiting, compiling and fast Play mode](#waiting-compiling-and-fast-play-mode)
 - [Commands](#commands)
 - [Files](#files)
 - [Blocking dialogs catalog](Documentation~/blocking-dialogs.md)
@@ -44,7 +45,7 @@ https://github.com/qhenshaw/UnityCLIExtensions.git
 ```
 To lock a project to one version, add the version tag (see the [changelog](CHANGELOG.md)):
 ```
-https://github.com/qhenshaw/UnityCLIExtensions.git#0.2.0
+https://github.com/qhenshaw/UnityCLIExtensions.git#0.3.0
 ```
 
 ## Quick start for agents
@@ -148,7 +149,7 @@ Every couple of seconds it:
 
 The default rules answer only dialogs whose safe answer changes nothing the agent didn't intend: Reload for an
 externally modified scene, Don't Enable for the Input System prompt, Ignore for Safe Mode, Cancel for file pickers,
-and wait on progress windows. Scene save prompts, the API Updater, package errors, version, licensing and file-lock
+and wait on progress windows (any native window with no buttons counts as one). Scene save prompts, the API Updater, package errors, version, licensing and file-lock
 dialogs are escalated. **Scene Save Prompt** in the settings can answer save prompts with Save or Don't Save. The
 Editor writes the policy to `Library/CLIExtensions/watchdog-policy.json` (see `WatchdogPolicy.DefaultRules`), and the
 watchdog reads it on every check. The [catalog](Documentation~/blocking-dialogs.md) has the full list.
@@ -188,6 +189,49 @@ Exceptions from the work or the condition are logged, never thrown into the upda
 call doesn't survive a domain reload: queue it again from `[InitializeOnLoad]` or `[InitializeOnLoadMethod]`. The
 package uses it for every deferred call of its own (starting the watchdog, reloading scenes after an import).
 
+## Waiting, compiling and fast Play mode
+Commands for the agent's edit, compile, play loop, so it never has to sleep and poll.
+
+**Wait until the Editor is idle.** `unity command cliext.wait idle [--refresh true] [--timeout 120]` returns once the
+Editor has spent a few frames in a row not compiling, importing or changing Play mode, with how long it waited and
+the standing compile errors. `--refresh true` imports files written outside the Editor first. A compile that succeeds
+reloads the domain, which drops any request in flight, this one included. To wait across a reload, wait from outside
+the Editor instead:
+```
+powershell -NoProfile -ExecutionPolicy Bypass -File <package>/Tools~/cliext-wait.ps1 -Project <project> -Timeout 300
+```
+It reads the heartbeat file, so it carries on through domain reloads, and returns at once (exit 3, with the dialog)
+when a modal dialog blocks the Editor rather than waiting out its timeout. Exit 0 is idle, 1 timed out, 4 no heartbeat.
+
+**Compile and read the errors as data.** Pipeline's `script recompile_status` lists the last compile's errors as
+strings, with no warnings, and none when scripts still fail but nothing recompiled. `cliext.compile run` refreshes,
+compiles what changed and waits for it. With errors it fails (exit 6) and returns each one with `file`, `line`,
+`column`, `code`, `message` and `assembly`, plus the warnings:
+```json
+{"status":"failed","compiledMs":1818,
+ "errors":[{"severity":"error","code":"CS0103","file":"Assets/Broken.cs","line":5,"column":27,"message":"The name 'speed' does not exist in the current context","assembly":"Assembly-CSharp.dll"}],
+ "warnings":[{"severity":"warning","code":"CS0168","file":"Assets/Broken.cs","line":5,"column":24,"message":"The variable 'e' is declared but never used","assembly":"Assembly-CSharp.dll"}]}
+```
+A compile that succeeds reloads the domain, so its reply is usually dropped ("the Editor closed the connection").
+That means it compiled: wait with `cliext-wait.ps1`, then read `cliext.compile diagnostics` for any warnings.
+`cliext.compile diagnostics` lists the standing errors and warnings at any time, each assembly's from its last
+compile. They are kept in `Library/CLIExtensions/compile.json`, so they survive reloads, and they start being
+recorded with the first compile after the package is installed.
+
+**Fast Play mode.** `cliext.playmode set_fast --enabled true` turns on Enter Play Mode Options with domain and scene
+reload off, so entering Play mode skips reloading every assembly and the scene. The catch: static fields keep their
+values between Play sessions, and static events keep their subscribers. `cliext.playmode check_statics` lists the
+static fields, auto-properties and events in the project's own runtime code (Assets/ and embedded or local packages)
+whose type has no `[RuntimeInitializeOnLoadMethod]` to reset them. `set_fast` warns with the count. Reset each one in
+a method like this, or keep domain reload on:
+```cs
+[RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.SubsystemRegistration)]
+private static void ResetStatics() { Score = 0; Instance = null; OnScore = null; }
+```
+`--enabled false` puts Unity's default back. The `enter-play-mode-options` setup check does the same as `set_fast`
+and reports the count too. Readonly fields are not listed; their contents can still change, so check readonly
+collections by hand.
+
 ## Commands
 All under `unity command --project-path <project>`:
 
@@ -204,6 +248,11 @@ All under `unity command --project-path <project>`:
 | `cliext.watchdog report` | The watchdog's last report. |
 | `cliext.package import --path <file.unitypackage>` | Imports a .unitypackage without the Import dialog. |
 | `cliext.scene save_open` | Saves every open scene that has unsaved changes and a file. |
+| `cliext.wait idle [--refresh true] [--timeout 120] [--settle-frames 3]` | Waits until the Editor is idle. |
+| `cliext.compile run [--warnings true] [--timeout 300]` | Refreshes, compiles, and returns structured errors and warnings. |
+| `cliext.compile diagnostics [--warnings true]` | The standing errors and warnings, one record each. |
+| `cliext.playmode set_fast --enabled true\|false` | Turns fast Play mode (no domain or scene reload) on or off. |
+| `cliext.playmode check_statics [--include-reset true]` | Static state that would survive between Play sessions without a domain reload. |
 
 `cliext.dialogs log` and `cliext.watchdog report` only read files and run off the main thread, so they still answer
 while a dialog is open, as long as no other command is queued ahead of them. When they time out too, read the files.
@@ -217,4 +266,5 @@ Everything the package writes at runtime is under `Library/CLIExtensions/` (git-
 | `dialogs.jsonl` | Editor and watchdog | One JSON object per line: `time`, `source`, `kind` (`answered`, `clicked`, `escalated`, `shown`, `progress`, `crashed`, `exited`, `restarted`, `killed`), `title`, `message`, `buttons`, `answer`, `detail`. |
 | `watchdog-status.json` | Watchdog, every check | The last snapshot (see above). |
 | `watchdog-policy.json` | Editor | The rules the watchdog applies. |
+| `compile.json` | Editor, when an assembly finishes compiling | Each assembly's errors and warnings from its last compile. |
 | `watchdog.pid`, `watchdog.stop` | Watchdog, Editor | The running watchdog; a request to stop. |
