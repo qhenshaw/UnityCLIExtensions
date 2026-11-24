@@ -45,16 +45,15 @@ namespace UnityCLIExtensions
                 if (s_SavedByEditor.TryGetValue(path, out DateTime saved) && (DateTime.UtcNow - saved).TotalSeconds < 5) continue;
                 Scene scene = SceneManager.GetSceneByPath(path);
                 if (!scene.IsValid() || !scene.isLoaded) continue;
-                if (s_Pending.Count == 0) EditorApplication.update += ReloadPending;
+                if (s_Pending.Count == 0) EditorDeferred.RunWhenIdle(ReloadPending, label: "Reload scenes changed on disk");
                 s_Pending.Add(path);
             }
         }
 
-        // Deferred to the next update: opening scenes from inside an import is not allowed. (Not delayCall, which can
-        // wait a long time in an unfocused Editor.)
+        // Deferred until the import is over: opening scenes from inside an import is not allowed. (EditorDeferred, not
+        // delayCall, which can wait a long time in an unfocused Editor.)
         private static void ReloadPending()
         {
-            EditorApplication.update -= ReloadPending;
             if (EditorApplication.isPlayingOrWillChangePlaymode) { s_Pending.Clear(); return; }
 
             string activePath = SceneManager.GetActiveScene().path;

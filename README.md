@@ -27,6 +27,7 @@ This package works in three layers:
 - [Setup checks](#setup-checks)
 - [AgentDialog and AgentProgress](#agentdialog-and-agentprogress)
 - [Watchdog](#watchdog)
+- [EditorDeferred](#editordeferred)
 - [Commands](#commands)
 - [Files](#files)
 - [Blocking dialogs catalog](Documentation~/blocking-dialogs.md)
@@ -43,7 +44,7 @@ https://github.com/qhenshaw/UnityCLIExtensions.git
 ```
 To lock a project to one version, add the version tag (see the [changelog](CHANGELOG.md)):
 ```
-https://github.com/qhenshaw/UnityCLIExtensions.git#0.1.0
+https://github.com/qhenshaw/UnityCLIExtensions.git#0.2.0
 ```
 
 ## Quick start for agents
@@ -162,6 +163,30 @@ Run it by hand:
 | `cliext-watchdog.ps1 -Project <p> -Watch [-Detach] [-NoAutoClick]` | Watches until the Editor quits or `Library/CLIExtensions/watchdog.stop` appears. |
 
 Pass `-NoProfile -ExecutionPolicy Bypass` to `powershell` before `-File`.
+
+## EditorDeferred
+A replacement for `EditorApplication.delayCall` for work that has to happen soon. In an unfocused Editor driven from
+the command line, delayCall callbacks have been seen to sit in the queue for minutes after a domain reload while
+`EditorApplication.update` kept ticking (6000.5.8f1, even with Interaction Mode set to No Throttling, which makes an
+unfocused Editor update faster but doesn't guarantee delayCall runs). `EditorDeferred` runs the work from
+`EditorApplication.update`, asks for another update with `EditorApplication.QueuePlayerLoopUpdate()` while it waits,
+and gives up with a warning after a timeout, so deferred work either runs or says it didn't:
+```cs
+using UnityCLIExtensions;
+
+EditorDeferred.Run(() => Debug.Log("next update"));
+
+// Wait for a condition, with a timeout and a fallback.
+var handle = EditorDeferred.Run(OpenWindow, when: () => SomethingIsReady(), timeoutSeconds: 60,
+                                onTimeout: () => Debug.LogWarning("Never got ready"));
+handle.Cancel(); // drops it if it hasn't run yet
+
+// Once the Editor isn't compiling, importing or changing Play mode.
+EditorDeferred.RunWhenIdle(RebuildCaches);
+```
+Exceptions from the work or the condition are logged, never thrown into the update loop. Like delayCall, a pending
+call doesn't survive a domain reload: queue it again from `[InitializeOnLoad]` or `[InitializeOnLoadMethod]`. The
+package uses it for every deferred call of its own (starting the watchdog, reloading scenes after an import).
 
 ## Commands
 All under `unity command --project-path <project>`:

@@ -19,16 +19,8 @@ namespace UnityCLIExtensions
         {
             CliExtSettings.Changed -= OnSettingsChanged;
             CliExtSettings.Changed += OnSettingsChanged;
-            // Not delayCall: in an unfocused Editor driven from the command line, delayCall callbacks can wait a long time
-            // (seen queued for minutes after a domain reload), while EditorApplication.update keeps ticking.
-            EditorApplication.update -= AutoStartOnce;
-            EditorApplication.update += AutoStartOnce;
-        }
-
-        private static void AutoStartOnce()
-        {
-            EditorApplication.update -= AutoStartOnce;
-            AutoStart();
+            // Not delayCall, which can wait minutes in an unfocused Editor driven from the command line (see EditorDeferred).
+            EditorDeferred.Run(AutoStart, label: "Watchdog auto-start");
         }
 
         /// <summary>True on Windows, the only platform the watchdog supports so far.</summary>

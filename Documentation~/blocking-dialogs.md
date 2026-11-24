@@ -58,8 +58,9 @@ windows that are not `DisplayDialog` are outside what `-automated` changes; the 
 
 - `EditorApplication.delayCall` callbacks can sit in the queue for minutes in an unfocused Editor driven from the
   command line, after a domain reload, while `EditorApplication.update` keeps ticking (seen on 6000.5.8f1 with
-  Interaction Mode set to No Throttling). Code that must run soon after a reload in an agent-driven Editor should use a
-  one-shot `EditorApplication.update` handler. This package does.
+  Interaction Mode set to No Throttling: that setting speeds an unfocused Editor up, it doesn't guarantee delayCall).
+  Code that must run soon after a reload in an agent-driven Editor should run from `EditorApplication.update`;
+  `EditorDeferred.Run` does that with a timeout, and the package uses it for all of its own deferred work.
 - Button text on Unity's dialogs carries Win32 mnemonics: "Enable & Restart" reads as `Enable & Restart` with a single
   `&`, which Windows draws as an underline. The watchdog strips them, so `-Click "Enable Restart"` and
   `-Click "Enable & Restart"` both work.
