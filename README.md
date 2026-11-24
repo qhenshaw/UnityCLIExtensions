@@ -29,6 +29,8 @@ This package works in three layers:
 - [Watchdog](#watchdog)
 - [EditorDeferred](#editordeferred)
 - [Waiting, compiling and fast Play mode](#waiting-compiling-and-fast-play-mode)
+- [Edit batches, affected tests and deadlines](#edit-batches-affected-tests-and-deadlines)
+- [Asset dependencies and scene diffs](#asset-dependencies-and-scene-diffs)
 - [Commands](#commands)
 - [Files](#files)
 - [Blocking dialogs catalog](Documentation~/blocking-dialogs.md)
@@ -45,7 +47,7 @@ https://github.com/qhenshaw/UnityCLIExtensions.git
 ```
 To lock a project to one version, add the version tag (see the [changelog](CHANGELOG.md)):
 ```
-https://github.com/qhenshaw/UnityCLIExtensions.git#0.3.0
+https://github.com/qhenshaw/UnityCLIExtensions.git#0.4.0
 ```
 
 ## Quick start for agents
@@ -232,6 +234,74 @@ private static void ResetStatics() { Score = 0; Instance = null; OnScore = null;
 and reports the count too. Readonly fields are not listed; their contents can still change, so check readonly
 collections by hand.
 
+## Edit batches, affected tests and deadlines
+
+**One compile for many files.** Writing several scripts one after another can compile and reload the domain after
+each. Wrap them in a batch:
+```
+unity command cliext.edits begin --expire-after 300
+# ... write the files ...
+unity command cliext.edits end
+```
+`begin` stops auto-refresh and locks assembly reloads. `end` lifts both, then refreshes and compiles once and answers
+like `cliext.compile run`: errors and warnings when the compile fails; when it succeeds, the domain reload usually
+drops the reply, so wait with `cliext-wait.ps1`. A refresh asked for explicitly during the batch still compiles, but
+the reload (the slow part) waits for `end`. A batch nobody ends ends itself after `--expire-after` seconds, refreshes,
+and says so in the journal; it is kept in SessionState, so a domain reload in between puts the lock back, and it ends
+with the Editor. `cliext.edits status` says whether one is open. `cliext.compile run` refuses to run inside a batch.
+
+**Only the tests a change affects.** `cliext.test affected` maps each changed script or .asmdef to its assembly and
+lists every test assembly that is it or depends on it, directly or through others, with the Pipeline command that runs
+each. The changes come from `--files a,b` or from git (uncommitted changes against `--since`, default `HEAD`, plus
+untracked files); `--all true` lists every test assembly. Test assemblies are the ones whose .asmdef has the
+`UNITY_INCLUDE_TESTS` constraint. Changed scenes, prefabs and data are reported as `otherChanges`: nothing maps them to
+tests, so run everything when they matter. To run the list in one call:
+```
+powershell -NoProfile -ExecutionPolicy Bypass -File <package>/Tools~/cliext-test.ps1 -Project <project> [-Files a,b] [-Since HEAD] [-All]
+```
+It runs Edit Mode assemblies with `test run` and Play Mode ones with `--async-tests`, polling `test status`, and prints
+one summary with passed, failed and skipped counts per assembly. Exit 0 when everything passed, 6 when something
+failed. Pipeline's assembly filter is a partial match, so `My.Tests` also runs `My.Tests.Slow`.
+
+**A deadline for any command.** A hung `unity command` usually waits on the Editor. `cliext-run.ps1` gives it a
+deadline, and when it passes, says what the Editor was doing:
+```
+powershell -NoProfile -ExecutionPolicy Bypass -File <package>/Tools~/cliext-run.ps1 -Project <project> -Timeout 60 -Command 'scene open --path Assets/Main.unity'
+```
+`-Command` is the rest of the `unity command` line, as one string. In time, it prints the command's output and exits
+with its code. Past the deadline it stops waiting (the Editor may still finish the work) and prints JSON with a
+`reason`: `blocked-by-dialog` (with the dialog and how to press a button), `safe-mode`, `hung`, `compiling`,
+`importing`, `busy` (a progress window such as "Hold on"), `main-thread-busy`, or `editor-idle` (the command itself is
+slow). Exit 124.
+
+## Asset dependencies and scene diffs
+
+**What an asset uses, and what uses it.** `cliext.asset uses --path <asset>` lists what a prefab, scene, material or
+ScriptableObject references (`--recursive true` for everything underneath). `cliext.asset used_by --path <asset>`
+lists the assets under Assets/ that reference it; for a script, the prefabs and scenes with that component.
+`--recursive true` follows it up (a material, the prefab that uses it, the scenes with that prefab). Paths or GUIDs both
+work. The first `used_by` builds an index of the project, kept until an asset changes.
+
+**Snapshot and diff a scene or prefab.** Take a snapshot before a change and compare after:
+```
+unity command cliext.diff snapshot --path Assets/Scenes/Main.unity --name before
+# ... change the scene ...
+unity command cliext.diff compare --name before --format tsv
+```
+```
+object-renamed    Lights/Sun                                  Directional Light  Lights/Sun
+property-changed  Crate  Transform  m_LocalPosition.x         0                  1.5
+component-added   Crate  Rigidbody
+object-removed    Marker
+object-added      Spawn Point
+```
+A snapshot holds every GameObject, component and visible serialized property, with object references as asset paths
+or hierarchy paths. An open scene is read as it is in the Editor, unsaved changes included; a scene that isn't open is
+opened additively and closed again; a prefab is read from its asset. Objects are matched by their file ID, then by
+hierarchy path, so a rename or reparent shows as `object-renamed` rather than a removal and an addition.
+`--update true` replaces the snapshot with the current state; `cliext.diff list` lists the snapshots, kept in
+`Library/CLIExtensions/snapshots/`.
+
 ## Commands
 All under `unity command --project-path <project>`:
 
@@ -253,6 +323,13 @@ All under `unity command --project-path <project>`:
 | `cliext.compile diagnostics [--warnings true]` | The standing errors and warnings, one record each. |
 | `cliext.playmode set_fast --enabled true\|false` | Turns fast Play mode (no domain or scene reload) on or off. |
 | `cliext.playmode check_statics [--include-reset true]` | Static state that would survive between Play sessions without a domain reload. |
+| `cliext.edits begin [--expire-after 300]` / `end` / `status` | An edit batch: no import or reload until `end`, which compiles once. |
+| `cliext.test affected [--files a,b] [--since HEAD] [--all true]` | The test assemblies a change affects, with the commands that run them. |
+| `cliext.asset uses --path <asset> [--recursive true]` | What an asset references. |
+| `cliext.asset used_by --path <asset> [--recursive true] [--include-packages true]` | What references an asset. |
+| `cliext.diff snapshot --path <scene or prefab> [--name n]` | Saves a snapshot. |
+| `cliext.diff compare --name n [--update true]` | The changes since the snapshot. |
+| `cliext.diff list` | The saved snapshots. |
 
 `cliext.dialogs log` and `cliext.watchdog report` only read files and run off the main thread, so they still answer
 while a dialog is open, as long as no other command is queued ahead of them. When they time out too, read the files.
@@ -267,4 +344,5 @@ Everything the package writes at runtime is under `Library/CLIExtensions/` (git-
 | `watchdog-status.json` | Watchdog, every check | The last snapshot (see above). |
 | `watchdog-policy.json` | Editor | The rules the watchdog applies. |
 | `compile.json` | Editor, when an assembly finishes compiling | Each assembly's errors and warnings from its last compile. |
+| `snapshots/*.json` | Editor, `cliext.diff snapshot` | Scene and prefab snapshots. |
 | `watchdog.pid`, `watchdog.stop` | Watchdog, Editor | The running watchdog; a request to stop. |

@@ -31,6 +31,7 @@ namespace UnityCLIExtensions
             internal Action OnTimeout;
             internal double Deadline;
             internal string Label;
+            internal bool WarnOnTimeout = true;
 
             /// <summary>True once the work ran (or threw).</summary>
             public bool Ran { get; internal set; }
@@ -74,7 +75,8 @@ namespace UnityCLIExtensions
                 {
                     EditorApplication.update -= Tick;
                     TimedOut = true;
-                    Debug.LogWarning($"[CLI Extensions] Deferred call '{Label}' gave up: its condition did not hold within the timeout.");
+                    if (WarnOnTimeout)
+                        Debug.LogWarning($"[CLI Extensions] Deferred call '{Label}' gave up: its condition did not hold within the timeout.");
                     try { OnTimeout?.Invoke(); }
                     catch (Exception e) { Debug.LogException(e); }
                     return;
@@ -92,6 +94,10 @@ namespace UnityCLIExtensions
         /// </summary>
         /// <param name="label">Names the call in the timeout warning; defaults to the action's method.</param>
         public static Handle Run(Action action, Func<bool> when = null, double timeoutSeconds = 30, Action onTimeout = null, string label = null)
+            => Run(action, when, timeoutSeconds, onTimeout, label, warnOnTimeout: true);
+
+        /// <summary>As <see cref="Run(Action,Func{bool},double,Action,string)"/>; <paramref name="warnOnTimeout"/> false skips the warning, for a timeout that is the point (a timer).</summary>
+        public static Handle Run(Action action, Func<bool> when, double timeoutSeconds, Action onTimeout, string label, bool warnOnTimeout)
         {
             if (action == null) throw new ArgumentNullException(nameof(action));
             var handle = new Handle
@@ -100,7 +106,8 @@ namespace UnityCLIExtensions
                 When = when,
                 OnTimeout = onTimeout,
                 Deadline = EditorApplication.timeSinceStartup + Math.Max(0, timeoutSeconds),
-                Label = label ?? $"{action.Method.DeclaringType?.Name}.{action.Method.Name}"
+                Label = label ?? $"{action.Method.DeclaringType?.Name}.{action.Method.Name}",
+                WarnOnTimeout = warnOnTimeout
             };
             EditorApplication.update += handle.Tick;
             // An unfocused Editor may not schedule an update soon on its own; ask for one.

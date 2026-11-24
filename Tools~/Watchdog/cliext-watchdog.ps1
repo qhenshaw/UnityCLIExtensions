@@ -209,7 +209,12 @@ public static class CliExtNative
 function Normalize-Path([string]$p) { if (-not $p) { return $null }; return $p.Replace('/', '\').TrimEnd('\') }
 
 # The Editor's main window title starts with the project path: "E:\Games\MyGame - Scene - Windows, Mac, Linux - Unity 6.5 (...)".
-function Get-ProjectFromTitle([string]$t) { if ($t -match '^(.+?) - .* - Unity \d') { return $Matches[1] }; return $null }
+# In Safe Mode it is "E:\Games\MyGame - SAFE MODE - 6000.5.8f1 <DX12>".
+function Get-ProjectFromTitle([string]$t) {
+    if ($t -match '^(.+?) - .* - Unity \d') { return $Matches[1] }
+    if ($t -match '^(.+?) - SAFE MODE - ') { return $Matches[1] }
+    return $null
+}
 
 # The -projectPath argument of an Editor's command line. Before the main window exists (a startup dialog such as
 # Safe Mode or an upgrade prompt) this is the only way to tell which project an Editor has open.
@@ -403,6 +408,9 @@ function Get-Snapshot($editor, [string]$projectPath, $policy) {
     if ($blocking.Count -gt 0) { $state = 'blocked-by-dialog' }
     elseif ($out.Count -gt 0) { $state = 'busy' }
     elseif (-not $editor.Main) { $state = 'starting' }
+    # Safe Mode loads no package editor code, so no Pipeline server: fix the compile errors in the files, then the
+    # Editor normally leaves Safe Mode once they compile.
+    elseif ($editor.Main.Title -match ' - SAFE MODE - ') { $state = 'safe-mode' }
     elseif (-not $responds) { $state = 'hung' }
     elseif ($heartbeat -and $policy -and $heartbeat.ageSeconds -gt $policy.staleHeartbeatSeconds) { $state = 'busy' }
     return [ordered]@{

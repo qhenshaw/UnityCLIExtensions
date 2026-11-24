@@ -79,11 +79,55 @@ namespace UnityCLIExtensions
                                        "Fails (exit 6) when there are errors, with them in the result. When the compile succeeds, the domain reload that follows may drop the reply: " +
                                        "then read the result with cliext.compile diagnostics.",
             Tags = new[] { "editor", "cliext", "scripts/compile" }, Effect = CommandEffect.Idempotent)]
-        internal static async Task<ExitCode> Run(
+        internal static Task<ExitCode> Run(
+            CommandContext cmd,
+            [CliArg("timeout", "Seconds to wait for the compile")] double timeoutInSeconds = 300,
+            [CliArg("warnings", "Include warnings")] bool warnings = true)
+            => CompileAndReport(cmd, timeoutInSeconds, warnings);
+
+        // ---------------------------------------------------------------------------------------------------------
+        // cliext.edits
+
+        [CliGroupCommand("cliext.edits", "Start an edit batch: the Editor stops importing changed files and reloading assemblies, so several files written one after another compile once, at cliext.edits end. " +
+                                         "A batch that is never ended ends itself (and refreshes) after --expire-after seconds.",
+            Tags = new[] { "editor", "cliext", "scripts/compile" }, Effect = CommandEffect.Idempotent)]
+        internal static ExitCode Begin(
+            CommandContext cmd,
+            [CliArg("expire-after", "Seconds after which the batch ends by itself if cliext.edits end never comes")] double expireAfter = 300)
+        {
+            bool extended = EditBatch.IsActive;
+            EditBatch.Begin(expireAfter);
+            cmd.Result.Write(new { active = true, extended, startedUtc = EditBatch.StartedUtc?.ToString("o"), expiresUtc = EditBatch.DeadlineUtc?.ToString("o") });
+            return ExitCode.Success;
+        }
+
+        [CliGroupCommand("cliext.edits", "End the edit batch, then refresh, compile once and return the errors and warnings, as cliext.compile run does. " +
+                                         "A compile that succeeds reloads the domain, which usually drops the reply: then wait with Tools~/cliext-wait.ps1.",
+            Tags = new[] { "editor", "cliext", "scripts/compile" }, Effect = CommandEffect.Idempotent)]
+        internal static Task<ExitCode> End(
             CommandContext cmd,
             [CliArg("timeout", "Seconds to wait for the compile")] double timeoutInSeconds = 300,
             [CliArg("warnings", "Include warnings")] bool warnings = true)
         {
+            if (!EditBatch.End()) cmd.Log.Warning("No edit batch was open; compiling anyway.");
+            return CompileAndReport(cmd, timeoutInSeconds, warnings);
+        }
+
+        [CliGroupCommand("cliext.edits", "Whether an edit batch is open, and when it ends by itself.",
+            Tags = new[] { "editor", "cliext", "scripts/compile" }, Effect = CommandEffect.ReadOnly)]
+        internal static ExitCode Status(CommandContext cmd)
+        {
+            cmd.Result.Write(new { active = EditBatch.IsActive, startedUtc = EditBatch.StartedUtc?.ToString("o"), expiresUtc = EditBatch.DeadlineUtc?.ToString("o") });
+            return ExitCode.Success;
+        }
+
+        private static async Task<ExitCode> CompileAndReport(CommandContext cmd, double timeoutInSeconds, bool warnings)
+        {
+            if (EditBatch.IsActive)
+            {
+                cmd.Log.Error("An edit batch is open, so nothing compiles. End it with cliext.edits end, which also compiles.");
+                return ExitCode.Failed;
+            }
             if (EditorApplication.isPlayingOrWillChangePlaymode)
             {
                 cmd.Log.Error("The Editor is in Play mode, where it doesn't compile scripts. Stop Play mode first (editor.playmode stop).");

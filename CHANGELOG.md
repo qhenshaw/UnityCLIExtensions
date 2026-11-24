@@ -1,6 +1,15 @@
 # Changelog
 All notable changes to Unity CLI Extensions. Versions are git tags: install one with `https://github.com/qhenshaw/UnityCLIExtensions.git#<version>`.
 
+## 0.4.0
+- Added edit batches: `cliext.edits begin` stops auto-refresh and locks assembly reloads so several files compile once at `cliext.edits end`, which compiles and answers like `cliext.compile run`. A batch that is never ended ends itself after `--expire-after` seconds, and survives domain reloads.
+- Added `cliext.test affected` (changed scripts and .asmdef files mapped to the test assemblies that depend on them, from `--files` or git) and `Tools~/cliext-test.ps1`, which runs them (Edit Mode synchronously, Play Mode asynchronously) and prints one summary. `-All` runs every test assembly.
+- Added `Tools~/cliext-run.ps1`: runs a `unity command` with a deadline and, when it passes, says what the Editor was doing (dialog, Safe Mode, hung, compiling, importing, busy, idle).
+- Added `cliext.asset uses` and `cliext.asset used_by` (direct or recursive), for prefabs, scenes, materials, scripts, ScriptableObjects and other assets.
+- Added scene and prefab diffs: `cliext.diff snapshot`, `compare` (objects added, removed or renamed, components added or removed, properties old to new) and `list`.
+- `EditorDeferred.Run` has an overload that skips the timeout warning, for timers.
+- Watchdog: recognises an Editor in Safe Mode (`state: safe-mode`); `cliext-wait.ps1` exits 5 for it. Documented that `-automated` enters Safe Mode without asking when scripts have compile errors.
+
 ## 0.3.0
 - Added `cliext.wait idle`: waits until the Editor isn't compiling, importing or changing Play mode, optionally after a refresh, and returns the standing compile errors. `Tools~/cliext-wait.ps1` waits from outside the Editor, across domain reloads, and returns at once when a dialog blocks the Editor.
 - Added `cliext.compile run` and `cliext.compile diagnostics`: compile errors and warnings with file, line, column, code and assembly, kept per assembly in `Library/CLIExtensions/compile.json` so they survive domain reloads and stay readable when nothing recompiled. Fills what Pipeline's `script recompile_status` leaves out.

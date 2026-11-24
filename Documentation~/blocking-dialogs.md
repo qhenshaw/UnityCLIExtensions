@@ -23,6 +23,12 @@ Verified on 6000.5.8f1:
 | "The open scene(s) have been modified externally" | no dialog; Unity silently keeps the stale scene (Ignore) |
 | `InternalEditorUtility.isHumanControllingUs` | `false`, so packages that check it (the HDRP Wizard, for one) skip their popups |
 
+One more, verified on 6000.5.8f1: with `-automated`, an Editor that starts with compile errors enters **Safe Mode
+without asking**. Safe Mode loads no package editor code, so there is no Pipeline server, no heartbeat and no
+auto-started watchdog; `unity open --until-ready` times out. The window title reads `<project> - SAFE MODE - <version>`,
+which the watchdog reports as `state: safe-mode` when you run it by hand. Fix the errors in the files (the compiler
+messages are in `Logs/Editor.log`).
+
 Two catches. Nothing is logged, so the agent can't tell what was cancelled for it. And Cancel is not always the safe
 answer: Ignore on an externally modified scene means the next save overwrites the file on disk. Agent mode covers
 both: `AgentDialog` calls return the answer the call site chose and log it, and `ExternalSceneReloader` reloads open

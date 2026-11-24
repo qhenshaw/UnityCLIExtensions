@@ -11,7 +11,7 @@ Editor instead of waiting out its timeout.
 Idle means: the heartbeat was written in the last 3 seconds (the main loop is ticking), and it says neither
 compiling nor importing, for -SettleChecks checks in a row.
 
-Exit codes: 0 idle, 1 timed out, 3 blocked by a dialog (see the watchdog report printed), 4 no heartbeat (the package
+Exit codes: 0 idle, 1 timed out, 3 blocked by a dialog (see the watchdog report printed), 5 Safe Mode, 4 no heartbeat (the package
 isn't installed, or the Editor isn't running).
 
 .EXAMPLE
@@ -56,6 +56,11 @@ while ($clock.Elapsed.TotalSeconds -lt $Timeout) {
     if ($blocking.Count -gt 0) {
         [ordered]@{ result = 'blocked-by-dialog'; waitedSeconds = [math]::Round($clock.Elapsed.TotalSeconds, 1); dialogs = $blocking } | ConvertTo-Json -Depth 6
         exit 3
+    }
+
+    if ($wd -and $wd.ageSeconds -lt 10 -and $wd.state -eq 'safe-mode') {
+        [ordered]@{ result = 'safe-mode'; waitedSeconds = [math]::Round($clock.Elapsed.TotalSeconds, 1); detail = 'The Editor is in Safe Mode (compile errors): no package code or Pipeline server runs. Fix the errors in the files.' } | ConvertTo-Json
+        exit 5
     }
 
     $idle = $hb -and $hb.ageSeconds -lt 3 -and -not $hb.compiling -and -not $hb.updating -and -not $hb.quitting
