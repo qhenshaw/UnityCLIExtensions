@@ -1,0 +1,14 @@
+{
+  "displayName": "Unity CLI Extensions",
+  "author": "Quin Henshaw",
+  "version": "0.1.0",
+  "name": "com.qhenshaw.unitycliextensions",
+  "documentationUrl": "https://github.com/qhenshaw/UnityCLIExtensions",
+  "changelogUrl": "https://github.com/qhenshaw/UnityCLIExtensions/blob/main/CHANGELOG.md",
+  "licensesUrl": "https://github.com/qhenshaw/UnityCLIExtensions/blob/main/LICENSE.md",
+  "description": "Keeps a Unity Editor that an AI agent drives from the command line responsive: prevents blocking dialogs up front, answers the project's own dialogs in agent mode, and ships an out-of-process watchdog that reports and clicks through modal dialogs. Adds commands to the Pipeline package's `unity command`.",
+  "unity": "6000.0",
+  "dependencies": {
+    "com.unity.pipeline": "1.0.0"
+  }
+}
