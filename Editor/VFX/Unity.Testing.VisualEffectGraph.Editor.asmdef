@@ -1,0 +1,29 @@
+{
+    "name": "Unity.Testing.VisualEffectGraph.Editor",
+    "rootNamespace": "UnityCLIExtensions.VFX",
+    "references": [
+        "Unity.Pipeline.Attributes",
+        "UnityCLIExtensions.Editor",
+        "Unity.VisualEffectGraph.Editor",
+        "Unity.VisualEffectGraph.Runtime"
+    ],
+    "includePlatforms": [
+        "Editor"
+    ],
+    "excludePlatforms": [],
+    "allowUnsafeCode": false,
+    "overrideReferences": false,
+    "precompiledReferences": [],
+    "autoReferenced": false,
+    "defineConstraints": [
+        "CLIEXT_VFX_GRAPH"
+    ],
+    "versionDefines": [
+        {
+            "name": "com.unity.visualeffectgraph",
+            "expression": "",
+            "define": "CLIEXT_VFX_GRAPH"
+        }
+    ],
+    "noEngineReferences": false
+}

@@ -1,6 +1,9 @@
 # Changelog
 All notable changes to Unity CLI Extensions. Versions are git tags: install one with `https://github.com/qhenshaw/UnityCLIExtensions.git#<version>`.
 
+## 0.6.0
+- Added `cliext.vfx` for reading and editing VFX Graphs: `types` (the library of contexts, blocks, operators and parameter types), `inspect` (every model with a stable id, settings, slot values and links), `create`, `add`, `remove`, `set` (settings, slot values and spaces, parameter defaults), `link` / `unlink` (flow and data), and `edit`, which applies a JSON list of ops with one save and compile. Built only when the Visual Effect Graph package is installed, in an assembly named `Unity.Testing.VisualEffectGraph.Editor` so it can use VFX Graph's editor internals.
+
 ## 0.5.0
 - `Tools~/cliext-run.ps1` and `Tools~/cliext-wait.ps1` find a blocking dialog without the watchdog running: when its report is missing or stale, they take a watchdog snapshot themselves. Before, a save prompt with no watchdog running showed as `main-thread-busy`, and `cliext-wait.ps1` waited out its timeout.
 - `cliext.playmode set_fast --enabled false` puts back the Enter Play Mode settings the project had before fast Play mode was turned on (`restoredPrevious` in the result), instead of always Unity's default. With fast Play mode off, it changes nothing.

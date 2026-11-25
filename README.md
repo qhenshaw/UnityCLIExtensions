@@ -31,6 +31,7 @@ This package works in three layers:
 - [Waiting, compiling and fast Play mode](#waiting-compiling-and-fast-play-mode)
 - [Edit batches, affected tests and deadlines](#edit-batches-affected-tests-and-deadlines)
 - [Asset dependencies and scene diffs](#asset-dependencies-and-scene-diffs)
+- [Editing VFX Graphs](#editing-vfx-graphs)
 - [Commands](#commands)
 - [Files](#files)
 - [Blocking dialogs catalog](Documentation~/blocking-dialogs.md)
@@ -318,6 +319,73 @@ hierarchy path, so a rename or reparent shows as `object-renamed` rather than a 
 `cliext.asset uses` leaves out Editor-only scripts, such as the version-tracking script HDRP attaches to every
 material; `--include-editor-scripts true` lists them too.
 
+## Editing VFX Graphs
+With the Visual Effect Graph package in the project, `cliext.vfx` reads and edits `.vfx` graphs: the same contexts,
+blocks, operators and parameters the graph view offers, without opening it. VFX Graph has no public authoring API,
+so these commands use its editor internals from an assembly named `Unity.Testing.VisualEffectGraph.Editor` (one of
+the names VFX Graph lets see its internals). It compiles only when `com.unity.visualeffectgraph` is installed.
+Proven on VFX Graph 17.5; a later version that renames those internals fails to compile this one assembly only.
+
+**Find what to add.** `cliext.vfx types [--kind context|block|operator|parameter] [--filter text]` lists the
+library with a key for each entry, such as `Context/Common/Spawn`, `Set/Set Lifetime Random Uniform` or
+`Operator/Math/Arithmetic/Multiply`. `add` takes the key, the name alone when it is unique, or the class name.
+
+**Read a graph.** `cliext.vfx inspect --path Assets/VFX/Spark.vfx` lists the contexts (with their flow links and
+blocks), operators and parameters. Each has an `id` (its file ID in the asset, stable across reloads), its settings
+and its input slots, with each value or link. `--id <id>` shows one model; `--details false` just the structure.
+
+**Edit it.** Each command saves and recompiles the graph, and returns what the compile logged:
+```
+unity command cliext.vfx create --path Assets/VFX/Spark.vfx
+unity command cliext.vfx add --path Assets/VFX/Spark.vfx --kind context --type Spawn
+unity command cliext.vfx add --path Assets/VFX/Spark.vfx --kind block --type "Constant Spawn Rate" --context <spawn id>
+unity command cliext.vfx set --path Assets/VFX/Spark.vfx --id <block id> --slot Rate --value 40
+unity command cliext.vfx set --path Assets/VFX/Spark.vfx --id <output id> --setting blendMode --value Additive
+unity command cliext.vfx link --path Assets/VFX/Spark.vfx --from <spawn id> --to <init id>
+unity command cliext.vfx link --path Assets/VFX/Spark.vfx --from <parameter id>:#0 --to <block id>:Rate
+unity command cliext.vfx remove --path Assets/VFX/Spark.vfx --id <id>
+```
+A slot is `<id>:<slot>`: the slot's name (a leading underscore is optional), a path into its fields (`velocity.y`),
+or `#index`. `link` and `unlink` join two contexts when both ends are context ids (`--from-index`/`--to-index` pick
+a flow slot, such as a spawner's Stop), and an output slot to an input slot otherwise. `set` on a parameter sets its
+default value. Values are text: numbers, `true`/`false`, enum names, `[x,y,z]` for vectors (also the VFX wrappers
+such as Position and Vector) and colours (or `#RRGGBB`), asset paths for textures and meshes,
+`[[time,value],...]` for curves and `[[time,r,g,b(,a)],...]` for gradients, and JSON for other structs.
+`--space Local|World` sets a slot's space.
+
+**Many edits, one compile.** `cliext.vfx edit` applies a JSON array of ops in order and saves once. An op that adds
+a model can name it with `as`; later ops refer to it as `$name`:
+```json
+[
+  {"op":"add","kind":"context","type":"Spawn","as":"spawn"},
+  {"op":"add","kind":"block","type":"Constant Spawn Rate","context":"$spawn","as":"rate"},
+  {"op":"add","kind":"context","type":"Initialize Particle","as":"init"},
+  {"op":"link","from":"$spawn","to":"$init"},
+  {"op":"set","id":"$init","setting":"capacity","value":"256"},
+  {"op":"add","kind":"block","type":"Set Velocity","context":"$init","as":"vel"},
+  {"op":"set","id":"$vel","slot":"velocity","value":"[0,2,0]"},
+  {"op":"add","kind":"context","type":"Update Particle","as":"update"},
+  {"op":"link","from":"$init","to":"$update"},
+  {"op":"add","kind":"block","type":"Gravity","context":"$update"},
+  {"op":"add","kind":"context","type":"Output Particle Unlit Quad","as":"out"},
+  {"op":"link","from":"$update","to":"$out"},
+  {"op":"add","kind":"block","type":"Set Size Over Life","context":"$out","as":"size"},
+  {"op":"set","id":"$size","slot":"Size","value":"[[0,0.2],[1,0]]"},
+  {"op":"add","kind":"parameter","type":"Float","as":"rateParam"},
+  {"op":"rename","id":"$rateParam","name":"SpawnRate"},
+  {"op":"expose","id":"$rateParam","value":"true"},
+  {"op":"link","from":"$rateParam:#0","to":"$rate:Rate"}
+]
+```
+Pass it with `--ops '<json>'` or, easier to quote, `--ops-file <path>` (Windows PowerShell 5.1 strips the double
+quotes from an inline JSON argument, so use the file there). Ops: `add` (kind, type, context, index, x,
+y, as), `remove` (id), `set` (id, setting or slot, value, space), `link`/`unlink` (from, to, fromIndex, toIndex),
+`move` (id, x, y), `rename` (id, name: a context's label or a parameter's name), `expose` (id, value). The result
+lists each op with the ids of the models it added. An op that fails stops the run with its index and the reason; the
+ops before it are kept and saved. Contexts land under the lowest one and nodes to the left unless given x and y.
+
+The VFX Graph window can stay open on the graph while these run; edits made with it open saved and compiled cleanly.
+
 ## Commands
 All under `unity command --project-path <project>`:
 
@@ -347,6 +415,11 @@ All under `unity command --project-path <project>`:
 | `cliext.diff compare --name n [--update true]` | The changes since the snapshot. |
 | `cliext.diff list` | The saved snapshots. |
 | `cliext.diff delete --name n` / `--all true` | Deletes a snapshot, or all of them. |
+| `cliext.vfx types [--kind k] [--filter text]` | The contexts, blocks, operators and parameter types a VFX Graph can hold. |
+| `cliext.vfx inspect --path <vfx> [--id id] [--details false]` | A graph's models with ids, settings, slot values and links. |
+| `cliext.vfx create --path <vfx>` | Creates an empty VFX Graph. |
+| `cliext.vfx add` / `remove` / `set` / `link` / `unlink` | One edit, then save and compile. |
+| `cliext.vfx edit --path <vfx> --ops <json> \| --ops-file <path>` | Many edits, one save and compile. |
 
 `cliext.dialogs log` and `cliext.watchdog report` only read files and run off the main thread, so they still answer
 while a dialog is open, as long as no other command is queued ahead of them. When they time out too, read the files.
