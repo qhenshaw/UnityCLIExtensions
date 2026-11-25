@@ -1,6 +1,10 @@
 # Changelog
 All notable changes to Unity CLI Extensions. Versions are git tags: install one with `https://github.com/qhenshaw/UnityCLIExtensions.git#<version>`.
 
+## 0.16.0
+- Added `cliext.import batch`: import settings across every matching asset in a folder (by type and file name), texture platform overrides, only where they differ, with a dry run.
+- Added `cliext.presets`: `list`, `create` (from an asset's importer), `set_default` (per folder or any Preset Manager filter), `apply`, and `audit`, which lists every asset that breaks the default preset that applies to it, setting by setting.
+
 ## 0.15.0
 - Added `cliext.addressables`: `status`, `init`, `entries`, `edit` (groups and their packing and compression, entries, addresses, labels), `build` (content build, with the first build's report prompt answered so it doesn't block) and `analyze` (the Analyze rules' results as data). Built when the Addressables package is installed; tested with Addressables 5.0.
 

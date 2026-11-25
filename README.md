@@ -41,6 +41,7 @@ This package works in three layers:
 - [UI Toolkit](#ui-toolkit)
 - [Splines](#splines)
 - [Addressables](#addressables)
+- [Import settings and presets](#import-settings-and-presets)
 - [Commands](#commands)
 - [Files](#files)
 - [Blocking dialogs catalog](Documentation~/blocking-dialogs.md)
@@ -685,6 +686,28 @@ With the Addressables package in the project, `cliext.addressables`:
 - `analyze [--rule "Bundle Dependencies"]`: runs the Analyze rules and returns their results with severities
   (nothing is fixed); exit 6 on error results.
 
+## Import settings and presets
+Pipeline's `asset get_import_settings` / `set_import_settings` read and change one asset. `cliext.import batch`
+changes many, only where they differ, and reimports just those:
+```
+unity command cliext.import batch --folder Assets/Art/UI --type Texture2D --set "maxTextureSize=1024;mipmapEnabled=false" --dry-run true
+unity command cliext.import batch --folder Assets/Art/Props --filter "*.fbx" --set "globalScale=1;meshCompression=Medium;materialImportMode=None"
+unity command cliext.import batch --folder Assets/Art --type Texture2D --platform Android --set "maxTextureSize=512;format=ASTC_6x6"
+```
+`--set` takes the importer's own property names (TextureImporter, ModelImporter, ...); `--platform` writes a texture
+platform override. Each changed asset comes back with `name: old -> new`.
+
+`cliext.presets` manages default presets per folder and checks them:
+- `list`: the default presets per type, with their filters.
+- `create --from Assets/Art/UI/Button.png --out Assets/Presets/UITexture.preset`: a preset from an asset's importer.
+- `set_default --preset Assets/Presets/UITexture.preset --filter Assets/Art/UI`: new and reimported assets in that
+  folder get it (a folder becomes `glob:"Assets/Art/UI/**"`; any Preset Manager filter works). `--remove true` takes
+  it out.
+- `apply --preset ... --folder ... [--filter "*.png"] [--dry-run true]`: applies it to existing assets.
+- `audit [--folder Assets]`: every asset whose importer breaks the default preset that applies to it, with each
+  differing setting (`m_MaxTextureSize: is 8192, preset 512`). Nothing is changed; exit 6 when anything breaks a
+  preset.
+
 ## Commands
 All under `unity command --project-path <project>`:
 
@@ -740,6 +763,8 @@ All under `unity command --project-path <project>`:
 | `cliext.uitk tree` / `query` / `click` / `set_value` | The live visual tree, clicking and setting values. |
 | `cliext.splines list` / `inspect` / `create` / `edit` / `sample` | SplineContainers, knots, and sampling. |
 | `cliext.addressables status` / `init` / `entries` / `edit` / `build` / `analyze` | Addressables groups, entries, builds and Analyze. |
+| `cliext.import batch --folder <f> --set "k=v;..."` | Import settings across many assets. |
+| `cliext.presets list` / `create` / `set_default` / `apply` / `audit` | Default presets per folder, and the assets that break them. |
 
 `cliext.dialogs log` and `cliext.watchdog report` only read files and run off the main thread, so they still answer
 while a dialog is open, as long as no other command is queued ahead of them. When they time out too, read the files.
