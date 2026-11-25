@@ -30,7 +30,11 @@ namespace UnityCLIExtensions.VFX
         {
             this.path = path;
             this.resource = resource;
+#if CLIEXT_VFX_GRAPH_17_6_OR_NEWER
+            graph = resource.GetGraph() ?? resource.CreateGraph();
+#else
             graph = resource.GetOrCreateGraph();
+#endif
         }
 
         public static VfxGraphDocument Open(string path)

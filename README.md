@@ -388,7 +388,8 @@ With the Visual Effect Graph package in the project, `cliext.vfx` reads and edit
 blocks, operators and parameters the graph view offers, without opening it. VFX Graph has no public authoring API,
 so these commands use its editor internals from an assembly named `Unity.Testing.VisualEffectGraph.Editor` (one of
 the names VFX Graph lets see its internals). It compiles only when `com.unity.visualeffectgraph` is installed.
-Proven on VFX Graph 17.5; a later version that renames those internals fails to compile this one assembly only.
+Proven on VFX Graph 17.5 and 17.6 (17.6 replaced `GetOrCreateGraph` with `GetGraph` and `CreateGraph`; the
+`CLIEXT_VFX_GRAPH_17_6_OR_NEWER` version define picks the right call); a later version that renames those internals fails to compile this one assembly only.
 
 **Find what to add.** `cliext.vfx types [--kind context|block|operator|parameter] [--filter text]` lists the
 library with a key for each entry, such as `Context/Common/Spawn`, `Set/Set Lifetime Random Uniform` or

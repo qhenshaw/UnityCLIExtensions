@@ -23,6 +23,11 @@
             "name": "com.unity.visualeffectgraph",
             "expression": "",
             "define": "CLIEXT_VFX_GRAPH"
+        },
+        {
+            "name": "com.unity.visualeffectgraph",
+            "expression": "17.6.0",
+            "define": "CLIEXT_VFX_GRAPH_17_6_OR_NEWER"
         }
     ],
     "noEngineReferences": false

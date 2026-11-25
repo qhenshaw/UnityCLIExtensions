@@ -1,6 +1,9 @@
 # Changelog
 All notable changes to Unity CLI Extensions. Versions are git tags: install one with `https://github.com/qhenshaw/UnityCLIExtensions.git#<version>`.
 
+## 0.20.1
+- `cliext.vfx` compiles with VFX Graph 17.6, which removed `VisualEffectResource.GetOrCreateGraph`: a version define (`CLIEXT_VFX_GRAPH_17_6_OR_NEWER`) switches to `GetGraph`, then `CreateGraph` when the resource has no graph. Before this, the compile error in the VFX assembly stopped the whole package from loading in projects on VFX Graph 17.6.
+
 ## 0.20.0
 - Added the `unity-cliext` Claude Code skill (`Skills~/unity-cliext/SKILL.md`), and its automatic install: when the package loads it copies the skill into `.claude/skills/unity-cliext/` and keeps a marked block in `CLAUDE.md` (created if missing, the rest untouched), writing only what differs from the package version. Also `cliext.setup agent [--force] [--remove]`, a menu item, and a setting to turn it off.
 - `cliext status` reports the package version and the `Tools~` folder.
