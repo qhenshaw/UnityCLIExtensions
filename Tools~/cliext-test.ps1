@@ -4,8 +4,8 @@ Runs only the tests a change can affect, in one call.
 
 .DESCRIPTION
 Asks the Editor which test assemblies the change affects (`unity command cliext.test affected`), then runs each with
-Pipeline's `test run`: Edit Mode assemblies synchronously, Play Mode ones asynchronously, polling `test status` (Play
-Mode reloads the domain, which a synchronous request would not survive). Prints one JSON summary.
+`cliext.test run`, which records that run's own result: Edit Mode waits in the Editor; Play Mode reloads the domain,
+so its result is read afterwards with `cliext.test result`. Prints one JSON summary with each failure.
 
 The change comes from -Files, or from git: uncommitted changes against -Since (default HEAD) plus untracked files.
 -All runs every test assembly.
@@ -37,14 +37,6 @@ function Invoke-Unity([string[]]$arguments) {
     $ErrorActionPreference = 'Continue'
     $output = (& unity command --project-path $projectPath @arguments --format json 2>&1 | ForEach-Object { "$_" }) -join "`n"
     return [pscustomobject]@{ ExitCode = $LASTEXITCODE; Output = $output }
-}
-
-function Get-Counts([string]$text) {
-    $counts = [ordered]@{}
-    foreach ($s in 'Passed', 'Failed', 'Skipped', 'Inconclusive') { $counts[$s.ToLower()] = ([regex]::Matches($text, '"status"\s*:\s*"' + $s + '"')).Count }
-    $failures = @([regex]::Matches($text, '"(?:fullName|FullName|name)"\s*:\s*"([^"]+)"[^{}]*?"status"\s*:\s*"Failed"') | ForEach-Object { $_.Groups[1].Value })
-    $counts['failures'] = $failures
-    return $counts
 }
 
 $askArgs = @('cliext.test', 'affected')
@@ -83,27 +75,40 @@ if (@($plan.testAssemblies).Count -gt 0) {
 
 $runs = @()
 $failed = $false
+function Read-Record([string]$text) {
+    $start = $text.IndexOf('{')
+    if ($start -lt 0) { return $null }
+    try { return $text.Substring($start, $text.LastIndexOf('}') - $start + 1) | ConvertFrom-Json } catch { return $null }
+}
+
+$transient = 'closed the connection|No Pipeline instance|Bad Request|isn.t reachable|not reachable|ECONNREFUSED|ECONNRESET'
+$waitScript = Join-Path $PSScriptRoot 'cliext-wait.ps1'
+
+# Each assembly runs with cliext.test run, which records that run's own result (Pipeline's test status shows the
+# previous run until a new one starts). Edit Mode waits in the Editor; Play Mode reloads the domain, so its result is
+# read afterwards with cliext.test result.
 foreach ($t in @($plan.testAssemblies)) {
     $run = [ordered]@{ assembly = $t.name; mode = $t.mode; because = $t.because }
-    if ($t.mode -eq 'EditMode') {
-        $r = Invoke-Unity @('test', 'run', '--mode', 'editor', '--filter-type', 'Assembly', '--filter', $t.name)
-        $run.exitCode = $r.ExitCode
-        $counts = Get-Counts $r.Output
-        foreach ($k in $counts.Keys) { $run[$k] = $counts[$k] }
-        if ($r.ExitCode -ne 0 -and $run.passed -eq 0 -and $run.failed -eq 0) { $run.output = $r.Output.Trim() }
-    }
-    else {
-        $start = Invoke-Unity @('test', 'run', '--mode', 'playmode', '--async-tests', 'true', '--filter-type', 'Assembly', '--filter', $t.name)
+    $mode = $(if ($t.mode -eq 'EditMode') { 'edit' } else { 'play' })
+    $r = Invoke-Unity @('cliext.test', 'run', '--filter', $t.name, '--filter-type', 'assembly', '--mode', $mode, '--timeout', [string][int]$PlayModeTimeout)
+    $record = Read-Record $r.Output
+    if ($mode -eq 'play' -and $record -and $record.runId -and $record.status -eq 'started') {
+        & powershell -NoProfile -ExecutionPolicy Bypass -File $waitScript -Project $projectPath -Timeout 120 | Out-Null
         $clock = [Diagnostics.Stopwatch]::StartNew()
-        $status = $null
-        while ($clock.Elapsed.TotalSeconds -lt $PlayModeTimeout) {
-            Start-Sleep -Seconds 3
-            $status = Invoke-Unity @('test', 'status', '--detail', 'failures')
-            if ($status.Output -notmatch '"status"\s*:\s*"(running|in_progress|started|pending)"' -and $status.Output -notmatch 'closed the connection|No Pipeline instance|Bad Request') { break }
-        }
-        $run.exitCode = $status.ExitCode
-        $run.status = $status.Output.Trim()
+        do {
+            $r = Invoke-Unity @('cliext.test', 'result', '--run-id', $record.runId, '--wait', 'true', '--timeout', '60')
+            if ($r.Output -match $transient) { Start-Sleep -Seconds 3 } elseif ($r.ExitCode -ne 14) { break }
+        } while ($clock.Elapsed.TotalSeconds -lt $PlayModeTimeout)
+        $record = Read-Record $r.Output
     }
+    $run.exitCode = $r.ExitCode
+    if ($record -and $record.status) {
+        $run.runId = $record.runId
+        $run.status = $record.status
+        foreach ($k in 'passed', 'failed', 'skipped', 'inconclusive') { $run[$k] = $record.$k }
+        $run.failures = @($record.failures | ForEach-Object { "$($_.fullName): $($_.message)" })
+    }
+    else { $run.output = $r.Output.Trim() }
     if ($run.exitCode -ne 0) { $failed = $true }
     $runs += $run
 }

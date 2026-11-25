@@ -1,6 +1,13 @@
 # Changelog
 All notable changes to Unity CLI Extensions. Versions are git tags: install one with `https://github.com/qhenshaw/UnityCLIExtensions.git#<version>`.
 
+## 0.7.0
+- Added `cliext.test run` and `cliext.test result`: test runs that record their own result, so the previous run's status is never mistaken for the new one's, and a filter that matches nothing fails with the closest names instead of passing. Filters by part of the full name, exact name, assembly or category, in Edit or Play Mode; failures come back with their messages. Refuses to start while a scene has unsaved changes. Built when the Test Framework package is installed. `cliext.test affected` and `Tools~/cliext-test.ps1` now use it.
+- Added `cliext.eval run`: runs a C# snippet file through Pipeline's script eval after filling its `{{key}}` placeholders from `--vars`; an unfilled placeholder is an error.
+- Added `cliext.playmode wait_until`: runs a snippet every second until it returns `ready`, to wait for a game state.
+- `cliext.compile run --stop-play true` leaves Play mode before compiling.
+- Added `Tools~/cliext-play-capture.ps1`: compile, enter Play mode, wait until ready, run a setup snippet and capture the game view for each shot, leave Play mode, and tile the shots into a contact sheet (no Python needed).
+
 ## 0.6.0
 - Added `cliext.vfx` for reading and editing VFX Graphs: `types` (the library of contexts, blocks, operators and parameter types), `inspect` (every model with a stable id, settings, slot values and links), `create`, `add`, `remove`, `set` (settings, slot values and spaces, parameter defaults), `link` / `unlink` (flow and data), and `edit`, which applies a JSON list of ops with one save and compile. Built only when the Visual Effect Graph package is installed, in an assembly named `Unity.Testing.VisualEffectGraph.Editor` so it can use VFX Graph's editor internals.
 

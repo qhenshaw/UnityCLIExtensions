@@ -49,11 +49,11 @@ namespace UnityCLIExtensions
                 plan = AffectedTests.Plan(changed);
             }
 
-            // Pipeline's test run takes one assembly filter (a partial match), so each assembly is its own command.
-            // Edit Mode runs synchronously; Play Mode reloads the domain, so it must run async and be polled.
+            // One cliext.test run per assembly (an exact assembly match). Edit Mode waits for its result; Play Mode
+            // reloads the domain, so it returns a run id to read with cliext.test result --wait true.
             var commands = plan.testAssemblies.Select(t => t.mode == "EditMode"
-                ? $"test run --mode editor --filter-type Assembly --filter {t.name}"
-                : $"test run --mode playmode --async-tests true --filter-type Assembly --filter {t.name}").ToArray();
+                ? $"cliext.test run --mode edit --filter-type assembly --filter {t.name}"
+                : $"cliext.test run --mode play --filter-type assembly --filter {t.name}").ToArray();
             if (plan.otherChanges.Length > 0)
                 cmd.Log.Warning($"{plan.otherChanges.Length} changed file(s) are not scripts (scenes, prefabs, data); tests that load them are not picked out. Pass --all true to run everything.");
             if (plan.testAssemblies.Count == 0)

@@ -78,14 +78,67 @@ namespace UnityCLIExtensions
         [CliGroupCommand(CompileGroup, "Refresh the AssetDatabase, compile what changed, wait for the compile, and return its errors and warnings with file, line, column and code. " +
                                        "Fails (exit 6) when there are errors, with them in the result. When the compile succeeds, the domain reload that follows may drop the reply " +
                                        "(the CLI then also exits 6, 'closed the connection'): then read the result with cliext.compile diagnostics. " +
-                                       "--async true answers at once (exit 0) and compiles after the reply: wait with Tools~/cliext-wait.ps1, then read cliext.compile diagnostics.",
-            Tags = new[] { "editor", "cliext", "scripts/compile" }, Effect = CommandEffect.Idempotent)]
-        internal static Task<ExitCode> Run(
+                                       "--async true answers at once (exit 0) and compiles after the reply: wait with Tools~/cliext-wait.ps1, then read cliext.compile diagnostics. " +
+                                       "--stop-play true leaves Play mode first (nothing compiles while playing).",
+            Name = "run", Tags = new[] { "editor", "cliext", "scripts/compile" }, Effect = CommandEffect.Idempotent)]
+        internal static Task<ExitCode> CompileRun(
             CommandContext cmd,
             [CliArg("timeout", "Seconds to wait for the compile")] double timeoutInSeconds = 300,
             [CliArg("warnings", "Include warnings")] bool warnings = true,
-            [CliArg("async", "Answer at once and compile after the reply, so the exit code doesn't depend on the domain reload")] bool runAsync = false)
-            => CompileAndReport(cmd, timeoutInSeconds, warnings, runAsync);
+            [CliArg("async", "Answer at once and compile after the reply, so the exit code doesn't depend on the domain reload")] bool runAsync = false,
+            [CliArg("stop-play", "Leave Play mode first (nothing compiles while playing)")] bool stopPlay = false)
+        {
+            if (stopPlay && EditorApplication.isPlayingOrWillChangePlaymode) return StopPlayThenCompile(cmd, timeoutInSeconds, warnings, runAsync);
+            return CompileAndReport(cmd, timeoutInSeconds, warnings, runAsync);
+        }
+
+        private static async Task<ExitCode> StopPlayThenCompile(CommandContext cmd, double timeoutInSeconds, bool warnings, bool runAsync)
+        {
+            EditorApplication.ExitPlaymode();
+            var clock = Stopwatch.StartNew();
+            while (EditorApplication.isPlayingOrWillChangePlaymode)
+            {
+                if (clock.Elapsed.TotalSeconds > 60) { cmd.Log.Error("Play mode didn't stop within 60 s."); return ExitCode.TimedOut; }
+                EditorApplication.QueuePlayerLoopUpdate();
+                await Task.Yield();
+            }
+            cmd.Log.Info("Left Play mode.");
+            return await CompileAndReport(cmd, timeoutInSeconds, warnings, runAsync);
+        }
+
+        // ---------------------------------------------------------------------------------------------------------
+        // cliext.eval
+
+        [CliGroupCommand("cliext.eval", "Run a C# snippet file through Pipeline's script eval after filling its {{key}} placeholders from --vars (key=value;key=value), " +
+                                        "so one snippet serves many values. A placeholder left unfilled is an error. Returns the snippet's value. " +
+                                        "Pass the CLI's --timeout for anything slower than 30 s.",
+            Name = "run", Tags = new[] { "editor", "cliext", "scripts/eval" }, MainThreadRequired = true, Effect = CommandEffect.Destructive)]
+        internal static async Task<ExitCode> EvalRun(
+            CommandContext cmd,
+            [CliArg("file", "The .cs snippet (relative to the project root unless absolute)", Required = true)] string file,
+            [CliArg("vars", "Placeholder values: key=value;key=value")] string vars = "",
+            [CliArg("internals", "Compile under an assembly name Unity's modules grant internal access, as script eval --internals does")] bool internals = false,
+            [CliArg("print", "Only fill the placeholders and return the code, without running it")] bool print = false,
+            [CliArg("timeout", "Seconds the CLI waits for the snippet (as script eval's --timeout)")] double timeoutInSeconds = 30)
+        {
+            string code;
+            try { code = TemplatedEval.Load(file, TemplatedEval.ParseVars(vars)); }
+            catch (ArgumentException e) { cmd.Log.Error(e.Message); return ExitCode.InvalidUsage; }
+            if (print)
+            {
+                cmd.Result.Write(new { code });
+                return ExitCode.Success;
+            }
+            var result = await TemplatedEval.Evaluate(code, internals);
+            foreach (var d in result.diagnostics) (d.Contains(": error ") ? (Action<string>)cmd.Log.Error : cmd.Log.Warning)(d);
+            if (!result.success)
+            {
+                cmd.Log.Error($"{result.errorCode}: {result.error}");
+                return ExitCode.Failed;
+            }
+            cmd.Result.Write(result.value);
+            return ExitCode.Success;
+        }
 
         // ---------------------------------------------------------------------------------------------------------
         // cliext.edits
@@ -243,6 +296,57 @@ namespace UnityCLIExtensions
             if (unreset != null && unreset.Count > 0)
                 cmd.Log.Warning($"{unreset.Count} static member(s) in the project's runtime code have no [RuntimeInitializeOnLoadMethod] reset and will keep their values between Play sessions. See cliext.playmode check_statics.");
             return ExitCode.Success;
+        }
+
+        [CliGroupCommand(PlayModeGroup, "Run a C# snippet (--file, with {{key}} placeholders filled from --vars) every --interval seconds until it returns \"ready\", " +
+                                        "for waiting on a game state in Play mode. The snippet may also push the game forward each time (start the run, skip a wave) and return what it is waiting for otherwise. " +
+                                        "Pass the CLI's --timeout a little above this command's --timeout.",
+            Tags = new[] { "editor", "cliext", "editor/playmode", "scripts/eval" }, MainThreadRequired = true, Effect = CommandEffect.Destructive)]
+        internal static async Task<ExitCode> WaitUntil(
+            CommandContext cmd,
+            [CliArg("file", "The .cs snippet (relative to the project root unless absolute)", Required = true)] string file,
+            [CliArg("vars", "Placeholder values: key=value;key=value")] string vars = "",
+            [CliArg("timeout", "Seconds before giving up")] double timeoutInSeconds = 60,
+            [CliArg("interval", "Seconds between runs")] double interval = 1)
+        {
+            string code;
+            try { code = TemplatedEval.Load(file, TemplatedEval.ParseVars(vars)); }
+            catch (ArgumentException e) { cmd.Log.Error(e.Message); return ExitCode.InvalidUsage; }
+
+            var clock = Stopwatch.StartNew();
+            int runs = 0;
+            string last = null;
+            while (true)
+            {
+                cmd.CancellationToken.ThrowIfCancellationRequested();
+                var result = await TemplatedEval.Evaluate(code);
+                runs++;
+                if (!result.success)
+                {
+                    foreach (var d in result.diagnostics) cmd.Log.Error(d);
+                    cmd.Result.Write(new { ready = false, runs, waitedMs = clock.ElapsedMilliseconds, last, result.errorCode, result.error });
+                    cmd.Log.Error($"The snippet failed: {result.errorCode}: {result.error}");
+                    return ExitCode.Failed;
+                }
+                last = TemplatedEval.AsText(result.value);
+                if (string.Equals(last.Trim(), "ready", StringComparison.OrdinalIgnoreCase))
+                {
+                    cmd.Result.Write(new { ready = true, runs, waitedMs = clock.ElapsedMilliseconds, last });
+                    return ExitCode.Success;
+                }
+                if (clock.Elapsed.TotalSeconds + interval >= timeoutInSeconds)
+                {
+                    cmd.Result.Write(new { ready = false, runs, waitedMs = clock.ElapsedMilliseconds, last });
+                    cmd.Log.Error($"Not ready after {clock.Elapsed.TotalSeconds:0} s; the snippet last returned '{last}'.");
+                    return ExitCode.TimedOut;
+                }
+                var pause = Stopwatch.StartNew();
+                while (pause.Elapsed.TotalSeconds < interval)
+                {
+                    EditorApplication.QueuePlayerLoopUpdate();
+                    await Task.Yield();
+                }
+            }
         }
 
         [CliGroupCommand(PlayModeGroup, "List the static fields, auto-properties and static events in the project's runtime code that keep their values between Play sessions when domain reload is off, " +

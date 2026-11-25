@@ -1,0 +1,31 @@
+{
+    "name": "UnityCLIExtensions.TestRunner",
+    "rootNamespace": "UnityCLIExtensions.TestRunner",
+    "references": [
+        "Unity.Pipeline.Attributes",
+        "UnityCLIExtensions.Editor",
+        "UnityEditor.TestRunner",
+        "UnityEngine.TestRunner"
+    ],
+    "includePlatforms": [
+        "Editor"
+    ],
+    "excludePlatforms": [],
+    "allowUnsafeCode": false,
+    "overrideReferences": true,
+    "precompiledReferences": [
+        "nunit.framework.dll"
+    ],
+    "autoReferenced": false,
+    "defineConstraints": [
+        "CLIEXT_TEST_FRAMEWORK"
+    ],
+    "versionDefines": [
+        {
+            "name": "com.unity.test-framework",
+            "expression": "",
+            "define": "CLIEXT_TEST_FRAMEWORK"
+        }
+    ],
+    "noEngineReferences": false
+}

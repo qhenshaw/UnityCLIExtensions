@@ -30,6 +30,7 @@ This package works in three layers:
 - [EditorDeferred](#editordeferred)
 - [Waiting, compiling and fast Play mode](#waiting-compiling-and-fast-play-mode)
 - [Edit batches, affected tests and deadlines](#edit-batches-affected-tests-and-deadlines)
+- [Snippets, game states and screenshots](#snippets-game-states-and-screenshots)
 - [Asset dependencies and scene diffs](#asset-dependencies-and-scene-diffs)
 - [Editing VFX Graphs](#editing-vfx-graphs)
 - [Commands](#commands)
@@ -261,21 +262,38 @@ and says so in the journal; it is kept in SessionState, so a domain reload in be
 with the Editor. `cliext.edits status` says whether one is open. `cliext.compile run` refuses to run inside a batch.
 
 **Only the tests a change affects.** `cliext.test affected` maps each changed script or .asmdef to its assembly and
-lists every test assembly that is it or depends on it, directly or through others, with the Pipeline command that runs
-each. The changes come from `--files a,b` or from git (uncommitted changes against `--since`, default `HEAD`, plus
+lists every test assembly that is it or depends on it, directly or through others, with the `cliext.test run` command
+that runs each. The changes come from `--files a,b` or from git (uncommitted changes against `--since`, default `HEAD`, plus
 untracked files); `--all true` lists every test assembly. Test assemblies are the ones whose .asmdef has the
 `UNITY_INCLUDE_TESTS` constraint. Changed scenes, prefabs and data are reported as `otherChanges`: nothing maps them to
 tests, so run everything when they matter. To run the list in one call:
 ```
 powershell -NoProfile -ExecutionPolicy Bypass -File <package>/Tools~/cliext-test.ps1 -Project <project> [-Files a,b] [-Since HEAD] [-All]
 ```
-It runs Edit Mode assemblies with `test run` and Play Mode ones with `--async-tests`, polling `test status`, and prints
-one summary with passed, failed and skipped counts per assembly. Exit 0 when everything passed, 6 when something
-failed. Pipeline's assembly filter is a partial match, so `My.Tests` also runs `My.Tests.Slow`. It refuses to start
+It runs each assembly with `cliext.test run` (below) and prints one summary with passed, failed and skipped counts and
+each failure per assembly. Exit 0 when everything passed, 6 when something failed. It refuses to start
 (exit 1) while an open scene has unsaved changes, because the Test Runner would stop at a save prompt until someone
 answers it; save them with `cliext.scene save_open` or discard them first. When a run leaves the Editor in another
 scene (one that timed out or was cancelled can leave it in the Test Runner's Untitled scene), it reopens the scenes
 that were open before and lists them in `restoredScenes`.
+
+**Test runs you can trust.** Pipeline's `test status` keeps showing the previous run until a new one starts, and a
+filter that matches nothing finishes "green". `cliext.test run` picks the tests first and records the result of the
+run it started:
+```
+unity command cliext.test run --filter UnityTools.Messaging.Tests --filter-type assembly
+unity command cliext.test run --filter AddListener                 # part of the full name
+unity command cliext.test run --filter Smoke --filter-type category --mode play
+unity command cliext.test result --wait true --timeout 600         # the latest run (or --run-id <id>)
+```
+`--filter-type` is `name` (part of the full name, the default), `exact`, `assembly` or `category`. A filter that
+matches nothing fails (exit 13) with the test assemblies that exist and the closest fixture or test names, so
+`MesagingServiceTsts` suggests `UnityTools.Messaging.Tests.MessagingServiceTests`. The result has the counts and
+each failure with its message and stack trace; exit 0 when everything passed, 6 when a test failed. An Edit Mode run
+waits for its result. A Play Mode run reloads the domain, so it returns its `runId` at once: wait with
+`cliext-wait.ps1`, then `cliext.test result --wait true`. Like `cliext-test.ps1`, it refuses to start while an open
+scene has unsaved changes. Results are kept in `Library/CLIExtensions/test-runs/`. Built when the Test Framework
+package is installed.
 
 **A deadline for any command.** A hung `unity command` usually waits on the Editor. `cliext-run.ps1` gives it a
 deadline, and when it passes, says what the Editor was doing:
@@ -287,6 +305,40 @@ with its code. Past the deadline it stops waiting (the Editor may still finish t
 `reason`: `blocked-by-dialog` (with the dialog and how to press a button), `safe-mode`, `hung`, `compiling`,
 `importing`, `busy` (a progress window such as "Hold on"), `main-thread-busy`, or `editor-idle` (the command itself is
 slow). Exit 124.
+
+## Snippets, game states and screenshots
+
+**One snippet, many values.** `script eval` runs inside the Editor, so shell arguments never reach the code. Write
+`{{key}}` where a value goes and fill it with `cliext.eval run`:
+```
+unity command cliext.eval run --file Snippets/show-item.cs --vars "item=FrostCandle;mode=fusion"
+```
+Values are inserted as they are (quote them in the C#: `"{{item}}"`). A placeholder left unfilled is an error, so a
+typo can't run with a blank in it. `--print true` returns the filled code without running it; `--internals true` and
+`--timeout` work as on `script eval`. Pairs are separated by `;` (or `,` when there is no `;`).
+
+**Wait for a game state.** `cliext.playmode wait_until --file ready.cs --vars ... --timeout 90` runs a snippet every
+second until it returns `ready`. The snippet can also push the game forward each time (start the run, skip a wave)
+and return what it is waiting for otherwise, which keeps "how to get there" in one file.
+
+**Compile from Play mode.** Nothing compiles while the game is playing. `cliext.compile run --stop-play true` leaves
+Play mode first.
+
+**Put the game in a state and screenshot it.** `Tools~/cliext-play-capture.ps1` does the whole loop in one call:
+compile (leaving Play mode), open a scene, enter Play mode with Run In Background, wait until a snippet says ready,
+then for each shot run its setup snippet and capture the game view, then leave Play mode and tile the shots into a
+contact sheet:
+```
+powershell -NoProfile -ExecutionPolicy Bypass -File <package>/Tools~/cliext-play-capture.ps1 -Project <project> `
+  -Scene Assets/Scenes/Game.unity -Until "Snippets/to-shop.cs|wave=3" -Out C:/Temp/shots `
+  -Crop 455,30,450,1030 -Sheet C:/Temp/tooltips.png `
+  "wand=Snippets/show-item.cs|id=Pistol" "totem=Snippets/show-item.cs|id=BloodiedTotem"
+```
+Each shot is `NAME=FILE` or `NAME=FILE|key=value;key=value`, after the named parameters. `-Crop x,y,w,h` crops every
+shot before tiling; `-Settle` waits after a setup snippet (default 0.5 s); `-Width`/`-Height` size the capture;
+`-NoRecompile` skips the compile and `-Stay` stays in Play mode. Nothing is written into the project; the shots go
+to `-Out` (a temp folder by default). The sheet needs no Python. Exit 0 when every shot was captured, 1 with the
+step that failed.
 
 ## Asset dependencies and scene diffs
 
@@ -403,12 +455,16 @@ All under `unity command --project-path <project>`:
 | `cliext.package import --path <file.unitypackage>` | Imports a .unitypackage without the Import dialog. |
 | `cliext.scene save_open` | Saves every open scene that has unsaved changes and a file. |
 | `cliext.wait idle [--refresh true] [--timeout 120] [--settle-frames 3]` | Waits until the Editor is idle. |
-| `cliext.compile run [--warnings true] [--timeout 300] [--async true]` | Refreshes, compiles, and returns structured errors and warnings. `--async true` answers at once and compiles after. |
+| `cliext.compile run [--warnings true] [--timeout 300] [--async true] [--stop-play true]` | Refreshes, compiles, and returns structured errors and warnings. `--async true` answers at once and compiles after; `--stop-play true` leaves Play mode first. |
 | `cliext.compile diagnostics [--warnings true]` | The standing errors and warnings, one record each. |
 | `cliext.playmode set_fast --enabled true\|false` | Turns fast Play mode (no domain or scene reload) on or off. |
 | `cliext.playmode check_statics [--include-reset true]` | Static state that would survive between Play sessions without a domain reload. |
 | `cliext.edits begin [--expire-after 300]` / `end` / `status` | An edit batch: no import or reload until `end`, which compiles once. |
 | `cliext.test affected [--files a,b] [--since HEAD] [--all true]` | The test assemblies a change affects, with the commands that run them. |
+| `cliext.test run [--filter f] [--filter-type name\|exact\|assembly\|category] [--mode edit\|play]` | Runs tests and returns that run's own result; an empty match fails. |
+| `cliext.test result [--run-id id] [--wait true]` | A run's result (default: the latest). |
+| `cliext.eval run --file f.cs [--vars "k=v;k=v"] [--print true]` | Runs a snippet with its `{{placeholders}}` filled. |
+| `cliext.playmode wait_until --file f.cs [--vars ...] [--timeout 60]` | Runs a snippet every second until it returns `ready`. |
 | `cliext.asset uses --path <asset> [--recursive true] [--include-editor-scripts true]` | What an asset references. |
 | `cliext.asset used_by --path <asset> [--recursive true] [--include-packages true]` | What references an asset. |
 | `cliext.diff snapshot --path <scene or prefab> [--name n]` | Saves a snapshot. |
