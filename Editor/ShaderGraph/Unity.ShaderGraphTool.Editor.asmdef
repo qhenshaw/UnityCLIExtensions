@@ -1,0 +1,29 @@
+{
+    "name": "Unity.ShaderGraphTool.Editor",
+    "rootNamespace": "UnityCLIExtensions.ShaderGraph",
+    "references": [
+        "Unity.Pipeline.Attributes",
+        "UnityCLIExtensions.Editor",
+        "Unity.ShaderGraph.Editor",
+        "Unity.RenderPipelines.Core.Runtime"
+    ],
+    "includePlatforms": [
+        "Editor"
+    ],
+    "excludePlatforms": [],
+    "allowUnsafeCode": false,
+    "overrideReferences": false,
+    "precompiledReferences": [],
+    "autoReferenced": false,
+    "defineConstraints": [
+        "CLIEXT_SHADER_GRAPH"
+    ],
+    "versionDefines": [
+        {
+            "name": "com.unity.shadergraph",
+            "expression": "",
+            "define": "CLIEXT_SHADER_GRAPH"
+        }
+    ],
+    "noEngineReferences": false
+}

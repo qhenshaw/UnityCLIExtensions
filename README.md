@@ -33,6 +33,7 @@ This package works in three layers:
 - [Snippets, game states and screenshots](#snippets-game-states-and-screenshots)
 - [Asset dependencies and scene diffs](#asset-dependencies-and-scene-diffs)
 - [Editing VFX Graphs](#editing-vfx-graphs)
+- [Editing Shader Graphs](#editing-shader-graphs)
 - [Commands](#commands)
 - [Files](#files)
 - [Blocking dialogs catalog](Documentation~/blocking-dialogs.md)
@@ -438,6 +439,57 @@ ops before it are kept and saved. Contexts land under the lowest one and nodes t
 
 The VFX Graph window can stay open on the graph while these run; edits made with it open saved and compiled cleanly.
 
+## Editing Shader Graphs
+With the Shader Graph package in the project, `cliext.shadergraph` reads and edits `.shadergraph` files without the
+Shader Graph window, and returns the shader's compile errors as data after every edit. Like `cliext.vfx`, it uses
+Shader Graph's editor internals from an assembly Shader Graph lets see them (`Unity.ShaderGraphTool.Editor`), built
+only when `com.unity.shadergraph` is installed. Proven on Shader Graph 17.5 with HDRP.
+
+**Find what to add.** `cliext.shadergraph types [--filter text]` lists the nodes by menu path
+(`Math/Basic/Multiply`, `Input/Texture/Sample Texture 2D`, `Utility/Custom Function`); `--targets true` lists the
+render pipeline targets and their material types for `create`.
+
+**Read a graph.** `cliext.shadergraph inspect --path Assets/Shaders/Glow.shadergraph` gives the targets and material,
+the vertex and fragment blocks, the blocks the target can take (`blocksAvailable`), every node with its id, settings
+and slots (values or links), the properties, and `compile`: the shader's errors and warnings and each node's own
+errors. `--id <node>` shows one node.
+
+**Create one.** `cliext.shadergraph create --path Assets/Shaders/Glow.shadergraph --target HDRP --material Unlit`
+makes a graph with that material's default blocks; `--from <graph>` copies one instead.
+
+**Edit it.** `add` (a node), `add_property`, `remove`, `set`, `link` and `unlink` each make one change, then save
+and compile; `edit` applies a JSON list of ops with one save:
+```json
+[
+  {"op":"add_property","type":"color","name":"Tint","reference":"_Tint","value":"[1,0.5,0.2,1]","as":"tint"},
+  {"op":"add_property","type":"float","name":"Glow","reference":"_Glow","value":"2","as":"glow"},
+  {"op":"add_node","type":"Math/Basic/Multiply","as":"mul"},
+  {"op":"link","from":"$tint","to":"$mul:A"},
+  {"op":"link","from":"$glow","to":"$mul:B"},
+  {"op":"add_block","block":"Emission","as":"emission"},
+  {"op":"link","from":"$mul:Out","to":"$emission:Emission"},
+  {"op":"add_node","type":"Custom Function","as":"fn"},
+  {"op":"set","id":"$fn","setting":"sourceType","value":"String"},
+  {"op":"set","id":"$fn","setting":"functionName","value":"Stripe"},
+  {"op":"add_port","id":"$fn","name":"x","type":"float","value":"in"},
+  {"op":"add_port","id":"$fn","name":"Out","type":"vector3","value":"out"},
+  {"op":"set","id":"$fn","setting":"functionBody","value":"Out = x * float3(1, 0, 0);"}
+]
+```
+A slot is `<node id>:<slot>`, by slot id, display name or shader name. Linking a property (its name or id) to a slot
+adds a property node for it. `set` takes a node's input slot (`slot`), a node's own setting (`setting`: a Custom
+Function's `functionBody`, a texture type, ... as `inspect --id` lists them), or a property's default (no slot).
+Ops: `add_node`, `add_property` (type: float, vector2-4, color, texture2d, texture2darray, texture3d, cubemap,
+boolean, matrix2-4, gradient, samplerstate), `add_block`, `add_port`/`remove_port` (Custom Function ports),
+`remove`, `set`, `link`, `unlink` (every link into `to`, or only the one from `from`), `move`, `rename` (a property's
+name and reference), `expose`. Links are type-checked as the window checks them.
+
+Every edit runs on a copy loaded from the file: an op that fails saves nothing. After saving, each pass of the shader
+is compiled for the current platform, so HLSL errors (a Custom Function's body) come back at once, each reported once
+with the number of passes it appeared in. A command exits 6 when the graph saved but has errors. Edits are refused
+while a Shader Graph window has the graph open, since its own copy would overwrite them; close it or pass
+`--force true` to `edit`.
+
 ## Commands
 All under `unity command --project-path <project>`:
 
@@ -476,6 +528,11 @@ All under `unity command --project-path <project>`:
 | `cliext.vfx create --path <vfx>` | Creates an empty VFX Graph. |
 | `cliext.vfx add` / `remove` / `set` / `link` / `unlink` | One edit, then save and compile. |
 | `cliext.vfx edit --path <vfx> --ops <json> \| --ops-file <path>` | Many edits, one save and compile. |
+| `cliext.shadergraph types [--filter text] [--targets true]` | The nodes by menu path, or the targets and materials. |
+| `cliext.shadergraph inspect --path <graph> [--id node]` | Blocks, nodes, slots, properties and compile errors. |
+| `cliext.shadergraph create --path <graph> --target T [--material M] \| --from <graph>` | Creates a graph. |
+| `cliext.shadergraph add` / `add_property` / `remove` / `set` / `link` / `unlink` | One edit, then save and compile. |
+| `cliext.shadergraph edit --path <graph> --ops-file <path>` | Many edits, one save and compile. |
 
 `cliext.dialogs log` and `cliext.watchdog report` only read files and run off the main thread, so they still answer
 while a dialog is open, as long as no other command is queued ahead of them. When they time out too, read the files.

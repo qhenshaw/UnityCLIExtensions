@@ -200,9 +200,11 @@ namespace UnityCLIExtensions
                 // after the reply has gone, so this exits 0. Wait with Tools~/cliext-wait.ps1, then read
                 // cliext.compile diagnostics. (Holding the reload with LockReloadAssemblies to answer after the compile
                 // was tried: in Unity 6.5 the lock defers the compile itself.)
+                // Until the refresh has run, cliext-wait.ps1 must not call the Editor idle: mark the compile pending.
+                CompileDiagnostics.MarkPending();
                 var started = Stopwatch.StartNew();
-                EditorDeferred.Run(() => AssetDatabase.Refresh(), () => started.Elapsed.TotalSeconds >= RefreshAfterReplySeconds,
-                    timeoutSeconds: 30, onTimeout: () => AssetDatabase.Refresh(), label: "cliext.compile async refresh");
+                EditorDeferred.Run(RefreshForAsync, () => started.Elapsed.TotalSeconds >= RefreshAfterReplySeconds,
+                    timeoutSeconds: 30, onTimeout: RefreshForAsync, label: "cliext.compile async refresh");
                 cmd.Result.Write(new
                 {
                     status = "started",
@@ -230,6 +232,13 @@ namespace UnityCLIExtensions
                 await Task.Yield();
             }
             return WriteCompileResult(cmd, clock, warnings, compiled);
+        }
+
+        private static void RefreshForAsync()
+        {
+            AssetDatabase.Refresh();
+            // Nothing to compile: no compilationFinished will clear the mark.
+            if (!EditorApplication.isCompiling) CompileDiagnostics.ClearPending();
         }
 
         /// <summary>Seconds between answering an --async compile and starting it, so the reply leaves first.</summary>

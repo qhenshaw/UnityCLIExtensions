@@ -28,6 +28,7 @@ $ErrorActionPreference = 'Stop'
 $state = Join-Path (Resolve-Path $Project).Path 'Library\CLIExtensions'
 $heartbeatFile = Join-Path $state 'heartbeat.json'
 $watchdogFile = Join-Path $state 'watchdog-status.json'
+$pendingFile = Join-Path $state 'compile-pending'
 
 function Read-Json([string]$path) {
     if (-not (Test-Path $path)) { return $null }
@@ -77,7 +78,9 @@ while ($clock.Elapsed.TotalSeconds -lt $Timeout) {
         exit 5
     }
 
-    $idle = $hb -and $hb.ageSeconds -lt 3 -and -not $hb.compiling -and -not $hb.updating -and -not $hb.quitting
+    # cliext.compile run --async marks a compile it hasn't started yet; a mark older than 2 minutes is stale.
+    $pending = (Test-Path $pendingFile) -and ((Get-Date).ToUniversalTime() - (Get-Item $pendingFile).LastWriteTimeUtc).TotalSeconds -lt 120
+    $idle = $hb -and $hb.ageSeconds -lt 3 -and -not $hb.compiling -and -not $hb.updating -and -not $hb.quitting -and -not $pending
     if ($idle) { $idleChecks++ } else { $idleChecks = 0 }
     if ($idleChecks -ge $SettleChecks) {
         [ordered]@{ result = 'idle'; waitedSeconds = [math]::Round($clock.Elapsed.TotalSeconds, 1); playMode = $hb.playMode; compileFailed = $hb.compileFailed; pid = $hb.pid } | ConvertTo-Json

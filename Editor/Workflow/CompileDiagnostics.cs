@@ -145,8 +145,22 @@ namespace UnityCLIExtensions
             Save(store);
         }
 
+        /// <summary>The file that says a compile was asked for (cliext.compile run --async) and hasn't finished; cliext-wait.ps1 reads it.</summary>
+        public static string PendingFile => Path.Combine(CliExtPaths.StateDirectory, "compile-pending");
+
+        public static void MarkPending()
+        {
+            try { File.WriteAllText(PendingFile, DateTime.UtcNow.ToString("o")); } catch (IOException) { }
+        }
+
+        public static void ClearPending()
+        {
+            try { if (File.Exists(PendingFile)) File.Delete(PendingFile); } catch (IOException) { }
+        }
+
         private static void OnFinished(object _)
         {
+            ClearPending();
             Store store = Load();
             store.lastCompileFinishedUtc = DateTime.UtcNow.ToString("o");
             Save(store);

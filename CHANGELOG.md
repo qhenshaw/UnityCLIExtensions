@@ -1,6 +1,11 @@
 # Changelog
 All notable changes to Unity CLI Extensions. Versions are git tags: install one with `https://github.com/qhenshaw/UnityCLIExtensions.git#<version>`.
 
+## 0.8.0
+- Added `cliext.shadergraph` for reading and editing Shader Graphs: `types` (nodes by menu path, targets and materials), `inspect` (blocks, nodes with settings and slots, properties, compile errors), `create` (for a target and material, or a copy), `add`, `add_property`, `remove`, `set` (slot values, node settings such as a Custom Function's body, property defaults), `link` / `unlink` (type-checked; a property links through a new property node), and `edit` with ops including `add_block` and Custom Function `add_port` / `remove_port`. Every edit compiles each shader pass and returns HLSL errors and node errors as data. Refuses to edit a graph open in a Shader Graph window. Built only when the Shader Graph package is installed.
+- `cliext.compile run --async true` marks the compile pending until it finishes, and `Tools~/cliext-wait.ps1` waits for that mark: before, the wait could return "idle" in the moment before the compile started.
+- Added `ValueText`, the shared parser and formatter for values given as text.
+
 ## 0.7.0
 - Added `cliext.test run` and `cliext.test result`: test runs that record their own result, so the previous run's status is never mistaken for the new one's, and a filter that matches nothing fails with the closest names instead of passing. Filters by part of the full name, exact name, assembly or category, in Edit or Play Mode; failures come back with their messages. Refuses to start while a scene has unsaved changes. Built when the Test Framework package is installed. `cliext.test affected` and `Tools~/cliext-test.ps1` now use it.
 - Added `cliext.eval run`: runs a C# snippet file through Pipeline's script eval after filling its `{{key}}` placeholders from `--vars`; an unfilled placeholder is an error.
