@@ -48,6 +48,11 @@ namespace UnityCLIExtensions
             EditorGUILayout.PropertyField(so.FindProperty("_watchdogKillAfterHungSeconds"), new GUIContent("Kill When Hung (s)"));
             EditorGUILayout.PropertyField(so.FindProperty("_watchdogIntervalSeconds"), new GUIContent("Check Interval (s)"));
 
+            EditorGUILayout.Space();
+            EditorGUILayout.LabelField("Agent files", EditorStyles.boldLabel);
+            EditorGUILayout.PropertyField(so.FindProperty("_manageAgentFiles"), new GUIContent("Keep Skill and CLAUDE.md Current"));
+            if (GUILayout.Button("Update Agent Files Now", GUILayout.Width(200))) Debug.Log("[CLI Extensions] " + string.Join("; ", AgentSetup.Install(force: true).changes));
+
             bool wasActive = AgentMode.IsActive;
             if (so.ApplyModifiedProperties())
             {

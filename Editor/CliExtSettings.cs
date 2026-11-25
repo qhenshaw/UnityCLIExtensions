@@ -58,6 +58,10 @@ namespace UnityCLIExtensions
         [Tooltip("Seconds between watchdog checks.")]
         [SerializeField] private float _watchdogIntervalSeconds = 2f;
 
+        [Tooltip("When the package is installed or updated, copy its unity-cliext skill into .claude/skills/ and keep a marked " +
+                 "block in the project's CLAUDE.md pointing agents at it. Your other CLAUDE.md content is never touched.")]
+        [SerializeField] private bool _manageAgentFiles = true;
+
         public bool AgentModeSetting { get => _agentMode; set => Set(ref _agentMode, value); }
         public bool AnswerProjectDialogs { get => _answerProjectDialogs; set => Set(ref _answerProjectDialogs, value); }
         public bool SaveScenesBeforePlay { get => _saveScenesBeforePlay; set => Set(ref _saveScenesBeforePlay, value); }
@@ -68,6 +72,7 @@ namespace UnityCLIExtensions
         public bool WatchdogRestartOnCrash { get => _watchdogRestartOnCrash; set => Set(ref _watchdogRestartOnCrash, value); }
         public int WatchdogKillAfterHungSeconds { get => _watchdogKillAfterHungSeconds; set => Set(ref _watchdogKillAfterHungSeconds, Mathf.Max(0, value)); }
         public float WatchdogIntervalSeconds { get => _watchdogIntervalSeconds; set => Set(ref _watchdogIntervalSeconds, Mathf.Clamp(value, 0.5f, 60f)); }
+        public bool ManageAgentFiles { get => _manageAgentFiles; set => Set(ref _manageAgentFiles, value); }
 
         /// <summary>Raised after any setting changes and is saved.</summary>
         public static event Action Changed;

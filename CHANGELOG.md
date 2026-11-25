@@ -1,6 +1,10 @@
 # Changelog
 All notable changes to Unity CLI Extensions. Versions are git tags: install one with `https://github.com/qhenshaw/UnityCLIExtensions.git#<version>`.
 
+## 0.20.0
+- Added the `unity-cliext` Claude Code skill (`Skills~/unity-cliext/SKILL.md`), and its automatic install: when the package loads it copies the skill into `.claude/skills/unity-cliext/` and keeps a marked block in `CLAUDE.md` (created if missing, the rest untouched), writing only what differs from the package version. Also `cliext.setup agent [--force] [--remove]`, a menu item, and a setting to turn it off.
+- `cliext status` reports the package version and the `Tools~` folder.
+
 ## 0.19.0
 Fixes from an end-to-end pass over every command set in a live HDRP project:
 - Watchdog: the "Package Manager" progress window ("Resolving packages...") counts as busy instead of a blocking error, so `cliext-wait.ps1` no longer stops on it; only "Package Manager Error" escalates. Added a rule that answers Addressables' "Enable Build Report" prompt with Cancel.

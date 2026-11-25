@@ -49,6 +49,9 @@ namespace UnityCLIExtensions
                 setupToFix = SetupChecks.RunAll().Where(r => r.status == SetupChecks.FixAvailable || r.status == SetupChecks.Manual)
                     .Select(r => new { r.id, r.status, r.optional }).ToArray(),
                 stateDirectory = CliExtPaths.StateDirectory,
+                // Where the Tools~ scripts are (cliext-wait.ps1, cliext-run.ps1, cliext-test.ps1, cliext-play-capture.ps1, Watchdog/).
+                tools = CliExtPaths.PackageRoot != null ? System.IO.Path.Combine(CliExtPaths.PackageRoot, "Tools~") : null,
+                version = UnityEditor.PackageManager.PackageInfo.FindForAssembly(typeof(CliExtPaths).Assembly)?.version,
             });
             return ExitCode.Success;
         }

@@ -44,6 +44,7 @@ This package works in three layers:
 - [Import settings and presets](#import-settings-and-presets)
 - [Animation import, clips and avatar masks](#animation-import-clips-and-avatar-masks)
 - [Physics, NavMesh and quality settings](#physics-navmesh-and-quality-settings)
+- [Agent files: the skill and CLAUDE.md](#agent-files-the-skill-and-claudemd)
 - [Commands](#commands)
 - [Files](#files)
 - [Blocking dialogs catalog](Documentation~/blocking-dialogs.md)
@@ -756,6 +757,24 @@ Pipeline's `settings.*` commands read and set the basics (gravity, tags and laye
   or `set --platform Android --default Low`.
 - `cliext.quality graphics [--platform Android] [--set "Vulkan;OpenGLES3" | --auto true]`: a platform's graphics
   APIs, the default render pipeline, and each quality level's pipeline override.
+
+## Agent files: the skill and CLAUDE.md
+The package ships a Claude Code skill, `Skills~/unity-cliext/SKILL.md`: when to reach for the Editor, the
+compile-wait-test loop, the rules (no sleep-polling, dialogs, unsaved scenes, ops files) and a map of every `cliext`
+group. Agents find skills in the project's `.claude/skills/`, so the package puts it there itself:
+
+- When the package loads (so on install and on every update), it copies the skill to
+  `.claude/skills/unity-cliext/` and keeps a marked block in the project's `CLAUDE.md` that tells agents to load it
+  (`<!-- BEGIN unity-cliext ... -->` to `<!-- END unity-cliext -->`). `CLAUDE.md` is created if missing; everything
+  outside the block is left as it is.
+- Only what differs from the installed package version is written, so it does nothing on most loads. The installed
+  skill carries a version stamp: a newer package replaces it, while edits made by hand to the current version's copy
+  are kept (`--force true` replaces them).
+- `unity command cliext.setup agent [--force true]` does the same on demand and says what it changed;
+  `--remove true` takes the skill and the block out. Tools > CLI Extensions > Update Agent Files does it from the menu.
+- Turn it off per user in Project Settings > CLI Extensions > Keep Skill and CLAUDE.md Current.
+
+`cliext status` also reports the package `version` and `tools`, the folder of the `Tools~` scripts the skill refers to.
 
 ## Commands
 All under `unity command --project-path <project>`:
