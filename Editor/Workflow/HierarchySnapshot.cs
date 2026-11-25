@@ -95,6 +95,23 @@ namespace UnityCLIExtensions
             return File.Exists(file) ? JsonUtility.FromJson<Snapshot>(File.ReadAllText(file)) : null;
         }
 
+        /// <summary>Deletes the saved snapshot <paramref name="name"/>. Returns false when there is none.</summary>
+        public static bool Delete(string name)
+        {
+            string file = FileFor(name);
+            if (!File.Exists(file)) return false;
+            File.Delete(file);
+            return true;
+        }
+
+        /// <summary>Deletes every saved snapshot. Returns how many.</summary>
+        public static int DeleteAll()
+        {
+            int count = 0;
+            foreach (string file in Directory.EnumerateFiles(Folder, "*.json").ToList()) { File.Delete(file); count++; }
+            return count;
+        }
+
         /// <summary>The saved snapshots.</summary>
         public static IEnumerable<Snapshot> All() =>
             Directory.EnumerateFiles(Folder, "*.json").Select(f =>

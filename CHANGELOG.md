@@ -1,6 +1,15 @@
 # Changelog
 All notable changes to Unity CLI Extensions. Versions are git tags: install one with `https://github.com/qhenshaw/UnityCLIExtensions.git#<version>`.
 
+## 0.5.0
+- `Tools~/cliext-run.ps1` and `Tools~/cliext-wait.ps1` find a blocking dialog without the watchdog running: when its report is missing or stale, they take a watchdog snapshot themselves. Before, a save prompt with no watchdog running showed as `main-thread-busy`, and `cliext-wait.ps1` waited out its timeout.
+- `cliext.playmode set_fast --enabled false` puts back the Enter Play Mode settings the project had before fast Play mode was turned on (`restoredPrevious` in the result), instead of always Unity's default. With fast Play mode off, it changes nothing.
+- Turning agent mode off stops the watchdog that agent mode started. A watchdog started by hand keeps running.
+- `cliext.compile run` and `cliext.edits end` take `--async true`: they answer at once (exit 0) and compile after the reply, so the exit code no longer depends on the domain reload dropping it.
+- `Tools~/cliext-test.ps1` refuses to start while an open scene has unsaved changes (the Test Runner would stop at a save prompt), and reopens the scenes that were open before when a run leaves the Editor in another scene (`restoredScenes`).
+- `cliext.asset uses` leaves out Editor-only scripts, such as the AssetVersion script HDRP attaches to every material; `--include-editor-scripts true` lists them.
+- Added `cliext.diff delete --name n` and `--all true`.
+
 ## 0.4.0
 - Added edit batches: `cliext.edits begin` stops auto-refresh and locks assembly reloads so several files compile once at `cliext.edits end`, which compiles and answers like `cliext.compile run`. A batch that is never ended ends itself after `--expire-after` seconds, and survives domain reloads.
 - Added `cliext.test affected` (changed scripts and .asmdef files mapped to the test assemblies that depend on them, from `--files` or git) and `Tools~/cliext-test.ps1`, which runs them (Edit Mode synchronously, Play Mode asynchronously) and prints one summary. `-All` runs every test assembly.

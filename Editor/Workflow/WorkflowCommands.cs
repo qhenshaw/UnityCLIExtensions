@@ -76,14 +76,16 @@ namespace UnityCLIExtensions
         // cliext.compile
 
         [CliGroupCommand(CompileGroup, "Refresh the AssetDatabase, compile what changed, wait for the compile, and return its errors and warnings with file, line, column and code. " +
-                                       "Fails (exit 6) when there are errors, with them in the result. When the compile succeeds, the domain reload that follows may drop the reply: " +
-                                       "then read the result with cliext.compile diagnostics.",
+                                       "Fails (exit 6) when there are errors, with them in the result. When the compile succeeds, the domain reload that follows may drop the reply " +
+                                       "(the CLI then also exits 6, 'closed the connection'): then read the result with cliext.compile diagnostics. " +
+                                       "--async true answers at once (exit 0) and compiles after the reply: wait with Tools~/cliext-wait.ps1, then read cliext.compile diagnostics.",
             Tags = new[] { "editor", "cliext", "scripts/compile" }, Effect = CommandEffect.Idempotent)]
         internal static Task<ExitCode> Run(
             CommandContext cmd,
             [CliArg("timeout", "Seconds to wait for the compile")] double timeoutInSeconds = 300,
-            [CliArg("warnings", "Include warnings")] bool warnings = true)
-            => CompileAndReport(cmd, timeoutInSeconds, warnings);
+            [CliArg("warnings", "Include warnings")] bool warnings = true,
+            [CliArg("async", "Answer at once and compile after the reply, so the exit code doesn't depend on the domain reload")] bool runAsync = false)
+            => CompileAndReport(cmd, timeoutInSeconds, warnings, runAsync);
 
         // ---------------------------------------------------------------------------------------------------------
         // cliext.edits
@@ -107,10 +109,11 @@ namespace UnityCLIExtensions
         internal static Task<ExitCode> End(
             CommandContext cmd,
             [CliArg("timeout", "Seconds to wait for the compile")] double timeoutInSeconds = 300,
-            [CliArg("warnings", "Include warnings")] bool warnings = true)
+            [CliArg("warnings", "Include warnings")] bool warnings = true,
+            [CliArg("async", "Answer at once and compile after the reply, as cliext.compile run --async does")] bool runAsync = false)
         {
             if (!EditBatch.End()) cmd.Log.Warning("No edit batch was open; compiling anyway.");
-            return CompileAndReport(cmd, timeoutInSeconds, warnings);
+            return CompileAndReport(cmd, timeoutInSeconds, warnings, runAsync);
         }
 
         [CliGroupCommand("cliext.edits", "Whether an edit batch is open, and when it ends by itself.",
@@ -121,7 +124,7 @@ namespace UnityCLIExtensions
             return ExitCode.Success;
         }
 
-        private static async Task<ExitCode> CompileAndReport(CommandContext cmd, double timeoutInSeconds, bool warnings)
+        private static async Task<ExitCode> CompileAndReport(CommandContext cmd, double timeoutInSeconds, bool warnings, bool runAsync)
         {
             if (EditBatch.IsActive)
             {
@@ -138,9 +141,27 @@ namespace UnityCLIExtensions
             double budget = double.IsPositiveInfinity(timeoutInSeconds) ? double.MaxValue : Math.Max(0, timeoutInSeconds - 1);
             string startedBefore = CompileDiagnostics.LastCompile.started;
 
+            if (runAsync)
+            {
+                // Answer first, then refresh: the compile and the domain reload that follows a successful one happen
+                // after the reply has gone, so this exits 0. Wait with Tools~/cliext-wait.ps1, then read
+                // cliext.compile diagnostics. (Holding the reload with LockReloadAssemblies to answer after the compile
+                // was tried: in Unity 6.5 the lock defers the compile itself.)
+                var started = Stopwatch.StartNew();
+                EditorDeferred.Run(() => AssetDatabase.Refresh(), () => started.Elapsed.TotalSeconds >= RefreshAfterReplySeconds,
+                    timeoutSeconds: 30, onTimeout: () => AssetDatabase.Refresh(), label: "cliext.compile async refresh");
+                cmd.Result.Write(new
+                {
+                    status = "started",
+                    next = "Wait with Tools~/cliext-wait.ps1 (it rides out the domain reload), then read cliext.compile diagnostics."
+                });
+                return ExitCode.Success;
+            }
+
             // A compile that succeeds reloads the domain, which drops this request before it can answer. (Resuming
             // inline from compilationFinished was tried: the continuation did not land on the main thread.) Errors stop
-            // the reload, so failures, the case that needs the details, always get their reply.
+            // the reload, so failures, the case that needs the details, always get their reply. Use --async true for
+            // an exit code that doesn't depend on that.
             AssetDatabase.Refresh();
             bool compiled = CompileDiagnostics.LastCompile.started != startedBefore;
             while (EditorApplication.isCompiling || EditorApplication.isUpdating)
@@ -157,6 +178,9 @@ namespace UnityCLIExtensions
             }
             return WriteCompileResult(cmd, clock, warnings, compiled);
         }
+
+        /// <summary>Seconds between answering an --async compile and starting it, so the reply leaves first.</summary>
+        private const double RefreshAfterReplySeconds = 0.5;
 
         private static ExitCode WriteCompileResult(CommandContext cmd, Stopwatch clock, bool warnings, bool compiled)
         {
@@ -197,19 +221,22 @@ namespace UnityCLIExtensions
             Tags = new[] { "editor", "cliext", "editor/playmode" }, Effect = CommandEffect.Idempotent)]
         internal static ExitCode SetFast(
             CommandContext cmd,
-            [CliArg("enabled", "true for fast Play mode, false for Unity's default (reload the domain and scene)")] bool enabled = true)
+            [CliArg("enabled", "true for fast Play mode, false to put back the settings from before it was turned on (Unity's default when there are none)")] bool enabled = true)
         {
             if (EditorApplication.isPlayingOrWillChangePlaymode)
             {
                 cmd.Log.Error("Stop Play mode first: the setting applies on the next entry.");
                 return ExitCode.Failed;
             }
-            FastPlayMode.SetEnabled(enabled);
+            bool restored = FastPlayMode.SetEnabled(enabled);
             var unreset = enabled ? StaticStateScanner.Scan().Where(f => !f.hasResetHook).ToList() : null;
             cmd.Result.Write(new
             {
                 fastPlayMode = FastPlayMode.IsEnabled,
+                enterPlayModeOptionsEnabled = EditorSettings.enterPlayModeOptionsEnabled,
                 options = EditorSettings.enterPlayModeOptions.ToString(),
+                // Turning it off: true when the project's settings from before set_fast were put back, false for Unity's default.
+                restoredPrevious = enabled ? (bool?)null : restored,
                 staticsWithoutReset = unreset?.Count,
                 firstStaticsWithoutReset = unreset?.Take(10).Select(f => $"{f.type}.{f.member}").ToArray()
             });

@@ -7,6 +7,7 @@ A `unity command` that hangs usually waits on something in the Editor: a modal d
 a hung main thread. This runs the command, and if it hasn't finished by -Timeout seconds, stops waiting for it (the
 Editor may still finish the work) and reports why from the files Unity CLI Extensions writes: the watchdog's report
 (dialogs, a hung window) and the heartbeat (compiling, importing, Play mode, how long since the main loop ticked).
+When no watchdog is running, it takes one watchdog snapshot (cliext-watchdog.ps1 -Status) itself.
 
 -Command is what follows `unity command --project-path <Project>`, as one string, quoted the way you would type it
 in a terminal. (One string, because `powershell -File` would bind a `--timeout` inside it to this script's own
@@ -63,11 +64,22 @@ $hb = Read-Json (Join-Path $state 'heartbeat.json')
 $wd = Read-Json (Join-Path $state 'watchdog-status.json')
 if ($wd -and $wd.ageSeconds -gt 15) { $wd = $null }   # a stale report says nothing about now
 
+# No watchdog running (or a stale report): take one snapshot now, so a dialog is found without it.
+if (-not $wd) {
+    $watchdog = Join-Path $PSScriptRoot 'Watchdog\cliext-watchdog.ps1'
+    if (Test-Path $watchdog) {
+        try {
+            $snapshot = & powershell -NoProfile -ExecutionPolicy Bypass -File $watchdog -Project $projectPath -Status 2>$null | Out-String
+            if ($snapshot.Trim()) { $wd = $snapshot | ConvertFrom-Json; $wd | Add-Member -NotePropertyName ageSeconds -NotePropertyValue 0 -Force }
+        } catch { $wd = $null }
+    }
+}
+
 $blocking = @()
 if ($wd) { $blocking = @($wd.dialogs | Where-Object { $_.action -ne 'wait' }) }
 
 $reason = 'unknown'
-$detail = 'Nothing in Library/CLIExtensions explains it. Is the watchdog running (unity command cliext.watchdog start)?'
+$detail = 'Nothing in Library/CLIExtensions or a watchdog snapshot explains it.'
 if ($blocking.Count -gt 0) {
     $d = $blocking[0]
     $reason = 'blocked-by-dialog'

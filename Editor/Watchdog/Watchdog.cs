@@ -84,6 +84,7 @@ namespace UnityCLIExtensions
         /// <summary>Asks the watchdog to exit (it checks between rounds), and ends it if it is still running.</summary>
         public static string Stop()
         {
+            SessionState.EraseBool(StartedByAgentModeKey);
             int pid = RunningPid;
             if (pid == 0) return "The watchdog is not running.";
             File.WriteAllText(CliExtPaths.WatchdogStopFile, DateTime.UtcNow.ToString("o"));
@@ -118,9 +119,20 @@ namespace UnityCLIExtensions
             if (AgentMode.IsActive && CliExtSettings.instance.StartWatchdog && !IsRunning)
             {
                 string result = Start();
+                if (IsSupported) SessionState.SetBool(StartedByAgentModeKey, true);
                 Debug.Log($"[CLI Extensions] Agent mode ({AgentMode.Reason}): {result}");
             }
+            else if (!AgentMode.IsActive && SessionState.GetBool(StartedByAgentModeKey, false))
+            {
+                // Agent mode started this watchdog, and agent mode is off now: stop it. One started by hand
+                // (cliext.watchdog start, the settings page) is left running.
+                SessionState.EraseBool(StartedByAgentModeKey);
+                if (IsRunning) Debug.Log($"[CLI Extensions] Agent mode is off: {Stop()}");
+            }
         }
+
+        // Survives domain reloads, ends with the Editor: whether the running watchdog was started by agent mode.
+        private const string StartedByAgentModeKey = "UnityCLIExtensions.WatchdogStartedByAgentMode";
 
         private static void OnSettingsChanged()
         {

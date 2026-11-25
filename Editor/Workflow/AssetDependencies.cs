@@ -1,7 +1,9 @@
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Linq;
 using UnityEditor;
+using UnityEditor.Compilation;
 
 namespace UnityCLIExtensions
 {
@@ -50,15 +52,34 @@ namespace UnityCLIExtensions
             return string.IsNullOrEmpty(AssetDatabase.AssetPathToGUID(s, AssetPathToGUIDOptions.OnlyExistingAssets)) ? null : s;
         }
 
-        /// <summary>The assets <paramref name="path"/> uses (directly, or through others with <paramref name="recursive"/>), without itself.</summary>
-        public static List<AssetRef> Uses(string path, bool recursive)
+        /// <summary>
+        /// The assets <paramref name="path"/> uses (directly, or through others with <paramref name="recursive"/>), without
+        /// itself. Editor-only scripts are left out unless <paramref name="includeEditorScripts"/>: they are tooling
+        /// metadata, such as the AssetVersion script HDRP attaches to every material, not something the asset needs at runtime.
+        /// </summary>
+        public static List<AssetRef> Uses(string path, bool recursive, bool includeEditorScripts = false)
         {
             return AssetDatabase.GetDependencies(path, recursive)
                 .Where(p => p != path)
+                .Where(p => includeEditorScripts || !IsEditorOnlyScript(p))
                 .OrderBy(p => p)
                 .Select(AssetRef.Of)
                 .ToList();
         }
+
+        /// <summary>True for a C# script that compiles only into Editor assemblies (an Editor folder or an Editor-only .asmdef).</summary>
+        public static bool IsEditorOnlyScript(string path)
+        {
+            if (!path.EndsWith(".cs", StringComparison.OrdinalIgnoreCase)) return false;
+            string assembly = CompilationPipeline.GetAssemblyNameFromScriptPath(path);
+            if (string.IsNullOrEmpty(assembly)) return false;
+            assembly = Path.GetFileNameWithoutExtension(assembly);
+            s_PlayerAssemblies ??= new HashSet<string>(CompilationPipeline.GetAssemblies(AssembliesType.PlayerWithoutTestAssemblies).Select(a => a.name), StringComparer.Ordinal);
+            return !s_PlayerAssemblies.Contains(assembly);
+        }
+
+        // Dropped with the domain on every recompile, which is when the assembly list can change.
+        private static HashSet<string> s_PlayerAssemblies;
 
         /// <summary>
         /// The project assets that use <paramref name="path"/>: directly, or through others with <paramref name="recursive"/>.

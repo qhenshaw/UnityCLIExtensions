@@ -78,11 +78,12 @@ namespace UnityCLIExtensions
         internal static ExitCode Uses(
             CommandContext cmd,
             [CliArg("path", "Asset path or GUID", Required = true)] string path,
-            [CliArg("recursive", "Include what its dependencies use")] bool recursive = false)
+            [CliArg("recursive", "Include what its dependencies use")] bool recursive = false,
+            [CliArg("include-editor-scripts", "Also list Editor-only scripts, such as the version-tracking script HDRP adds to every material")] bool includeEditorScripts = false)
         {
             string resolved = AssetDependencies.Resolve(path);
             if (resolved == null) { cmd.Log.Error($"No asset at '{path}'."); return ExitCode.NotFound; }
-            foreach (var asset in AssetDependencies.Uses(resolved, recursive)) cmd.Result.WriteRecord(asset);
+            foreach (var asset in AssetDependencies.Uses(resolved, recursive, includeEditorScripts)) cmd.Result.WriteRecord(asset);
             return ExitCode.Success;
         }
 
@@ -132,6 +133,24 @@ namespace UnityCLIExtensions
             try { foreach (var change in HierarchySnapshot.CompareWithCurrent(name, out before, out after)) cmd.Result.WriteRecord(change); }
             catch (ArgumentException e) { cmd.Log.Error(e.Message); return ExitCode.NotFound; }
             if (update) HierarchySnapshot.Take(before.assetPath, before.name);
+            return ExitCode.Success;
+        }
+
+        [CliGroupCommand(DiffGroup, "Delete a saved snapshot by name, or every snapshot with --all.",
+            Tags = new[] { "cliext", "scenes", "prefabs" }, Effect = CommandEffect.Idempotent)]
+        internal static ExitCode Delete(
+            CommandContext cmd,
+            [CliArg("name", "The snapshot's name (its path, unless one was given)")] string name = "",
+            [CliArg("all", "Delete every snapshot")] bool all = false)
+        {
+            if (all)
+            {
+                cmd.Result.Write(new { deleted = HierarchySnapshot.DeleteAll() });
+                return ExitCode.Success;
+            }
+            if (string.IsNullOrWhiteSpace(name)) { cmd.Log.Error("Pass --name, or --all true."); return ExitCode.Failed; }
+            if (!HierarchySnapshot.Delete(name)) { cmd.Log.Error($"No snapshot named '{name}'. See cliext.diff list."); return ExitCode.NotFound; }
+            cmd.Result.Write(new { deleted = 1, name });
             return ExitCode.Success;
         }
 

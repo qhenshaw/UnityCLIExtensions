@@ -10,8 +10,12 @@ Mode reloads the domain, which a synchronous request would not survive). Prints 
 The change comes from -Files, or from git: uncommitted changes against -Since (default HEAD) plus untracked files.
 -All runs every test assembly.
 
+It refuses to start while an open scene has unsaved changes (the Test Runner would stop at a save prompt), and when
+a run leaves the Editor in another scene (a run that timed out or was cancelled), it reopens the scenes that were open
+before (`restoredScenes`).
+
 Exit codes: 0 every run passed (or nothing was affected), 6 a test failed or a run errored, 1 the Editor couldn't be
-asked.
+asked or a scene has unsaved changes.
 
 .EXAMPLE
 powershell -NoProfile -ExecutionPolicy Bypass -File cliext-test.ps1 -Project E:/Games/MyGame
@@ -56,6 +60,27 @@ $jsonStart = $ask.Output.IndexOf('{')
 $plan = $ask.Output.Substring($jsonStart) | ConvertFrom-Json
 if ($plan.result) { $plan = $plan.result }   # tolerate an envelope
 
+function Get-OpenScenes {
+    $r = Invoke-Unity @('scene', 'list_open')
+    if ($r.ExitCode -ne 0) { return $null }
+    return @($r.Output -split "`n" | Where-Object { $_.TrimStart().StartsWith('{') } | ForEach-Object { try { $_ | ConvertFrom-Json } catch { } })
+}
+
+$scenesBefore = $null
+if (@($plan.testAssemblies).Count -gt 0) {
+    $scenesBefore = Get-OpenScenes
+    # The Test Runner asks to save modified scenes in a modal dialog, which blocks the run until someone answers.
+    $dirty = @($scenesBefore | Where-Object { $_.isDirty })
+    if ($dirty.Count -gt 0) {
+        [ordered]@{
+            result = 'error'
+            detail = "Open scene(s) have unsaved changes: $(@($dirty | ForEach-Object { if ($_.path) { $_.path } else { 'Untitled' } }) -join ', '). The Test Runner would stop at a save prompt. Save them (unity command cliext.scene save_open) or discard them, then run again."
+            changedFiles = $plan.changedFiles
+        } | ConvertTo-Json -Depth 4
+        exit 1
+    }
+}
+
 $runs = @()
 $failed = $false
 foreach ($t in @($plan.testAssemblies)) {
@@ -83,12 +108,32 @@ foreach ($t in @($plan.testAssemblies)) {
     $runs += $run
 }
 
+# A run that times out or is cancelled can leave the Editor in the Test Runner's Untitled scene. Put back the scenes
+# that were open before.
+$restoredScenes = $null
+$saved = @($scenesBefore | Where-Object { $_.path })
+if ($saved.Count -gt 0) {
+    $now = Get-OpenScenes
+    $nowPaths = @($now | Where-Object { $_.path } | ForEach-Object { $_.path })
+    $missing = @($saved | Where-Object { $nowPaths -notcontains $_.path })
+    if ($now -and $missing.Count -gt 0 -and -not @($now | Where-Object { $_.isDirty })) {
+        $active = @($saved | Where-Object { $_.isActive } | Select-Object -First 1)
+        $first = $(if ($active) { $active[0] } else { $saved[0] })
+        $restoredScenes = @()
+        if ((Invoke-Unity @('scene', 'open', '--path', $first.path)).ExitCode -eq 0) { $restoredScenes += $first.path }
+        foreach ($s in $saved | Where-Object { $_.path -ne $first.path }) {
+            if ((Invoke-Unity @('scene', 'open', '--path', $s.path, '--additive', 'true')).ExitCode -eq 0) { $restoredScenes += $s.path }
+        }
+    }
+}
+
 [ordered]@{
     result = $(if ($failed) { 'failed' } elseif ($runs.Count -eq 0) { 'nothing-affected' } else { 'passed' })
     changedFiles = $plan.changedFiles
     changedAssemblies = $plan.changedAssemblies
     otherChanges = $plan.otherChanges
     runs = $runs
+    restoredScenes = $restoredScenes
 } | ConvertTo-Json -Depth 6
 if ($failed) { exit 6 }
 exit 0

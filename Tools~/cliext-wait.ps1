@@ -42,6 +42,10 @@ function Read-Json([string]$path) {
     return $null
 }
 
+$watchdogScript = Join-Path $PSScriptRoot 'Watchdog\cliext-watchdog.ps1'
+$projectPath = (Resolve-Path $Project).Path.TrimEnd('\')
+$lastSnapshot = $null
+
 $clock = [Diagnostics.Stopwatch]::StartNew()
 $idleChecks = 0
 $sawHeartbeat = $false
@@ -50,6 +54,16 @@ while ($clock.Elapsed.TotalSeconds -lt $Timeout) {
     if ($hb) { $sawHeartbeat = $true }
 
     $wd = Read-Json $watchdogFile
+    # No watchdog running and the main loop has stopped ticking: a dialog may hold it. Take a watchdog snapshot
+    # ourselves, at most every 5 s, so a dialog is found without the watchdog.
+    if ((-not $wd -or $wd.ageSeconds -ge 10) -and $hb -and $hb.ageSeconds -gt 3 -and (Test-Path $watchdogScript) -and
+        (-not $lastSnapshot -or $lastSnapshot.Elapsed.TotalSeconds -ge 5)) {
+        $lastSnapshot = [Diagnostics.Stopwatch]::StartNew()
+        try {
+            $snapshot = & powershell -NoProfile -ExecutionPolicy Bypass -File $watchdogScript -Project $projectPath -Status 2>$null | Out-String
+            if ($snapshot.Trim()) { $wd = $snapshot | ConvertFrom-Json; $wd | Add-Member -NotePropertyName ageSeconds -NotePropertyValue 0 -Force }
+        } catch { }
+    }
     # A progress window ("Reloading Domain", "Compiling...") is matched by the watchdog's "wait" rule: keep waiting.
     $blocking = @()
     if ($wd -and $wd.ageSeconds -lt 10) { $blocking = @($wd.dialogs | Where-Object { $_.action -ne 'wait' }) }

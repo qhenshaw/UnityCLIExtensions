@@ -137,6 +137,9 @@ scene save prompt and interactive `ImportPackage` in Assets/ and in embedded and
 `Tools~/Watchdog/cliext-watchdog.ps1` runs outside the Editor, so it keeps working while the Editor's main thread is
 blocked and after a crash. In agent mode the Editor starts it (detached, through WMI, so it isn't in the Editor's
 process tree); you can also start it with Tools > CLI Extensions > Start Watchdog or `cliext.watchdog start`.
+Turning agent mode off stops a watchdog that agent mode started; one started by hand keeps running.
+`cliext-run.ps1` and `cliext-wait.ps1` don't need it running: when its report is missing or stale, they take one
+snapshot (`cliext-watchdog.ps1 -Status`) themselves, so a dialog is still found.
 
 Every couple of seconds it:
 - finds the Editor's top-level windows with Win32 and reads each dialog's title, message (the `Edit` control's text),
@@ -216,6 +219,10 @@ compiles what changed and waits for it. With errors it fails (exit 6) and return
 ```
 A compile that succeeds reloads the domain, so its reply is usually dropped ("the Editor closed the connection").
 That means it compiled: wait with `cliext-wait.ps1`, then read `cliext.compile diagnostics` for any warnings.
+The CLI exits 6 for a dropped reply, the same code as a compile error. For an exit code that doesn't depend on the
+reload, pass `--async true` (also on `cliext.edits end`): it answers `{"status":"started"}` with exit 0 and compiles
+after the reply; then wait with `cliext-wait.ps1` and read `cliext.compile diagnostics`. (Holding the reload with
+`LockReloadAssemblies` until the reply has gone doesn't work: in Unity 6.5 the lock defers the compile too.)
 `cliext.compile diagnostics` lists the standing errors and warnings at any time, each assembly's from its last
 compile. They are kept in `Library/CLIExtensions/compile.json`, so they survive reloads, and they start being
 recorded with the first compile after the package is installed.
@@ -230,7 +237,9 @@ a method like this, or keep domain reload on:
 [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.SubsystemRegistration)]
 private static void ResetStatics() { Score = 0; Instance = null; OnScore = null; }
 ```
-`--enabled false` puts Unity's default back. The `enter-play-mode-options` setup check does the same as `set_fast`
+`--enabled false` puts back the Enter Play Mode settings the project had before `set_fast` turned it on (kept in
+`Library/CLIExtensions/playmode-before-fast.json`; `restoredPrevious` says whether it did), or Unity's default when
+none were kept. When fast Play mode isn't on, `--enabled false` changes nothing. The `enter-play-mode-options` setup check does the same as `set_fast`
 and reports the count too. Readonly fields are not listed; their contents can still change, so check readonly
 collections by hand.
 
@@ -261,7 +270,11 @@ powershell -NoProfile -ExecutionPolicy Bypass -File <package>/Tools~/cliext-test
 ```
 It runs Edit Mode assemblies with `test run` and Play Mode ones with `--async-tests`, polling `test status`, and prints
 one summary with passed, failed and skipped counts per assembly. Exit 0 when everything passed, 6 when something
-failed. Pipeline's assembly filter is a partial match, so `My.Tests` also runs `My.Tests.Slow`.
+failed. Pipeline's assembly filter is a partial match, so `My.Tests` also runs `My.Tests.Slow`. It refuses to start
+(exit 1) while an open scene has unsaved changes, because the Test Runner would stop at a save prompt until someone
+answers it; save them with `cliext.scene save_open` or discard them first. When a run leaves the Editor in another
+scene (one that timed out or was cancelled can leave it in the Test Runner's Untitled scene), it reopens the scenes
+that were open before and lists them in `restoredScenes`.
 
 **A deadline for any command.** A hung `unity command` usually waits on the Editor. `cliext-run.ps1` gives it a
 deadline, and when it passes, says what the Editor was doing:
@@ -300,7 +313,10 @@ or hierarchy paths. An open scene is read as it is in the Editor, unsaved change
 opened additively and closed again; a prefab is read from its asset. Objects are matched by their file ID, then by
 hierarchy path, so a rename or reparent shows as `object-renamed` rather than a removal and an addition.
 `--update true` replaces the snapshot with the current state; `cliext.diff list` lists the snapshots, kept in
-`Library/CLIExtensions/snapshots/`.
+`Library/CLIExtensions/snapshots/`, and `cliext.diff delete --name n` (or `--all true`) deletes them.
+
+`cliext.asset uses` leaves out Editor-only scripts, such as the version-tracking script HDRP attaches to every
+material; `--include-editor-scripts true` lists them too.
 
 ## Commands
 All under `unity command --project-path <project>`:
@@ -319,17 +335,18 @@ All under `unity command --project-path <project>`:
 | `cliext.package import --path <file.unitypackage>` | Imports a .unitypackage without the Import dialog. |
 | `cliext.scene save_open` | Saves every open scene that has unsaved changes and a file. |
 | `cliext.wait idle [--refresh true] [--timeout 120] [--settle-frames 3]` | Waits until the Editor is idle. |
-| `cliext.compile run [--warnings true] [--timeout 300]` | Refreshes, compiles, and returns structured errors and warnings. |
+| `cliext.compile run [--warnings true] [--timeout 300] [--async true]` | Refreshes, compiles, and returns structured errors and warnings. `--async true` answers at once and compiles after. |
 | `cliext.compile diagnostics [--warnings true]` | The standing errors and warnings, one record each. |
 | `cliext.playmode set_fast --enabled true\|false` | Turns fast Play mode (no domain or scene reload) on or off. |
 | `cliext.playmode check_statics [--include-reset true]` | Static state that would survive between Play sessions without a domain reload. |
 | `cliext.edits begin [--expire-after 300]` / `end` / `status` | An edit batch: no import or reload until `end`, which compiles once. |
 | `cliext.test affected [--files a,b] [--since HEAD] [--all true]` | The test assemblies a change affects, with the commands that run them. |
-| `cliext.asset uses --path <asset> [--recursive true]` | What an asset references. |
+| `cliext.asset uses --path <asset> [--recursive true] [--include-editor-scripts true]` | What an asset references. |
 | `cliext.asset used_by --path <asset> [--recursive true] [--include-packages true]` | What references an asset. |
 | `cliext.diff snapshot --path <scene or prefab> [--name n]` | Saves a snapshot. |
 | `cliext.diff compare --name n [--update true]` | The changes since the snapshot. |
 | `cliext.diff list` | The saved snapshots. |
+| `cliext.diff delete --name n` / `--all true` | Deletes a snapshot, or all of them. |
 
 `cliext.dialogs log` and `cliext.watchdog report` only read files and run off the main thread, so they still answer
 while a dialog is open, as long as no other command is queued ahead of them. When they time out too, read the files.
