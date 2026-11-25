@@ -1,0 +1,28 @@
+{
+    "name": "UnityCLIExtensions.Cinemachine",
+    "rootNamespace": "UnityCLIExtensions.Cinemachine",
+    "references": [
+        "Unity.Pipeline.Attributes",
+        "UnityCLIExtensions.Editor",
+        "Unity.Cinemachine"
+    ],
+    "includePlatforms": [
+        "Editor"
+    ],
+    "excludePlatforms": [],
+    "allowUnsafeCode": false,
+    "overrideReferences": false,
+    "precompiledReferences": [],
+    "autoReferenced": false,
+    "defineConstraints": [
+        "CLIEXT_CINEMACHINE_3"
+    ],
+    "versionDefines": [
+        {
+            "name": "com.unity.cinemachine",
+            "expression": "3.0.0",
+            "define": "CLIEXT_CINEMACHINE_3"
+        }
+    ],
+    "noEngineReferences": false
+}

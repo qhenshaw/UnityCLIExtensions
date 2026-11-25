@@ -36,6 +36,7 @@ This package works in three layers:
 - [Editing Shader Graphs](#editing-shader-graphs)
 - [Input actions and simulated input](#input-actions-and-simulated-input)
 - [Animator controllers](#animator-controllers)
+- [Cinemachine](#cinemachine)
 - [Commands](#commands)
 - [Files](#files)
 - [Blocking dialogs catalog](Documentation~/blocking-dialogs.md)
@@ -570,6 +571,21 @@ Pipeline's `animation.animator` commands create controllers and add layers, para
   resets it); `--state "Base Layer.Run"` cross-fades to a state. The game's own scripts may set the same parameter
   again on the next frame.
 
+## Cinemachine
+With Cinemachine 3 in the project, `cliext.cinemachine` reads and changes the cameras in the open scenes:
+
+- `list`: every CinemachineCamera (priority, follow and look-at targets, field of view, rig components, enabled, and
+  in Play mode whether it is live) and every brain (default blend, Custom Blends asset, the live camera, and the blend
+  in progress with its weight, time and duration).
+- `create --name Overhead --rig follow|orbital|thirdperson|lookat|fixed [--follow Player] [--lookat Boss]
+  [--priority 10] [--fov 50] [--position "[0,15,-10]"]`: a camera with that rig's components; a CinemachineBrain is
+  added to the main Camera when there is none. In Play mode the camera lasts until Play mode ends.
+- `set --camera Overhead [--priority 20] [--follow Player|none] [--lookat ...] [--fov 50] [--enabled false]`.
+- `blend --style EaseInOut --time 1`: the brain's default blend. With `--from A --to B` (either left out for any
+  camera), a custom blend in the brain's Custom Blends asset, created at `--asset <path>` when it has none.
+
+Edits in Edit mode are undoable and mark the scene dirty; in Play mode they last until Play mode ends.
+
 ## Commands
 All under `unity command --project-path <project>`:
 
@@ -619,6 +635,7 @@ All under `unity command --project-path <project>`:
 | `cliext.input record_start` / `record_stop` / `replay` / `replay_status` | Record and replay input. |
 | `cliext.animator inspect` / `validate` / `edit --path <controller>` | Read, check and edit an AnimatorController. |
 | `cliext.animator live` / `drive --object <GameObject>` | An Animator's live state, and driving it (Play mode). |
+| `cliext.cinemachine list` / `create` / `set` / `blend` | Cinemachine cameras, the live camera and blends. |
 
 `cliext.dialogs log` and `cliext.watchdog report` only read files and run off the main thread, so they still answer
 while a dialog is open, as long as no other command is queued ahead of them. When they time out too, read the files.

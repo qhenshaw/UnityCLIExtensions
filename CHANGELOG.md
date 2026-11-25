@@ -1,6 +1,9 @@
 # Changelog
 All notable changes to Unity CLI Extensions. Versions are git tags: install one with `https://github.com/qhenshaw/UnityCLIExtensions.git#<version>`.
 
+## 0.11.0
+- Added `cliext.cinemachine` (Cinemachine 3): `list` (cameras with priority, targets, lens and rig, brains with the live camera and the blend in progress), `create` (a camera with a follow, orbital, third-person, look-at or fixed rig, adding a brain when needed), `set` (priority, targets, field of view, enabled) and `blend` (default blend, or custom blends between cameras).
+
 ## 0.10.0
 - Added `cliext.animator`, for what Pipeline's animation.animator commands leave out: `inspect` (blend trees, transition settings, layers, sub-state machines), `validate` (unreachable states, transitions that can never fire, conditions and blend trees on missing or mistyped parameters, unused parameters), `edit` (remove and rename states, state and transition settings, conditions, parameters, layers, blend trees, sub-state machines), and in Play mode `live` (current states, transitions and parameter values) and `drive` (set parameters, cross-fade to a state).
 
