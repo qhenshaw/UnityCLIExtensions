@@ -42,6 +42,7 @@ This package works in three layers:
 - [Splines](#splines)
 - [Addressables](#addressables)
 - [Import settings and presets](#import-settings-and-presets)
+- [Animation import, clips and avatar masks](#animation-import-clips-and-avatar-masks)
 - [Commands](#commands)
 - [Files](#files)
 - [Blocking dialogs catalog](Documentation~/blocking-dialogs.md)
@@ -708,6 +709,28 @@ platform override. Each changed asset comes back with `name: old -> new`.
   differing setting (`m_MaxTextureSize: is 8192, preset 512`). Nothing is changed; exit 6 when anything breaks a
   preset.
 
+## Animation import, clips and avatar masks
+`cliext.anim` covers what Pipeline's `animation.clip` commands (whole curves on .anim clips) leave out:
+
+- `takes --path Hero@run.fbx`: the model's rig type and avatar, the takes in the file with their frame ranges, and
+  the clips it imports with loop, root motion (baked or not, original or not, per rotation, height and XZ), mirror,
+  mask and events.
+- `clips --path Hero@run.fbx --ops-file ops.json`: `add_clip` (name, take, first, last frames), `set_clip` (`set:
+  "loopTime=true;loopPose=true;lockRootRotation=true;keepOriginalOrientation=true;lockRootHeightY=true"`, first,
+  last), `remove_clip`, `set_events` (`"0.25:Footstep:Left;0.75:Footstep:Right"`, normalized times), `set_mask`
+  (an AvatarMask, or `none`); reimports once. An op that fails saves nothing.
+- `clip --path Bounce.anim [--keys true]`: length, frame rate, loop settings, each curve with its key count (or
+  keys), sprite curves and events; a model's clip as `Hero@run.fbx@run`.
+- `edit_clip --path Bounce.anim --ops-file ops.json`: `set_key` (path, type, property, time, value, tangent
+  `auto|linear|constant|free`; replaces a key at that time), `remove_key`, `add_event` (seconds, function, parameter),
+  `remove_event`, `set_settings` (`loopTime`, `loopBlend`, `cycleOffset`, `mirror`, ...).
+- `mask --path Upper.mask [--humanoid "LeftLeg=false;RightLeg=false"] [--from Hero.fbx] [--transforms
+  "Hips/LeftUpLeg/*=false"]`: creates or changes an AvatarMask; `--from` lists a model's transforms in it.
+- `check --model Hero.prefab --clips "Hero.controller;Assets/Anims/Extra.fbx"`: whether the clips fit the model:
+  humanoid clips on a model without a humanoid avatar, generic clips on a humanoid, an invalid avatar, animated paths
+  the model doesn't have, curves for components it doesn't have (a SpriteRenderer clip on a 3D model), legacy clips.
+  Exit 6 on a mismatch.
+
 ## Commands
 All under `unity command --project-path <project>`:
 
@@ -765,6 +788,9 @@ All under `unity command --project-path <project>`:
 | `cliext.addressables status` / `init` / `entries` / `edit` / `build` / `analyze` | Addressables groups, entries, builds and Analyze. |
 | `cliext.import batch --folder <f> --set "k=v;..."` | Import settings across many assets. |
 | `cliext.presets list` / `create` / `set_default` / `apply` / `audit` | Default presets per folder, and the assets that break them. |
+| `cliext.anim takes` / `clips --path <model>` | A model's takes and imported clips (loop, root motion, masks, events). |
+| `cliext.anim clip` / `edit_clip --path <anim>` | Keys, events and settings on .anim clips. |
+| `cliext.anim mask` / `check` | Avatar masks, and whether clips fit a model. |
 
 `cliext.dialogs log` and `cliext.watchdog report` only read files and run off the main thread, so they still answer
 while a dialog is open, as long as no other command is queued ahead of them. When they time out too, read the files.

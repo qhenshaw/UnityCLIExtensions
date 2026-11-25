@@ -124,12 +124,16 @@ namespace UnityCLIExtensions.Animation
                 if (eq <= 0) throw new ArgumentException($"'{pair}' isn't name=value.");
                 string name = pair.Substring(0, eq).Trim(), text = pair.Substring(eq + 1).Trim();
                 var prop = type.GetProperties().FirstOrDefault(p => p.CanWrite && string.Equals(p.Name, name, StringComparison.OrdinalIgnoreCase));
-                if (prop == null) throw new ArgumentException($"{type.Name} has no settable '{name}'. It has: {string.Join(", ", type.GetProperties().Where(p => p.CanWrite && IsSimple(p.PropertyType)).Select(p => p.Name))}");
-                object v = prop.PropertyType == typeof(Motion) ? LoadMotion(text)
-                         : prop.PropertyType == typeof(AvatarMask) ? (object)(text == "" || text == "null" ? null : AssetDatabase.LoadAssetAtPath<AvatarMask>(text) ?? throw new ArgumentException($"No AvatarMask at '{text}'."))
-                         : ValueText.Parse(text, prop.PropertyType);
-                prop.SetValue(target, v);
-                done.Add(prop.Name);
+                // Structs such as AnimationClipSettings expose fields instead.
+                var field = prop == null ? type.GetFields().FirstOrDefault(f => !f.IsInitOnly && string.Equals(f.Name, name, StringComparison.OrdinalIgnoreCase)) : null;
+                if (prop == null && field == null)
+                    throw new ArgumentException($"{type.Name} has no settable '{name}'. It has: {string.Join(", ", type.GetProperties().Where(p => p.CanWrite && IsSimple(p.PropertyType)).Select(p => p.Name).Concat(type.GetFields().Where(f => IsSimple(f.FieldType)).Select(f => f.Name)))}");
+                Type valueType = prop != null ? prop.PropertyType : field.FieldType;
+                object v = valueType == typeof(Motion) ? LoadMotion(text)
+                         : valueType == typeof(AvatarMask) ? (object)(text == "" || text == "null" ? null : AssetDatabase.LoadAssetAtPath<AvatarMask>(text) ?? throw new ArgumentException($"No AvatarMask at '{text}'."))
+                         : ValueText.Parse(text, valueType);
+                if (prop != null) prop.SetValue(target, v); else field.SetValue(target, v);
+                done.Add(prop != null ? prop.Name : field.Name);
             }
             return done;
         }

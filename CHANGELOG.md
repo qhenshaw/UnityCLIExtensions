@@ -1,6 +1,9 @@
 # Changelog
 All notable changes to Unity CLI Extensions. Versions are git tags: install one with `https://github.com/qhenshaw/UnityCLIExtensions.git#<version>`.
 
+## 0.17.0
+- Added `cliext.anim`: `takes` and `clips` for a model's animation import (takes, clip ranges, loop, root motion, mirror, masks, events), `clip` and `edit_clip` for keys, events and settings on .anim clips, `mask` for avatar masks (body parts and transforms), and `check`, which says whether clips fit a model (humanoid and generic mismatches, invalid avatars, missing paths and components, legacy clips).
+
 ## 0.16.0
 - Added `cliext.import batch`: import settings across every matching asset in a folder (by type and file name), texture platform overrides, only where they differ, with a dry run.
 - Added `cliext.presets`: `list`, `create` (from an asset's importer), `set_default` (per folder or any Preset Manager filter), `apply`, and `audit`, which lists every asset that breaks the default preset that applies to it, setting by setting.
