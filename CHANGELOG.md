@@ -1,6 +1,10 @@
 # Changelog
 All notable changes to Unity CLI Extensions. Versions are git tags: install one with `https://github.com/qhenshaw/UnityCLIExtensions.git#<version>`.
 
+## 0.21.0
+- Unity's "Missing signature" dialog, which stops every import of an unsigned .unitypackage on Unity 6.3 and later, is answered with Import Anyway (or Reimport Anyway) at all times, with or without agent mode. `MissingSignatureAnswer` presses the dialog's own UI Toolkit button from `EditorWindow.windowFocusChanged` as it opens, without moving the mouse, and writes each answer to the dialog journal and the Console. The trust dialogs for invalid or untrusted signatures are left alone. Verified on 6000.6.6f1, with the Editor in the background.
+- Added the dialog to the blocking dialogs catalog.
+
 ## 0.20.1
 - `cliext.vfx` compiles with VFX Graph 17.6, which removed `VisualEffectResource.GetOrCreateGraph`: a version define (`CLIEXT_VFX_GRAPH_17_6_OR_NEWER`) switches to `GetGraph`, then `CreateGraph` when the resource has no graph. Before this, the compile error in the VFX assembly stopped the whole package from loading in projects on VFX Graph 17.6.
 

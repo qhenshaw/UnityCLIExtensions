@@ -12,7 +12,8 @@ This package works in three layers:
 
 1. **Prevent** dialogs up front: launch flags, one-time project setup, and agent-mode behaviour that removes their causes.
 2. **Answer** the project's own dialogs in agent mode: `AgentDialog` and `AgentProgress` replace the blocking
-   `EditorUtility` calls, return the answer the call site chose, and log it.
+   `EditorUtility` calls, return the answer the call site chose, and log it. Unity's "Missing signature" dialog for
+   unsigned .unitypackage files is answered with Import Anyway at all times (see [below](#missing-signature-dialog)).
 3. **Unblock** whatever still comes up with an out-of-process **watchdog** (Windows) that finds the Editor's modal
    windows, reports their title, message and buttons, presses the safe default for known dialogs and escalates the rest.
 
@@ -26,6 +27,7 @@ This package works in three layers:
 - [Agent mode](#agent-mode)
 - [Setup checks](#setup-checks)
 - [AgentDialog and AgentProgress](#agentdialog-and-agentprogress)
+- [Missing signature dialog](#missing-signature-dialog)
 - [Watchdog](#watchdog)
 - [EditorDeferred](#editordeferred)
 - [Waiting, compiling and fast Play mode](#waiting-compiling-and-fast-play-mode)
@@ -146,6 +148,19 @@ In agent mode `AgentProgress` reports through the background `Progress` API inst
 To find the calls to replace, run `unity command cliext.dialogs scan` (or Tools > CLI Extensions > Scan Scripts for
 Blocking Dialogs). It lists every `DisplayDialog`, `DisplayDialogComplex`, progress bar, file picker, `ShowModal`,
 scene save prompt and interactive `ImportPackage` in Assets/ and in embedded and local packages, with what to use instead.
+
+## Missing signature dialog
+Unity 6.3 and later stop every import of a .unitypackage that has no signature (anything not from the Asset Store,
+packages you exported yourself included) at a "Missing signature" dialog with Import Anyway (Reimport Anyway when the
+assets are already in the project), Cancel and Learn More. It is a Package Manager UI Toolkit modal, so it has no Win32
+buttons for the watchdog to press, `-automated` doesn't affect it, and while it is open the Editor's update loop and
+the Pipeline server are stopped.
+
+`MissingSignatureAnswer` presses Import Anyway as the dialog opens, from `EditorWindow.windowFocusChanged`, which Unity
+still raises inside the modal (also with the Editor in the background). It presses the dialog's own button with a
+navigation submit; nothing moves the mouse. It always runs, with or without agent mode, and has no setting. Each answer
+goes to the dialog journal (`kind: answered`) and the Console. It answers only the dialog titled exactly "Missing
+signature": the trust dialogs for an invalid or untrusted signature have other titles and are left for a person.
 
 ## Watchdog
 `Tools~/Watchdog/cliext-watchdog.ps1` runs outside the Editor, so it keeps working while the Editor's main thread is
