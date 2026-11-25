@@ -54,7 +54,9 @@ namespace UnityCLIExtensions.Animation
             [CliArg("ops", "JSON array of ops")] string ops = "",
             [CliArg("ops-file", "A file holding the JSON array")] string opsFile = "")
         {
-            string json = !string.IsNullOrWhiteSpace(opsFile) ? File.ReadAllText(opsFile) : ops;
+            string json;
+            try { json = !string.IsNullOrWhiteSpace(opsFile) ? File.ReadAllText(opsFile) : ops; }
+            catch (Exception e) when (e is IOException || e is UnauthorizedAccessException) { cmd.Log.Error($"Can't read --ops-file: {e.Message}"); return ExitCode.NotFound; }
             if (string.IsNullOrWhiteSpace(json)) { cmd.Log.Error("Pass --ops or --ops-file."); return ExitCode.InvalidUsage; }
             AnimatorOpList list;
             try { string t = json.Trim(); list = JsonUtility.FromJson<AnimatorOpList>(t.StartsWith("[") ? "{\"ops\":" + t + "}" : t); }

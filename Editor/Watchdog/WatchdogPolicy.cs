@@ -56,7 +56,7 @@ namespace UnityCLIExtensions
             var rules = new List<WatchdogRule>
             {
                 // Progress and busy windows go away by themselves; never press anything on them.
-                new WatchdogRule("busy", "^(Hold on|Opening project\\.\\.\\.|Loading|Initializing|Compiling|Importing|Reloading|Progress|Unity is busy|Building|Baking)", "wait"),
+                new WatchdogRule("busy", "^(Hold on|Opening project\\.\\.\\.|Loading|Initializing|Compiling|Importing|Reloading|Progress|Unity is busy|Building|Baking|Package Manager$)", "wait"),
 
                 // The file on disk is what git (or the agent) wrote; Ignore would keep a stale scene that overwrites it.
                 new WatchdogRule("scene-modified-externally", "modified externally|changed on disk|have been changed externally", "click", "^Reload"),
@@ -68,12 +68,15 @@ namespace UnityCLIExtensions
                 // load packages' editor code, including the Pipeline server.
                 new WatchdogRule("safe-mode", "Enter Safe Mode", "click", "^Ignore"),
 
+                // Addressables' first build asks whether to turn on its build report; Cancel leaves the setting as it is.
+                new WatchdogRule("addressables-build-report", "^Enable Build Report$", "click", "^Cancel"),
+
                 // A file picker opened by code waits for a path no agent can type; closing it is Cancel.
                 new WatchdogRule("file-picker", "^(Open|Open File|Save|Save As|Save File|Select Folder|Choose Folder|Browse For Folder)$", "close"),
 
                 // These change the project or its setup: leave them for a person.
                 new WatchdogRule("api-updater", "Script Updating Consent|API Update", "escalate"),
-                new WatchdogRule("package-manager-error", "Package Manager", "escalate"),
+                new WatchdogRule("package-manager-error", "Package Manager Error", "escalate"),
                 new WatchdogRule("editor-version", "Non-Matching Editor|Opening Project in|Project Upgrade|Change Editor version", "escalate"),
                 new WatchdogRule("licensing", "Licen[cs]e|Sign in|Unity Hub", "escalate"),
                 new WatchdogRule("file-operation-failed", "Moving file failed|Deleting file failed|Copying file failed|Destination path", "escalate"),

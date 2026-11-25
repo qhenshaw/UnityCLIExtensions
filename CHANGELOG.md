@@ -1,6 +1,12 @@
 # Changelog
 All notable changes to Unity CLI Extensions. Versions are git tags: install one with `https://github.com/qhenshaw/UnityCLIExtensions.git#<version>`.
 
+## 0.19.0
+Fixes from an end-to-end pass over every command set in a live HDRP project:
+- Watchdog: the "Package Manager" progress window ("Resolving packages...") counts as busy instead of a blocking error, so `cliext-wait.ps1` no longer stops on it; only "Package Manager Error" escalates. Added a rule that answers Addressables' "Enable Build Report" prompt with Cancel.
+- `cliext.vfx`, `cliext.shadergraph`, `cliext.input` and `cliext.animator` `edit` report a missing or unreadable `--ops-file` as an error instead of an exception.
+- Added tests for `ValueText`, `TemplatedEval` and the UI Toolkit selector (44 tests pass).
+
 ## 0.18.0
 - Added `cliext.physics` (layer collision matrix for 3D and 2D, physics materials, raycasts), `cliext.navmesh` (areas and agent types, path and nearest-point queries, and with AI Navigation 2 NavMeshSurface listing and baking without orphaned data) and `cliext.quality` (every quality level's settings, platform exclusions and defaults, graphics APIs and render pipelines per level).
 - Added `SerializedText`, for settings assets read and written through SerializedObject.

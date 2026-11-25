@@ -171,7 +171,9 @@ namespace UnityCLIExtensions.ShaderGraph
             [CliArg("ops-file", "A file holding the JSON array")] string opsFile = "",
             [CliArg("force", "Edit even while a Shader Graph window has it open (the window's copy may overwrite the edit)")] bool force = false)
         {
-            string json = !string.IsNullOrWhiteSpace(opsFile) ? File.ReadAllText(opsFile) : ops;
+            string json;
+            try { json = !string.IsNullOrWhiteSpace(opsFile) ? File.ReadAllText(opsFile) : ops; }
+            catch (Exception e) when (e is IOException || e is UnauthorizedAccessException) { cmd.Log.Error($"Can't read --ops-file: {e.Message}"); return ExitCode.NotFound; }
             if (string.IsNullOrWhiteSpace(json)) { cmd.Log.Error("Pass --ops or --ops-file."); return ExitCode.Failed; }
             ShaderGraphOpList list;
             try
