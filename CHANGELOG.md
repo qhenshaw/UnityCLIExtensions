@@ -1,6 +1,9 @@
 # Changelog
 All notable changes to Unity CLI Extensions. Versions are git tags: install one with `https://github.com/qhenshaw/UnityCLIExtensions.git#<version>`.
 
+## 0.13.0
+- Added `cliext.uitk`: `inspect` and `edit` for UXML (add, remove, move, attributes and classes, by USS-like selectors) and USS (set, remove rules and properties), reimported and checked by Unity's importer; and on the live UI `tree`, `query`, `click` and `set_value`.
+
 ## 0.12.0
 - Added `cliext.timeline`, for what Pipeline's animation.timeline commands leave out: `inspect` (clip timing, ease and blend, markers, bindings), `edit` (add clips including a model's takes, clip timing and easing, move and remove clips and tracks, rename, mute, lock, markers and signals), `bind` (track bindings on a PlayableDirector) and `director` (scrub, play, pause, stop, read).
 

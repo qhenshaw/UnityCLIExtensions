@@ -38,6 +38,7 @@ This package works in three layers:
 - [Animator controllers](#animator-controllers)
 - [Cinemachine](#cinemachine)
 - [Timeline](#timeline)
+- [UI Toolkit](#ui-toolkit)
 - [Commands](#commands)
 - [Files](#files)
 - [Blocking dialogs catalog](Documentation~/blocking-dialogs.md)
@@ -613,6 +614,35 @@ Pipeline's `animation.timeline` commands create a timeline and add tracks and cl
 - `director --director <GameObject> [--time 1.5] [--action play|pause|resume|stop]`: scrubs (evaluating that frame,
   in Edit mode too), plays and reads a director's time, duration and state.
 
+## UI Toolkit
+`cliext.uitk` edits UXML and USS files and works with the live UI in Play mode.
+
+**Files.** `inspect --path Menu.uxml` gives the element tree (type, name, classes, text, attributes), its style
+sheets and templates; on a `.uss` file, its rules and properties. `edit --path <file> --ops-file ops.json` applies
+ops, saves once, and reimports through Unity's importer, whose errors come back as `import` (exit 6):
+```json
+[
+  {"op":"add","selector":"#menu","type":"Button","name":"quit","text":"Quit","class":"menu-button","attributes":"tooltip=Leave the game"},
+  {"op":"set_attributes","selector":"Button#start","text":"Play"},
+  {"op":"add_class","selector":"#menu > Button","class":"wide"},
+  {"op":"move","selector":"#quit","to":"#footer","index":0},
+  {"op":"remove","selector":".debug-only"}
+]
+```
+UXML ops: `add` (no selector adds at the top level), `remove`, `move`, `set_attributes`, `add_class`,
+`remove_class`. Selectors are `Type`, `#name`, `.class`, combined (`Button.primary#start`) and nested with spaces or
+`>`. New elements go on their own indented lines. USS ops: `set_rule` (`selector` as written,
+`properties: "padding: 8px; color: #fff"`, merged into the rule or `replace: true`; a missing rule is added),
+`remove_rule`, `remove_property`. An op that fails saves nothing.
+
+**Live UI** (UIDocuments in the open scenes, so mostly Play mode):
+- `tree [--document <GameObject>] [--depth 8]`: each element's type, name, classes, text or value, screen rect, and
+  whether it is hidden or disabled.
+- `query --selector "#menu > Button"`: the matching elements with their paths.
+- `click --selector "#start"`: clicks a button the way a navigation submit does, so its `clicked` handlers run once.
+- `set_value --selector "#volume" --value 0.5`: sets a field's value (TextField, Toggle, Slider, DropdownField, ...;
+  its change event fires) or a label's text.
+
 ## Commands
 All under `unity command --project-path <project>`:
 
@@ -664,6 +694,8 @@ All under `unity command --project-path <project>`:
 | `cliext.animator live` / `drive --object <GameObject>` | An Animator's live state, and driving it (Play mode). |
 | `cliext.cinemachine list` / `create` / `set` / `blend` | Cinemachine cameras, the live camera and blends. |
 | `cliext.timeline inspect` / `edit` / `bind` / `director` | Timeline clips, tracks, markers, bindings and scrubbing. |
+| `cliext.uitk inspect` / `edit --path <uxml or uss>` | Read and edit UXML and USS, checked by the importer. |
+| `cliext.uitk tree` / `query` / `click` / `set_value` | The live visual tree, clicking and setting values. |
 
 `cliext.dialogs log` and `cliext.watchdog report` only read files and run off the main thread, so they still answer
 while a dialog is open, as long as no other command is queued ahead of them. When they time out too, read the files.
