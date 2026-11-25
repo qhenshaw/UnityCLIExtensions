@@ -1,6 +1,9 @@
 # Changelog
 All notable changes to Unity CLI Extensions. Versions are git tags: install one with `https://github.com/qhenshaw/UnityCLIExtensions.git#<version>`.
 
+## 0.14.0
+- Added `cliext.splines`: `list`, `inspect` (knots with local and world positions, tangents, modes), `create`, `edit` (add, set and remove knots, closed, tangent modes, add and remove splines) and `sample` (at t or a distance, evenly spaced, or the nearest point to a world position). Built when the Splines package is installed.
+
 ## 0.13.0
 - Added `cliext.uitk`: `inspect` and `edit` for UXML (add, remove, move, attributes and classes, by USS-like selectors) and USS (set, remove rules and properties), reimported and checked by Unity's importer; and on the live UI `tree`, `query`, `click` and `set_value`.
 

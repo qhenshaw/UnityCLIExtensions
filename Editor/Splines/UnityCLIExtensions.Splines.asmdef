@@ -1,0 +1,29 @@
+{
+    "name": "UnityCLIExtensions.Splines",
+    "rootNamespace": "UnityCLIExtensions.Splines",
+    "references": [
+        "Unity.Pipeline.Attributes",
+        "UnityCLIExtensions.Editor",
+        "Unity.Splines",
+        "Unity.Mathematics"
+    ],
+    "includePlatforms": [
+        "Editor"
+    ],
+    "excludePlatforms": [],
+    "allowUnsafeCode": false,
+    "overrideReferences": false,
+    "precompiledReferences": [],
+    "autoReferenced": false,
+    "defineConstraints": [
+        "CLIEXT_SPLINES"
+    ],
+    "versionDefines": [
+        {
+            "name": "com.unity.splines",
+            "expression": "",
+            "define": "CLIEXT_SPLINES"
+        }
+    ],
+    "noEngineReferences": false
+}

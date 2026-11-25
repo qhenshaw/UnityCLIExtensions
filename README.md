@@ -39,6 +39,7 @@ This package works in three layers:
 - [Cinemachine](#cinemachine)
 - [Timeline](#timeline)
 - [UI Toolkit](#ui-toolkit)
+- [Splines](#splines)
 - [Commands](#commands)
 - [Files](#files)
 - [Blocking dialogs catalog](Documentation~/blocking-dialogs.md)
@@ -643,6 +644,21 @@ UXML ops: `add` (no selector adds at the top level), `remove`, `move`, `set_attr
 - `set_value --selector "#volume" --value 0.5`: sets a field's value (TextField, Toggle, Slider, DropdownField, ...;
   its change event fires) or a label's text.
 
+## Splines
+With the Splines package in the project, `cliext.splines` works with the SplineContainers in the open scenes:
+
+- `list`: each container's splines with knot count, closed flag, world length and bounds.
+- `inspect --object Road`: every knot's local and world position, tangents, rotation and tangent mode.
+- `create --name Path --knots "[0,0,0];[5,0,0];[5,0,5]" [--mode AutoSmooth|Linear|Mirrored|Continuous|Broken]
+  [--closed true] [--position "[x,y,z]"]`.
+- `edit --object Road --ops-file ops.json`: `add_knot` (position, index, mode), `set_knot` (index, position,
+  tangentIn, tangentOut, rotation, mode; `world: true` for world positions), `remove_knot`, `set_closed`,
+  `set_tangent_mode` (one knot or all), `add_spline` (knots, mode), `remove_spline`; `spline` picks the spline.
+  Undoable; marks the scene dirty.
+- `sample --object Road [--spline 0]` with `--t 0.5` (0-1 along it), `--distance 12` (world units), `--near "[x,y,z]"`
+  (the nearest point on the spline, its t and distance), or `--count 10` evenly spaced samples: world position,
+  direction and up.
+
 ## Commands
 All under `unity command --project-path <project>`:
 
@@ -696,6 +712,7 @@ All under `unity command --project-path <project>`:
 | `cliext.timeline inspect` / `edit` / `bind` / `director` | Timeline clips, tracks, markers, bindings and scrubbing. |
 | `cliext.uitk inspect` / `edit --path <uxml or uss>` | Read and edit UXML and USS, checked by the importer. |
 | `cliext.uitk tree` / `query` / `click` / `set_value` | The live visual tree, clicking and setting values. |
+| `cliext.splines list` / `inspect` / `create` / `edit` / `sample` | SplineContainers, knots, and sampling. |
 
 `cliext.dialogs log` and `cliext.watchdog report` only read files and run off the main thread, so they still answer
 while a dialog is open, as long as no other command is queued ahead of them. When they time out too, read the files.
