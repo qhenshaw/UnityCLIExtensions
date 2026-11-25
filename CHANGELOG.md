@@ -1,6 +1,9 @@
 # Changelog
 All notable changes to Unity CLI Extensions. Versions are git tags: install one with `https://github.com/qhenshaw/UnityCLIExtensions.git#<version>`.
 
+## 0.15.0
+- Added `cliext.addressables`: `status`, `init`, `entries`, `edit` (groups and their packing and compression, entries, addresses, labels), `build` (content build, with the first build's report prompt answered so it doesn't block) and `analyze` (the Analyze rules' results as data). Built when the Addressables package is installed; tested with Addressables 5.0.
+
 ## 0.14.0
 - Added `cliext.splines`: `list`, `inspect` (knots with local and world positions, tangents, modes), `create`, `edit` (add, set and remove knots, closed, tangent modes, add and remove splines) and `sample` (at t or a distance, evenly spaced, or the nearest point to a world position). Built when the Splines package is installed.
 

@@ -40,6 +40,7 @@ This package works in three layers:
 - [Timeline](#timeline)
 - [UI Toolkit](#ui-toolkit)
 - [Splines](#splines)
+- [Addressables](#addressables)
 - [Commands](#commands)
 - [Files](#files)
 - [Blocking dialogs catalog](Documentation~/blocking-dialogs.md)
@@ -659,6 +660,31 @@ With the Splines package in the project, `cliext.splines` works with the SplineC
   (the nearest point on the spline, its t and distance), or `--count 10` evenly spaced samples: world position,
   direction and up.
 
+## Addressables
+With the Addressables package in the project, `cliext.addressables`:
+
+- `status`: whether settings exist, the active profile and play mode script, the labels, and every group with its
+  entry count, packing, compression and build and load paths. `init` creates the settings if there are none.
+- `entries [--group g] [--label l] [--filter text]`: address, path, group and labels of each entry.
+- `edit --ops-file ops.json`, saved once:
+```json
+[
+  {"op":"add_group","name":"Characters","set":"bundleMode=PackSeparately;compression=LZ4"},
+  {"op":"add_entry","path":"Assets/Chars/Hero.prefab","group":"Characters","address":"chars/hero","labels":"player;hero"},
+  {"op":"set_address","path":"Assets/Chars/Hero.mat","address":"mats/hero"},
+  {"op":"set_labels","path":"Assets/Chars/Hero.prefab","labels":"hero"},
+  {"op":"move_entry","path":"Assets/Chars/Hero.mat","group":"Characters"}
+]
+```
+  Ops: `add_group`, `remove_group`, `rename_group`, `set_group` (`bundleMode`, `compression`, `includeInBuild`),
+  `add_entry` (labels are added to the project when new), `remove_entry`, `move_entry`, `set_address`, `set_labels`
+  (the full set), `add_label`, `remove_label`.
+- `build [--clean true]`: builds the content for the active build target and returns the duration, output and bundle
+  count. The first build's "Enable Build Report" prompt is answered as seen, without changing the setting, so it
+  doesn't wait on a dialog.
+- `analyze [--rule "Bundle Dependencies"]`: runs the Analyze rules and returns their results with severities
+  (nothing is fixed); exit 6 on error results.
+
 ## Commands
 All under `unity command --project-path <project>`:
 
@@ -713,6 +739,7 @@ All under `unity command --project-path <project>`:
 | `cliext.uitk inspect` / `edit --path <uxml or uss>` | Read and edit UXML and USS, checked by the importer. |
 | `cliext.uitk tree` / `query` / `click` / `set_value` | The live visual tree, clicking and setting values. |
 | `cliext.splines list` / `inspect` / `create` / `edit` / `sample` | SplineContainers, knots, and sampling. |
+| `cliext.addressables status` / `init` / `entries` / `edit` / `build` / `analyze` | Addressables groups, entries, builds and Analyze. |
 
 `cliext.dialogs log` and `cliext.watchdog report` only read files and run off the main thread, so they still answer
 while a dialog is open, as long as no other command is queued ahead of them. When they time out too, read the files.
