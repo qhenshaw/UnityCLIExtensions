@@ -1,6 +1,10 @@
 # Changelog
 All notable changes to Unity CLI Extensions. Versions are git tags: install one with `https://github.com/qhenshaw/UnityCLIExtensions.git#<version>`.
 
+## 0.18.0
+- Added `cliext.physics` (layer collision matrix for 3D and 2D, physics materials, raycasts), `cliext.navmesh` (areas and agent types, path and nearest-point queries, and with AI Navigation 2 NavMeshSurface listing and baking without orphaned data) and `cliext.quality` (every quality level's settings, platform exclusions and defaults, graphics APIs and render pipelines per level).
+- Added `SerializedText`, for settings assets read and written through SerializedObject.
+
 ## 0.17.0
 - Added `cliext.anim`: `takes` and `clips` for a model's animation import (takes, clip ranges, loop, root motion, mirror, masks, events), `clip` and `edit_clip` for keys, events and settings on .anim clips, `mask` for avatar masks (body parts and transforms), and `check`, which says whether clips fit a model (humanoid and generic mismatches, invalid avatars, missing paths and components, legacy clips).
 

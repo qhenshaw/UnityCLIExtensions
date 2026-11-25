@@ -1,0 +1,29 @@
+{
+    "name": "UnityCLIExtensions.AINavigation",
+    "rootNamespace": "UnityCLIExtensions.AINavigation",
+    "references": [
+        "Unity.Pipeline.Attributes",
+        "UnityCLIExtensions.Editor",
+        "Unity.AI.Navigation",
+        "Unity.AI.Navigation.Editor"
+    ],
+    "includePlatforms": [
+        "Editor"
+    ],
+    "excludePlatforms": [],
+    "allowUnsafeCode": false,
+    "overrideReferences": false,
+    "precompiledReferences": [],
+    "autoReferenced": false,
+    "defineConstraints": [
+        "CLIEXT_AI_NAVIGATION"
+    ],
+    "versionDefines": [
+        {
+            "name": "com.unity.ai.navigation",
+            "expression": "2.0.0",
+            "define": "CLIEXT_AI_NAVIGATION"
+        }
+    ],
+    "noEngineReferences": false
+}

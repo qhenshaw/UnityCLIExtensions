@@ -43,6 +43,7 @@ This package works in three layers:
 - [Addressables](#addressables)
 - [Import settings and presets](#import-settings-and-presets)
 - [Animation import, clips and avatar masks](#animation-import-clips-and-avatar-masks)
+- [Physics, NavMesh and quality settings](#physics-navmesh-and-quality-settings)
 - [Commands](#commands)
 - [Files](#files)
 - [Blocking dialogs catalog](Documentation~/blocking-dialogs.md)
@@ -731,6 +732,31 @@ platform override. Each changed asset comes back with `name: old -> new`.
   the model doesn't have, curves for components it doesn't have (a SpriteRenderer clip on a 3D model), legacy clips.
   Exit 6 on a mismatch.
 
+## Physics, NavMesh and quality settings
+Pipeline's `settings.*` commands read and set the basics (gravity, tags and layers, the quality level). These add:
+
+- `cliext.physics matrix [--2d true]`: for each named layer, the layers it doesn't collide with.
+  `set_matrix --a Player --b Pickup --collide false [--2d true]` changes a pair (both directions), saved.
+- `cliext.physics material --path Assets/Physics/Ice.physicMaterial --set "dynamicFriction=0.02;staticFriction=0.05;frictionCombine=Minimum"`
+  creates or changes a physics material (`--2d true` for a PhysicsMaterial2D: friction, bounciness).
+- `cliext.physics raycast --from "[0,20,0]" [--direction "[0,-1,0]" | --to "[x,y,z]"] [--distance 50]
+  [--layers "Default;Ground"] [--all true]`: hits in the open scenes (Edit or Play mode) with object, collider,
+  point, normal, distance and layer.
+- `cliext.navmesh settings`: areas (index, name, cost) and agent types (radius, height, slope, step).
+  `set --index 3 --name Mud --cost 3`, or `set --agent Humanoid --set "agentRadius=0.4;agentHeight=1.8"`.
+- `cliext.navmesh query --from "[0,0,0]" --to "[5,0,5]" [--agent Humanoid] [--areas "Walkable;Mud"]`: a path
+  (status, corners, length) on the baked NavMesh, both ends snapped within `--distance`; or `--sample "[x,y,z]"` for
+  the nearest NavMesh point.
+- `cliext.navmesh surfaces` and `bake [--surface TestRoom|all]` (AI Navigation 2): NavMeshSurfaces and baking them
+  as the Bake button does, waiting for the bake. A surface's old data asset is cleared first, so no
+  `NavMesh-Room 1.asset` is left; surfaces on prefab instances are baked the button's way (a new asset beside the old).
+- `cliext.quality levels [--level Low]`: every quality level with all its settings (51 in Unity 6.5, including
+  `customRenderPipeline`), the platforms it's excluded from, the current level and each platform's default.
+  `set --level Low --set "shadowDistance=40;vSyncCount=0;customRenderPipeline=Assets/Settings/Low.asset" [--exclude "Android;iPhone"]`,
+  or `set --platform Android --default Low`.
+- `cliext.quality graphics [--platform Android] [--set "Vulkan;OpenGLES3" | --auto true]`: a platform's graphics
+  APIs, the default render pipeline, and each quality level's pipeline override.
+
 ## Commands
 All under `unity command --project-path <project>`:
 
@@ -791,6 +817,9 @@ All under `unity command --project-path <project>`:
 | `cliext.anim takes` / `clips --path <model>` | A model's takes and imported clips (loop, root motion, masks, events). |
 | `cliext.anim clip` / `edit_clip --path <anim>` | Keys, events and settings on .anim clips. |
 | `cliext.anim mask` / `check` | Avatar masks, and whether clips fit a model. |
+| `cliext.physics matrix` / `set_matrix` / `material` / `raycast` | Collision matrix, physics materials, raycasts. |
+| `cliext.navmesh settings` / `set` / `query` / `surfaces` / `bake` | NavMesh areas, agents, paths, surfaces and baking. |
+| `cliext.quality levels` / `set` / `graphics` | Quality levels, platform defaults, graphics APIs. |
 
 `cliext.dialogs log` and `cliext.watchdog report` only read files and run off the main thread, so they still answer
 while a dialog is open, as long as no other command is queued ahead of them. When they time out too, read the files.
