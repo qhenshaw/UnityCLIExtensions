@@ -1,6 +1,9 @@
 # Changelog
 All notable changes to Unity CLI Extensions. Versions are git tags: install one with `https://github.com/qhenshaw/UnityCLIExtensions.git#<version>`.
 
+## 0.12.0
+- Added `cliext.timeline`, for what Pipeline's animation.timeline commands leave out: `inspect` (clip timing, ease and blend, markers, bindings), `edit` (add clips including a model's takes, clip timing and easing, move and remove clips and tracks, rename, mute, lock, markers and signals), `bind` (track bindings on a PlayableDirector) and `director` (scrub, play, pause, stop, read).
+
 ## 0.11.0
 - Added `cliext.cinemachine` (Cinemachine 3): `list` (cameras with priority, targets, lens and rig, brains with the live camera and the blend in progress), `create` (a camera with a follow, orbital, third-person, look-at or fixed rig, adding a brain when needed), `set` (priority, targets, field of view, enabled) and `blend` (default blend, or custom blends between cameras).
 

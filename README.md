@@ -37,6 +37,7 @@ This package works in three layers:
 - [Input actions and simulated input](#input-actions-and-simulated-input)
 - [Animator controllers](#animator-controllers)
 - [Cinemachine](#cinemachine)
+- [Timeline](#timeline)
 - [Commands](#commands)
 - [Files](#files)
 - [Blocking dialogs catalog](Documentation~/blocking-dialogs.md)
@@ -586,6 +587,32 @@ With Cinemachine 3 in the project, `cliext.cinemachine` reads and changes the ca
 
 Edits in Edit mode are undoable and mark the scene dirty; in Play mode they last until Play mode ends.
 
+## Timeline
+Pipeline's `animation.timeline` commands create a timeline and add tracks and clip assets. `cliext.timeline` adds:
+
+- `inspect --path <timeline>` (or `--director <GameObject>`): every track by path with its type, mute and lock, its
+  clips (start, duration, end, clip-in, speed, ease and blend) and markers, the timeline's markers, and with a
+  director, what each track is bound to.
+- `edit --path <timeline> --ops-file ops.json`, saved once:
+```json
+[
+  {"op":"add_clip","track":"Moves","clip":"Assets/Chars/Hero@run.fbx@run","time":0,"set":"duration=2"},
+  {"op":"set_clip","track":"Moves","clip":"0","set":"start=0.5;duration=3;easeIn=0.25;easeOut=0.5;timeScale=1.5","name":"RunCycle"},
+  {"op":"move_clip","track":"Moves","clip":"1","to":"Moves2"},
+  {"op":"add_marker","time":2.0,"signal":"Assets/Signals/Footstep.signal"},
+  {"op":"mute_track","track":"Lights","value":"true"},
+  {"op":"rename_track","track":"Lights","name":"Lamps"}
+]
+```
+  Ops: `add_clip` (a clip asset or a model's take as `model.fbx@take`; no clip for a track's default clip),
+  `set_clip`, `move_clip`, `remove_clip`, `remove_track`, `rename_track`, `mute_track`, `lock_track`, `add_marker`
+  (on a track or the timeline's markers, optionally a signal), `remove_marker`. A clip is its index or name on the
+  track; a track is its name, its path through groups, or its index.
+- `bind --director <GameObject> --track Moves --object Player`: binds a track to a scene object (the component the
+  track needs, such as its Animator), or `none`.
+- `director --director <GameObject> [--time 1.5] [--action play|pause|resume|stop]`: scrubs (evaluating that frame,
+  in Edit mode too), plays and reads a director's time, duration and state.
+
 ## Commands
 All under `unity command --project-path <project>`:
 
@@ -636,6 +663,7 @@ All under `unity command --project-path <project>`:
 | `cliext.animator inspect` / `validate` / `edit --path <controller>` | Read, check and edit an AnimatorController. |
 | `cliext.animator live` / `drive --object <GameObject>` | An Animator's live state, and driving it (Play mode). |
 | `cliext.cinemachine list` / `create` / `set` / `blend` | Cinemachine cameras, the live camera and blends. |
+| `cliext.timeline inspect` / `edit` / `bind` / `director` | Timeline clips, tracks, markers, bindings and scrubbing. |
 
 `cliext.dialogs log` and `cliext.watchdog report` only read files and run off the main thread, so they still answer
 while a dialog is open, as long as no other command is queued ahead of them. When they time out too, read the files.
