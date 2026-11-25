@@ -1,6 +1,9 @@
 # Changelog
 All notable changes to Unity CLI Extensions. Versions are git tags: install one with `https://github.com/qhenshaw/UnityCLIExtensions.git#<version>`.
 
+## 0.9.0
+- Added `cliext.input`: `inspect` and `edit` for .inputactions assets (maps, actions, bindings, composites, control schemes, with unknown device layouts reported), and in Play mode `add_device` / `remove_device` / `devices` for virtual devices, `set` and `press` to drive their controls (each event carries every held control), `actions` with the value each action had as the game saw it, and `record_start` / `record_stop` / `replay` / `replay_status` for input traces. Virtual devices and replays are removed when Play mode ends. Built when the Input System package is installed.
+
 ## 0.8.0
 - Added `cliext.shadergraph` for reading and editing Shader Graphs: `types` (nodes by menu path, targets and materials), `inspect` (blocks, nodes with settings and slots, properties, compile errors), `create` (for a target and material, or a copy), `add`, `add_property`, `remove`, `set` (slot values, node settings such as a Custom Function's body, property defaults), `link` / `unlink` (type-checked; a property links through a new property node), and `edit` with ops including `add_block` and Custom Function `add_port` / `remove_port`. Every edit compiles each shader pass and returns HLSL errors and node errors as data. Refuses to edit a graph open in a Shader Graph window. Built only when the Shader Graph package is installed.
 - `cliext.compile run --async true` marks the compile pending until it finishes, and `Tools~/cliext-wait.ps1` waits for that mark: before, the wait could return "idle" in the moment before the compile started.

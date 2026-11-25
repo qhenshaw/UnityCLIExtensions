@@ -34,6 +34,7 @@ This package works in three layers:
 - [Asset dependencies and scene diffs](#asset-dependencies-and-scene-diffs)
 - [Editing VFX Graphs](#editing-vfx-graphs)
 - [Editing Shader Graphs](#editing-shader-graphs)
+- [Input actions and simulated input](#input-actions-and-simulated-input)
 - [Commands](#commands)
 - [Files](#files)
 - [Blocking dialogs catalog](Documentation~/blocking-dialogs.md)
@@ -490,6 +491,50 @@ with the number of passes it appeared in. A command exits 6 when the graph saved
 while a Shader Graph window has the graph open, since its own copy would overwrite them; close it or pass
 `--force true` to `edit`.
 
+## Input actions and simulated input
+With the Input System package in the project, `cliext.input` edits `.inputactions` assets and, in Play mode, drives
+the game through virtual devices.
+
+**Read and edit actions.** `cliext.input inspect --path Assets/Settings/Player.inputactions` lists the maps, actions
+(type, control type, interactions, processors), their bindings by index, and the control schemes; a binding whose
+device layout the Input System doesn't know is marked `valid: false`. `cliext.input edit --path ... --ops-file ops.json`
+applies a JSON list of ops and saves once (an op that fails saves nothing):
+```json
+[
+  {"op":"add_action","map":"Player","action":"Dash","type":"Button"},
+  {"op":"add_binding","map":"Player","action":"Dash","path":"<Gamepad>/buttonEast","groups":"Gamepad"},
+  {"op":"add_binding","map":"Player","action":"Dash","path":"<Keyboard>/leftShift","groups":"Keyboard&Mouse","interactions":"press"},
+  {"op":"add_action","map":"Player","action":"Strafe","type":"Value","controlType":"Axis"},
+  {"op":"add_composite","map":"Player","action":"Strafe","composite":"1DAxis","parts":"negative=<Keyboard>/q;positive=<Keyboard>/e","groups":"Keyboard&Mouse"},
+  {"op":"set_binding","map":"Player","action":"Dash","index":1,"path":"<Keyboard>/space"},
+  {"op":"set_action","map":"Player","action":"Fire","interactions":"hold(duration=0.3)"},
+  {"op":"add_scheme","name":"Steam Deck","devices":"<Gamepad>;?<Mouse>"}
+]
+```
+Ops: `add_map`, `remove_map`, `rename_map`, `add_action`, `remove_action`, `rename_action`, `set_action` (type,
+control type, interactions, processors; the action moves to the end of its map), `add_binding`, `add_composite`
+(`parts` as `name=path;...`), `set_binding` and `remove_binding` (by `index` or `id`), `add_scheme` (`devices`
+separated by `;`, `?` for optional), `remove_scheme`. Unknown device layouts in a path come back as warnings.
+
+**Drive the game.** In Play mode:
+```
+unity command cliext.input add_device --layout Gamepad
+unity command cliext.input set --control leftStick --value "[0,1]" --hold 2
+unity command cliext.input press --control buttonSouth --hold 0.1
+unity command cliext.input actions --filter Player
+```
+`set` holds a control at a value (`--hold` releases it after that many seconds); `press` presses and releases a
+button or key. Controls are paths on the virtual device (`leftStick`, `buttonSouth`, `space`) or full paths
+(`<Keyboard>/space`). Each event carries every control the device is holding, so a stick stays held while a button is
+pressed. `actions` lists the enabled actions with their phase and the value each had at its last start, perform or
+cancel, as the game saw it (a value read from a command would see the Editor's input state, not the game's).
+`devices` lists the devices; `remove_device` removes the virtual ones. Virtual devices and replays are removed when
+Play mode ends.
+
+**Record and replay.** `record_start [--device d]`, play, then `record_stop --out run.inputtrace`;
+`replay --file run.inputtrace [--timing false]` plays it back on new copies of the recorded devices, and
+`replay_status` says when it is done.
+
 ## Commands
 All under `unity command --project-path <project>`:
 
@@ -533,6 +578,10 @@ All under `unity command --project-path <project>`:
 | `cliext.shadergraph create --path <graph> --target T [--material M] \| --from <graph>` | Creates a graph. |
 | `cliext.shadergraph add` / `add_property` / `remove` / `set` / `link` / `unlink` | One edit, then save and compile. |
 | `cliext.shadergraph edit --path <graph> --ops-file <path>` | Many edits, one save and compile. |
+| `cliext.input inspect --path <inputactions>` / `edit --ops-file <path>` | Read and edit maps, actions, bindings and schemes. |
+| `cliext.input add_device` / `remove_device` / `devices` | Virtual input devices. |
+| `cliext.input set` / `press` / `actions` | Drive controls and read the game's actions (Play mode). |
+| `cliext.input record_start` / `record_stop` / `replay` / `replay_status` | Record and replay input. |
 
 `cliext.dialogs log` and `cliext.watchdog report` only read files and run off the main thread, so they still answer
 while a dialog is open, as long as no other command is queued ahead of them. When they time out too, read the files.
