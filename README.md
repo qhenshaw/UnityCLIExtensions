@@ -35,6 +35,7 @@ This package works in three layers:
 - [Editing VFX Graphs](#editing-vfx-graphs)
 - [Editing Shader Graphs](#editing-shader-graphs)
 - [Input actions and simulated input](#input-actions-and-simulated-input)
+- [Animator controllers](#animator-controllers)
 - [Commands](#commands)
 - [Files](#files)
 - [Blocking dialogs catalog](Documentation~/blocking-dialogs.md)
@@ -535,6 +536,40 @@ Play mode ends.
 `replay --file run.inputtrace [--timing false]` plays it back on new copies of the recorded devices, and
 `replay_status` says when it is done.
 
+## Animator controllers
+Pipeline's `animation.animator` commands create controllers and add layers, parameters, states and transitions.
+`cliext.animator` covers the rest:
+
+- `inspect --path <controller>`: parameters with defaults; layers with weight, blending, mask, sync and IK; every
+  state by path (`Locomotion`, `Combat/Attack`) with its motion, blend tree (type, parameters, children with
+  thresholds or positions), speed and speed parameter, tag and behaviours; every transition with its conditions, exit
+  time, duration, offset and interruption; Any State transitions; sub-state machines.
+- `validate --path <controller>`: states with no motion, unreachable states, transitions that can never fire (no
+  conditions and no exit time), conditions on missing or mistyped parameters, blend trees on missing or non-Float
+  parameters, unused parameters. Exit 6 on errors.
+- `edit --path <controller> --ops-file ops.json`, saved once (Undo in the Editor reverts it):
+```json
+[
+  {"op":"set_state","state":"Locomotion","set":"speed=1.25;tag=Move;speedParameterActive=true;speedParameter=Speed"},
+  {"op":"add_blendtree","state":"Strafe","type":"SimpleDirectional2D","parameter":"MoveX","parameterY":"MoveY",
+   "children":"Assets/Anims/Idle.anim@0,0;Assets/Anims/Walk.fbx@walk@0,1;Assets/Anims/Run.fbx@run@0,2"},
+  {"op":"set_transition","from":"Any","to":"Airborne","conditions":"IsGrounded IfNot","set":"duration=0.05;canTransitionToSelf=false"},
+  {"op":"remove_parameter","name":"Unused"},
+  {"op":"set_layer","layer":"Upper Body","set":"defaultWeight=1;blendingMode=Override;avatarMask=Assets/Masks/Upper.mask"}
+]
+```
+  Ops: `remove_state`, `rename_state`, `set_state` (`motion` and `set` with any settable property), `set_default`,
+  `add_substatemachine`, `remove_substatemachine`, `set_transition` (`from` a state or `Any`, `to` a state or `Exit`,
+  `index` among several, `conditions` as `Param Mode [Threshold]` separated by `;`, checked against the parameter's
+  type), `remove_transition`, `remove_parameter` (also removes the conditions that use it), `set_parameter` (default
+  value), `set_layer`, `remove_layer`, `add_blendtree` (on a new or existing state). A motion is a clip path, or a
+  model's clip as `Assets/Char.fbx@Run`.
+- `live --object <GameObject>` (Play mode): each layer's current state by name, normalized time, clips and their
+  weights, the transition in progress, and every parameter's value.
+- `drive --object <GameObject> --parameter Speed --value 1` sets a parameter (a Trigger with `true`/`false` sets or
+  resets it); `--state "Base Layer.Run"` cross-fades to a state. The game's own scripts may set the same parameter
+  again on the next frame.
+
 ## Commands
 All under `unity command --project-path <project>`:
 
@@ -582,6 +617,8 @@ All under `unity command --project-path <project>`:
 | `cliext.input add_device` / `remove_device` / `devices` | Virtual input devices. |
 | `cliext.input set` / `press` / `actions` | Drive controls and read the game's actions (Play mode). |
 | `cliext.input record_start` / `record_stop` / `replay` / `replay_status` | Record and replay input. |
+| `cliext.animator inspect` / `validate` / `edit --path <controller>` | Read, check and edit an AnimatorController. |
+| `cliext.animator live` / `drive --object <GameObject>` | An Animator's live state, and driving it (Play mode). |
 
 `cliext.dialogs log` and `cliext.watchdog report` only read files and run off the main thread, so they still answer
 while a dialog is open, as long as no other command is queued ahead of them. When they time out too, read the files.

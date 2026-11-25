@@ -1,6 +1,9 @@
 # Changelog
 All notable changes to Unity CLI Extensions. Versions are git tags: install one with `https://github.com/qhenshaw/UnityCLIExtensions.git#<version>`.
 
+## 0.10.0
+- Added `cliext.animator`, for what Pipeline's animation.animator commands leave out: `inspect` (blend trees, transition settings, layers, sub-state machines), `validate` (unreachable states, transitions that can never fire, conditions and blend trees on missing or mistyped parameters, unused parameters), `edit` (remove and rename states, state and transition settings, conditions, parameters, layers, blend trees, sub-state machines), and in Play mode `live` (current states, transitions and parameter values) and `drive` (set parameters, cross-fade to a state).
+
 ## 0.9.0
 - Added `cliext.input`: `inspect` and `edit` for .inputactions assets (maps, actions, bindings, composites, control schemes, with unknown device layouts reported), and in Play mode `add_device` / `remove_device` / `devices` for virtual devices, `set` and `press` to drive their controls (each event carries every held control), `actions` with the value each action had as the game saw it, and `record_start` / `record_stop` / `replay` / `replay_status` for input traces. Virtual devices and replays are removed when Play mode ends. Built when the Input System package is installed.
 
