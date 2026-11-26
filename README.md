@@ -367,6 +367,23 @@ shot before tiling; `-Settle` waits after a setup snippet (default 0.5 s); `-Wid
 to `-Out` (a temp folder by default). The sheet needs no Python. Exit 0 when every shot was captured, 1 with the
 step that failed.
 
+**Slow motion, the project's own commands and timed shots.** Effects that last a tenth of a second are hard to catch
+with a capture that takes a fraction of a second itself. Three options make that one call too, with no C# snippet:
+```
+powershell -NoProfile -ExecutionPolicy Bypass -File <package>/Tools~/cliext-play-capture.ps1 -Project <project> `
+  -Scene Assets/Scenes/Arena.unity -TimeScale 0.005 `
+  -Run "debugmenu do --section Effects --label 'Preview gun looks'" -Sheet C:/Temp/guns.png a@0 b@1.5 c@3
+```
+- `-TimeScale` sets `Time.timeScale` (with `cliext.playmode time_scale`) as soon as Play mode has started, before
+  `-Until` and `-Run`, so whatever they trigger plays slowly: at 0.005 a 0.1 s flash lasts 20 s. The previous time
+  scale is put back at the end, also with `-Stay` and when a step fails.
+- `-Run` takes `unity command` lines, run in order after `-Until`: any command the project or Pipeline offers, such
+  as a debug menu's. Quote arguments that have spaces (single or double quotes); a leading `unity command` is
+  optional. Each runs once (a retry could trigger an effect twice); one that exits non-zero fails the capture.
+- A shot written `NAME@SECONDS` is captured that many real seconds after the last `-Run` step. Timed shots are taken
+  first, in time order, then the `NAME=FILE` ones. The JSON reports when each was really taken (`at`) and how far
+  after its target (`late`), since every capture takes a moment.
+
 ## Asset dependencies and scene diffs
 
 **What an asset uses, and what uses it.** `cliext.asset uses --path <asset>` lists what a prefab, scene, material or
@@ -465,6 +482,24 @@ lists each op with the ids of the models it added. An op that fails stops the ru
 ops before it are kept and saved. Contexts land under the lowest one and nodes to the left unless given x and y.
 
 The VFX Graph window can stay open on the graph while these run; edits made with it open saved and compiled cleanly.
+
+**Check it.** A graph can compile cleanly and still show nothing. Every edit command and `inspect` also return
+`warnings` and `eventAttributes`, and `cliext.vfx check --path <vfx> [--strict true]` returns them on their own:
+```json
+{"warnings":[{"severity":"warning","id":"114350483966675102","where":"Single Burst in 'Tracer streak'",
+  "problem":"Single Burst has a Count of 0, so it spawns nothing (0 is the default). Set its Count slot.","source":"cliext"}],
+ "eventAttributes":[{"event":"OnPlay","attributes":["color","lifetime","position","scaleX","scaleY","scaleZ","size","velocity"]}]}
+```
+- `warnings` (severity `error`, `warning` or `info`, with the model's id): a `Single Burst` or `Periodic Burst` whose
+  Count is 0 (its default), a spawner with no burst or rate block, an Initialize with capacity 0, a flipbook output
+  with no `mainTexture`, a flipbook with a 1x1 grid, plus VFX Graph's own warnings, the badges the graph window would
+  show (`source: "vfx"`).
+- `eventAttributes`: for each Event context, the attributes its systems read from the event (`Set ... From Source` in
+  their Initialize), minus those a spawner on the way sets itself. These are the exact names script must send with
+  `VFXEventAttribute`: a variadic attribute is read per channel, so `Set Scale From Source` needs `scaleX`, `scaleY`
+  and `scaleZ`, never `scale` (which the event silently ignores).
+
+`check` exits 6 when there is an error, and with `--strict true` also on a warning.
 
 ## Editing Shader Graphs
 With the Shader Graph package in the project, `cliext.shadergraph` reads and edits `.shadergraph` files without the
@@ -813,6 +848,7 @@ All under `unity command --project-path <project>`:
 | `cliext.compile diagnostics [--warnings true]` | The standing errors and warnings, one record each. |
 | `cliext.playmode set_fast --enabled true\|false` | Turns fast Play mode (no domain or scene reload) on or off. |
 | `cliext.playmode check_statics [--include-reset true]` | Static state that would survive between Play sessions without a domain reload. |
+| `cliext.playmode time_scale --value <n>` | Sets `Time.timeScale` (slow motion for captures) and returns the previous value. |
 | `cliext.edits begin [--expire-after 300]` / `end` / `status` | An edit batch: no import or reload until `end`, which compiles once. |
 | `cliext.test affected [--files a,b] [--since HEAD] [--all true]` | The test assemblies a change affects, with the commands that run them. |
 | `cliext.test run [--filter f] [--filter-type name\|exact\|assembly\|category] [--mode edit\|play]` | Runs tests and returns that run's own result; an empty match fails. |
@@ -830,6 +866,7 @@ All under `unity command --project-path <project>`:
 | `cliext.vfx create --path <vfx>` | Creates an empty VFX Graph. |
 | `cliext.vfx add` / `remove` / `set` / `link` / `unlink` | One edit, then save and compile. |
 | `cliext.vfx edit --path <vfx> --ops <json> \| --ops-file <path>` | Many edits, one save and compile. |
+| `cliext.vfx check --path <vfx> [--strict true]` | Mistakes that compile but show nothing, VFX Graph's own warnings, and the attributes each event reads from script. |
 | `cliext.shadergraph types [--filter text] [--targets true]` | The nodes by menu path, or the targets and materials. |
 | `cliext.shadergraph inspect --path <graph> [--id node]` | Blocks, nodes, slots, properties and compile errors. |
 | `cliext.shadergraph create --path <graph> --target T [--material M] \| --from <graph>` | Creates a graph. |

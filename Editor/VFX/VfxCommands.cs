@@ -49,13 +49,39 @@ namespace UnityCLIExtensions.VFX
                     return ExitCode.Success;
                 }
                 var graph = doc.graph;
+                VfxGraphCheck.Result check = VfxGraphCheck.Run(doc);
                 cmd.Result.Write(new
                 {
                     path = doc.path,
                     contexts = graph.children.OfType<VFXContext>().Select(c => VfxGraphOps.Describe(c, details)).ToArray(),
                     operators = graph.children.Where(m => !(m is VFXContext) && !(m is VFXParameter)).Select(m => VfxGraphOps.Describe(m, details)).ToArray(),
-                    parameters = graph.children.OfType<VFXParameter>().Select(p => VfxGraphOps.Describe(p, details)).ToArray()
+                    parameters = graph.children.OfType<VFXParameter>().Select(p => VfxGraphOps.Describe(p, details)).ToArray(),
+                    warnings = check.warnings.ToArray(),
+                    eventAttributes = check.eventAttributes.ToArray()
                 });
+                return ExitCode.Success;
+            });
+        }
+
+        [CliGroupCommand(Group, "Check a VFX Graph for mistakes that compile but show nothing (a burst with Count 0, a spawner with no burst or rate, capacity 0, " +
+                                "a flipbook output with no texture) plus VFX Graph's own warnings, and list the attributes each event's systems read from script " +
+                                "(scale is read as scaleX, scaleY, scaleZ). Exit 6 on errors; with --strict true also on warnings.",
+            Name = "check", Tags = new[] { "cliext", "vfx" }, Effect = CommandEffect.ReadOnly)]
+        internal static ExitCode Check(
+            CommandContext cmd,
+            [CliArg("path", "The .vfx asset path or GUID", Required = true)] string path,
+            [CliArg("strict", "Also fail on warnings, not only errors")] bool strict = false)
+        {
+            return Guard(cmd, () =>
+            {
+                VfxGraphDocument doc = VfxGraphDocument.Open(path);
+                VfxGraphCheck.Result check = VfxGraphCheck.Run(doc);
+                cmd.Result.Write(new { path = doc.path, warnings = check.warnings.ToArray(), eventAttributes = check.eventAttributes.ToArray() });
+                if (check.HasErrors || (strict && check.HasWarnings))
+                {
+                    cmd.Log.Error($"{doc.path}: {check.warnings.Count(w => w.severity == VfxGraphCheck.Error)} error(s), {check.warnings.Count(w => w.severity == VfxGraphCheck.Warning)} warning(s).");
+                    return ExitCode.Failed;
+                }
                 return ExitCode.Success;
             });
         }
@@ -181,6 +207,7 @@ namespace UnityCLIExtensions.VFX
             }
 
             List<string> compileMessages = results.Count > 0 ? doc.Save() : new List<string>();
+            VfxGraphCheck.Result check = VfxGraphCheck.Run(doc);
             var shaped = results.Select(r => r is AddResult a
                 ? (object)new { op = "add", id = VfxGraphDocument.IdOf(a.model), alias = a.alias, entry = a.entry, kind = VfxGraphDocument.KindOf(a.model), type = a.model.GetType().Name }
                 : r).ToArray();
@@ -192,8 +219,12 @@ namespace UnityCLIExtensions.VFX
                 results = shaped,
                 failedAt = failedAt >= 0 ? (int?)failedAt : null,
                 error = failure,
-                compile = compileMessages.ToArray()
+                compile = compileMessages.ToArray(),
+                warnings = check.warnings.ToArray(),
+                eventAttributes = check.eventAttributes.ToArray()
             });
+            if (failure == null && check.HasWarnings)
+                cmd.Log.Warning($"The graph has {check.warnings.Count(w => w.severity != VfxGraphCheck.Info)} warning(s); see warnings.");
             if (failure != null)
             {
                 cmd.Log.Error($"Op {failedAt} ({ops[failedAt].op}) failed: {failure}" + (results.Count > 0 ? $" The {results.Count} op(s) before it were saved." : ""));

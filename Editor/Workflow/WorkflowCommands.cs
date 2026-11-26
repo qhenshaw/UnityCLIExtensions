@@ -358,6 +358,23 @@ namespace UnityCLIExtensions
             }
         }
 
+        [CliGroupCommand(PlayModeGroup, "Set Time.timeScale, for slow motion while capturing effects (0.005 makes a 0.1 s effect last 20 s) or to speed a game up. " +
+                                        "Returns the previous and the new value. Leaving Play mode does not reset it: set it back to 1, or let cliext-play-capture.ps1 do it.",
+            Name = "time_scale", Tags = new[] { "editor", "cliext", "editor/playmode" }, MainThreadRequired = true, Effect = CommandEffect.Idempotent)]
+        internal static ExitCode TimeScale(
+            CommandContext cmd,
+            [CliArg("value", "The time scale: 1 is normal speed, 0 pauses, below 1 is slow motion", Required = true)] float value)
+        {
+            if (!PlayModeTime.IsValid(value))
+            {
+                cmd.Log.Error($"--value must be 0 or more (and at most {PlayModeTime.MaxTimeScale}); got {value}.");
+                return ExitCode.InvalidUsage;
+            }
+            float previous = PlayModeTime.Set(value);
+            cmd.Result.Write(new { previous, timeScale = UnityEngine.Time.timeScale, playing = EditorApplication.isPlaying });
+            return ExitCode.Success;
+        }
+
         [CliGroupCommand(PlayModeGroup, "List the static fields, auto-properties and static events in the project's runtime code that keep their values between Play sessions when domain reload is off, " +
                                         "and whether their type has a [RuntimeInitializeOnLoadMethod] reset. Those without one come first.",
             Tags = new[] { "editor", "cliext", "editor/playmode", "scripts" }, Effect = CommandEffect.ReadOnly)]

@@ -1,6 +1,15 @@
 # Changelog
 All notable changes to Unity CLI Extensions. Versions are git tags: install one with `https://github.com/qhenshaw/UnityCLIExtensions.git#<version>`.
 
+## 0.22.0
+- `cliext.vfx` checks every graph it edits or inspects for mistakes that compile cleanly but show nothing, and returns them as `warnings` (severity, model id, where, problem): a Single or Periodic Burst left at its default Count of 0, a spawner with no burst or rate block, an Initialize with capacity 0, a flipbook output with no `mainTexture` or a 1x1 grid, plus VFX Graph's own warnings (the badges the graph window shows).
+- Every `cliext.vfx` edit and `inspect` also return `eventAttributes`: for each Event context, the attributes its systems read from the event (`Set ... From Source` in Initialize), minus those a spawner sets itself. Variadic attributes are listed per channel, so script code knows to send `scaleX`, `scaleY` and `scaleZ` rather than `scale`, which an event silently ignores.
+- Added `cliext.vfx check --path <vfx> [--strict true]`, the same checks on their own; exit 6 on errors (and on warnings with `--strict`).
+- Added `cliext.playmode time_scale --value <n>`, which sets `Time.timeScale` and returns the previous value.
+- `cliext-play-capture.ps1` captures short effects without C# snippets: `-TimeScale` slows the game down before anything is triggered (and puts the previous value back at the end), `-Run` runs `unity command` lines in order after `-Until` (a project's own debug menu commands, for example), and shots written `NAME@SECONDS` are captured that many real seconds after the last `-Run` step, with the real moment each was taken in the result.
+- Fixed `cliext-play-capture.ps1` failing at `-Until` (or a snippet shot) whose spec has no `|key=value` part: the empty `--vars` it passed was dropped by Windows PowerShell 5.1, leaving `--vars` with no value. `--vars` is now passed only when there are vars.
+- Added EditMode tests for the VFX checks (in a test assembly built only with VFX Graph) and for `time_scale`.
+
 ## 0.21.0
 - Unity's "Missing signature" dialog, which stops every import of an unsigned .unitypackage on Unity 6.3 and later, is answered with Import Anyway (or Reimport Anyway) at all times, with or without agent mode. `MissingSignatureAnswer` presses the dialog's own UI Toolkit button from `EditorWindow.windowFocusChanged` as it opens, without moving the mouse, and writes each answer to the dialog journal and the Console. The trust dialogs for invalid or untrusted signatures are left alone. Verified on 6000.6.6f1, with the Editor in the background.
 - Added the dialog to the blocking dialogs catalog.

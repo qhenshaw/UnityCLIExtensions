@@ -63,6 +63,14 @@ namespace UnityCLIExtensions.VFX
     /// <summary>Applies <see cref="VfxOp"/>s to a graph and describes its models.</summary>
     internal static class VfxGraphOps
     {
+        /// <summary>Applies ops in order, sharing their "as" names, without saving. Throws on the first op that fails.</summary>
+        public static void ApplyAll(VfxGraphDocument doc, IEnumerable<VfxOp> ops)
+        {
+            var aliases = new Dictionary<string, VFXModel>();
+            foreach (VfxOp op in ops)
+                Apply(doc, op, aliases);
+        }
+
         public static object Apply(VfxGraphDocument doc, VfxOp op, Dictionary<string, VFXModel> aliases)
         {
             VFXModel Resolve(string id)

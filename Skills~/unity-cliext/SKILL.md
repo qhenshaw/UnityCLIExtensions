@@ -40,6 +40,11 @@ Start with `unity command cliext status`: agent mode, the setup checks still ope
 - Batch edits (`edit --ops-file ops.json`) instead of one command per change. On Windows PowerShell 5.1 inline JSON
   loses its quotes, so write the ops to a file.
 - Give `script eval` and `cliext.eval run` a `--timeout` when the work may take over 30 seconds.
+- After every `cliext.vfx` edit, read `warnings` (a burst left at Count 0 spawns nothing) and `eventAttributes`: from
+  script, send exactly those attribute names (`scaleX`/`scaleY`/`scaleZ`, never `scale`). `cliext.vfx check` runs the
+  same checks on any graph.
+- To see a short effect, capture it in slow motion with real commands rather than snippets:
+  `cliext-play-capture.ps1 -TimeScale 0.005 -Run "<the command that triggers it>" a@0 b@1.5 c@3`.
 - Leave the project as you found it: revert scratch assets, Play mode objects and setting changes you made to test.
 
 ## Command map
@@ -49,10 +54,10 @@ Start with `unity command cliext status`: agent mode, the setup checks still ope
 | `cliext` | `status`, `set_agent_mode`; `cliext.setup check/apply/agent` (setup and these agent files) |
 | `cliext.wait`, `cliext.compile`, `cliext.edits` | idle waits, compiles with errors as data, edit batches |
 | `cliext.test` | `affected`, `run`, `result`: runs whose result is their own; an empty filter fails |
-| `cliext.eval`, `cliext.playmode` | snippets with `{{placeholders}}`; `wait_until` a game state; fast Play mode, `check_statics` |
+| `cliext.eval`, `cliext.playmode` | snippets with `{{placeholders}}`; `wait_until` a game state; `time_scale`; fast Play mode, `check_statics` |
 | `cliext.dialogs`, `cliext.watchdog` | the dialog journal, a scan for blocking dialog calls, the out-of-process watchdog |
 | `cliext.asset`, `cliext.diff` | `uses` / `used_by` dependencies; snapshot and compare scenes and prefabs |
-| `cliext.vfx` | VFX Graph: `types`, `inspect`, `create`, `edit` (contexts, blocks, operators, parameters, links) |
+| `cliext.vfx` | VFX Graph: `types`, `inspect`, `create`, `edit` (contexts, blocks, operators, parameters, links), `check` |
 | `cliext.shadergraph` | Shader Graph: `types`, `inspect`, `create`, `edit`; every edit returns HLSL and node errors |
 | `cliext.input` | .inputactions `inspect`/`edit`; virtual devices, `set`, `press`, `actions`, record and replay (Play mode) |
 | `cliext.animator` | controllers: `inspect`, `validate`, `edit` (states, transitions, blend trees, layers); `live`, `drive` |
@@ -65,5 +70,6 @@ Start with `unity command cliext status`: agent mode, the setup checks still ope
 | `cliext.import`, `cliext.presets` | import settings across folders; default presets per folder and an `audit` |
 | `cliext.physics`, `cliext.navmesh`, `cliext.quality` | collision matrix, materials, raycasts; NavMesh areas, agents, paths, bakes; quality levels, graphics APIs |
 
-Scripts: `cliext-play-capture.ps1` compiles, enters Play mode, waits for a state and screenshots it into a contact
-sheet. Each group's `--help` and the package README hold the details.
+Scripts: `cliext-play-capture.ps1` compiles, enters Play mode, optionally slows time (`-TimeScale`), waits for a state,
+runs the project's own commands (`-Run`), and screenshots it at timed moments (`NAME@SECONDS`) or after snippets into a
+contact sheet. Each group's `--help` and the package README hold the details.

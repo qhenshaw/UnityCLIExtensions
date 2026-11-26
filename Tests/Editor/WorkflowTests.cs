@@ -41,6 +41,36 @@ namespace UnityCLIExtensions.Tests
         }
     }
 
+    public class PlayModeTimeTests
+    {
+        [Test]
+        public void IsValid_AcceptsPauseSlowMotionAndUpToTheMaximum_RejectsNegativeAndNaN()
+        {
+            Assert.IsTrue(PlayModeTime.IsValid(0f));
+            Assert.IsTrue(PlayModeTime.IsValid(0.005f));
+            Assert.IsTrue(PlayModeTime.IsValid(PlayModeTime.MaxTimeScale));
+            Assert.IsFalse(PlayModeTime.IsValid(-0.1f));
+            Assert.IsFalse(PlayModeTime.IsValid(PlayModeTime.MaxTimeScale + 1f));
+            Assert.IsFalse(PlayModeTime.IsValid(float.NaN));
+        }
+
+        [Test]
+        public void Set_ReturnsThePreviousTimeScale()
+        {
+            float before = Time.timeScale;
+            try
+            {
+                PlayModeTime.Set(0.5f);
+                Assert.AreEqual(0.5f, PlayModeTime.Set(0.25f), 0.0001f);
+                Assert.AreEqual(0.25f, Time.timeScale, 0.0001f);
+            }
+            finally
+            {
+                Time.timeScale = before;
+            }
+        }
+    }
+
     public class StaticStateScannerTests
     {
         private class Unreset
