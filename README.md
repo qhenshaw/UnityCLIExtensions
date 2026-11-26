@@ -46,7 +46,7 @@ This package works in three layers:
 - [Import settings and presets](#import-settings-and-presets)
 - [Animation import, clips and avatar masks](#animation-import-clips-and-avatar-masks)
 - [Physics, NavMesh and quality settings](#physics-navmesh-and-quality-settings)
-- [Agent files: the skill and CLAUDE.md](#agent-files-the-skill-and-claudemd)
+- [Agent files: the skills and CLAUDE.md](#agent-files-the-skills-and-claudemd)
 - [Commands](#commands)
 - [Files](#files)
 - [Blocking dialogs catalog](Documentation~/blocking-dialogs.md)
@@ -809,15 +809,21 @@ Pipeline's `settings.*` commands read and set the basics (gravity, tags and laye
 - `cliext.quality graphics [--platform Android] [--set "Vulkan;OpenGLES3" | --auto true]`: a platform's graphics
   APIs, the default render pipeline, and each quality level's pipeline override.
 
-## Agent files: the skill and CLAUDE.md
-The package ships a Claude Code skill, `Skills~/unity-cliext/SKILL.md`: when to reach for the Editor, the
-compile-wait-test loop, the rules (no sleep-polling, dialogs, unsaved scenes, ops files) and a map of every `cliext`
-group. Agents find skills in the project's `.claude/skills/`, so the package puts it there itself:
+## Agent files: the skills and CLAUDE.md
+The package ships Claude Code skills in `Skills~/`:
+- `unity-cliext`: when to reach for the Editor, the compile-wait-test loop, the rules (no sleep-polling, dialogs,
+  unsaved scenes, ops files) and a map of every `cliext` group.
+- `unity-cliext-vfx`, installed only in projects with VFX Graph: building effects with `cliext.vfx` (block keys and
+  slot names for VFX Graph 17.6, the defaults that spawn nothing, the C# side of event attributes, slow-motion
+  captures) and ops templates in `ops/` (`burst.json`, `sparks.json`, `streak-from-source.json`) that apply cleanly
+  and pass `cliext.vfx check` once their texture path is set.
 
-- When the package loads (so on install and on every update), it copies the skill to
-  `.claude/skills/unity-cliext/` and keeps a marked block in the project's `CLAUDE.md` that tells agents to load it
+Agents find skills in the project's `.claude/skills/`, so the package puts them there itself:
+
+- When the package loads (so on install and on every update), it copies the skills that apply to
+  `.claude/skills/<name>/` and keeps a marked block in the project's `CLAUDE.md` that tells agents to load them
   (`<!-- BEGIN unity-cliext ... -->` to `<!-- END unity-cliext -->`). `CLAUDE.md` is created if missing; everything
-  outside the block is left as it is.
+  outside the block is left as it is. A package skill whose package was removed (VFX Graph) is taken out again.
 - Only what differs from the installed package version is written, so it does nothing on most loads. The installed
   skill carries a version stamp: a newer package replaces it, while edits made by hand to the current version's copy
   are kept (`--force true` replaces them).

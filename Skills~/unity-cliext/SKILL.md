@@ -40,6 +40,8 @@ Start with `unity command cliext status`: agent mode, the setup checks still ope
 - Batch edits (`edit --ops-file ops.json`) instead of one command per change. On Windows PowerShell 5.1 inline JSON
   loses its quotes, so write the ops to a file.
 - Give `script eval` and `cliext.eval run` a `--timeout` when the work may take over 30 seconds.
+- Before creating or editing a VFX Graph, load the `unity-cliext-vfx` skill (installed when the project has VFX Graph):
+  block keys, slot names, defaults that spawn nothing, and ops templates.
 - After every `cliext.vfx` edit, read `warnings` (a burst left at Count 0 spawns nothing) and `eventAttributes`: from
   script, send exactly those attribute names (`scaleX`/`scaleY`/`scaleZ`, never `scale`). `cliext.vfx check` runs the
   same checks on any graph.

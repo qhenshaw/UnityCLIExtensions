@@ -1,6 +1,11 @@
 # Changelog
 All notable changes to Unity CLI Extensions. Versions are git tags: install one with `https://github.com/qhenshaw/UnityCLIExtensions.git#<version>`.
 
+## 0.23.0
+- Added the `unity-cliext-vfx` skill for building VFX Graph effects with `cliext.vfx`: the edit-check loop, block keys and slot names for VFX Graph 17.6, the defaults that spawn nothing (burst Count 0, Blend 0, a fully random direction blend), the C# side (exact event attribute names, one OnPlay burst per VisualEffect per frame) and slow-motion captures. It comes with ops templates (`ops/burst.json`, `ops/sparks.json`, `ops/streak-from-source.json`) that apply cleanly and pass `cliext.vfx check` once their texture path is set, alone or combined under one Event.
+- The agent files install every skill in `Skills~/` that applies to the project: `unity-cliext` always, `unity-cliext-vfx` only when VFX Graph is installed (and it is taken out again if VFX Graph is removed). Each installed SKILL.md carries its own version stamp; the stamp earlier versions wrote is still recognised. The CLAUDE.md block tells agents to load the VFX skill before VFX Graph work when it is installed.
+- Added EditMode tests for which skills apply and for reading the version stamp.
+
 ## 0.22.0
 - `cliext.vfx` checks every graph it edits or inspects for mistakes that compile cleanly but show nothing, and returns them as `warnings` (severity, model id, where, problem): a Single or Periodic Burst left at its default Count of 0, a spawner with no burst or rate block, an Initialize with capacity 0, a flipbook output with no `mainTexture` or a 1x1 grid, plus VFX Graph's own warnings (the badges the graph window shows).
 - Every `cliext.vfx` edit and `inspect` also return `eventAttributes`: for each Event context, the attributes its systems read from the event (`Set ... From Source` in Initialize), minus those a spawner sets itself. Variadic attributes are listed per channel, so script code knows to send `scaleX`, `scaleY` and `scaleZ` rather than `scale`, which an event silently ignores.
