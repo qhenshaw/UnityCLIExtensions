@@ -4709,6 +4709,27 @@ Add-Check 'env.ps51-quoted-code' 'Environment' 'the core skill says to pass C# s
     "inline --code broken: $broken; skill says to use files: $warned"
 }
 
+Add-Check 'env.play-capture-run' 'Environment' 'cliext-play-capture.ps1 -Run "a","b" through powershell -File (which joins them into "a,b") and through & (a real array), and "a;;b", each give two steps; commas inside an argument stay; a bad quote exits 2' {
+    # What an agent gets typing the same thing; -DryRun prints the parsed steps without touching the Editor.
+    $ErrorActionPreference = 'Continue'
+    $capture = Join-Path $tools 'cliext-play-capture.ps1'
+    function Steps($out) { $j = ($out | Out-String) | ConvertFrom-Json; @($j.run | ForEach-Object { (@($_) -join ' ') }) }
+    $viaFile = & powershell -NoProfile -ExecutionPolicy Bypass -File $capture -Project $projectPath -DryRun -Run "cliext.playmode time_scale --value 0.01","debugmenu do --section 'A, B' --position 1,2,3" a@0
+    $s1 = Steps $viaFile
+    Expect ($s1.Count -eq 2 -and $s1[0] -eq 'cliext.playmode time_scale --value 0.01' -and $s1[1] -eq 'debugmenu do --section A, B --position 1,2,3') "via -File: $($s1 -join ' | ')"
+    $viaAmp = & $capture -Project $projectPath -DryRun -Run "debugmenu do --label One","debugmenu do --label Two" a@0
+    $s2 = Steps $viaAmp
+    Expect ($s2.Count -eq 2 -and $s2[1] -eq 'debugmenu do --label Two') "via &: $($s2 -join ' | ')"
+    $viaSep = & powershell -NoProfile -ExecutionPolicy Bypass -File $capture -Project $projectPath -DryRun -Run "unity command scene save;;debugmenu do --tags Red,Blue" a@0
+    $s3 = Steps $viaSep
+    Expect ($s3.Count -eq 2 -and $s3[0] -eq 'scene save' -and $s3[1] -eq 'debugmenu do --tags Red,Blue') "with ;;: $($s3 -join ' | ')"
+    $one = @(Steps (& powershell -NoProfile -ExecutionPolicy Bypass -File $capture -Project $projectPath -DryRun -Run "debugmenu do --label Fire,Ice" a@0))
+    Expect ($one.Count -eq 1 -and $one[0] -eq 'debugmenu do --label Fire,Ice') "one step: $($one -join ' | ')"
+    $null = & powershell -NoProfile -ExecutionPolicy Bypass -File $capture -Project $projectPath -DryRun -Run "debugmenu do --label 'One" a@0 2>&1
+    Expect ($LASTEXITCODE -eq 2) "an unclosed quote: exit $LASTEXITCODE"
+    "-File joined: 2 steps; & array: 2; ';;': 2; commas in arguments kept; unclosed quote exit 2"
+}
+
 # --- T3 environment (run with -T3Ready, before agent scenario runs) -------------------------------------------------
 
 Add-Check 't3.environment' 'T3 environment' 'the Editor is set up the way agents get it: setup applied, agent mode on, watchdog running, skills current' {

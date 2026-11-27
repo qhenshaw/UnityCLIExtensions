@@ -381,6 +381,9 @@ powershell -NoProfile -ExecutionPolicy Bypass -File <package>/Tools~/cliext-play
 - `-Run` takes `unity command` lines, run in order after `-Until`: any command the project or Pipeline offers, such
   as a debug menu's. Quote arguments that have spaces (single or double quotes); a leading `unity command` is
   optional. Each runs once (a retry could trigger an effect twice); one that exits non-zero fails the capture.
+  Several steps: `-Run "a","b"` (through `powershell -File` that arrives as the one string `a,b`, which the script
+  splits again at each comma followed by `<group> <command>`), or one string with `;;` between them. `-DryRun` prints
+  the steps as parsed and exits without touching the Editor.
 - A shot written `NAME@SECONDS` is captured that many real seconds after the last `-Run` step. Timed shots are taken
   first, in time order, then the `NAME=FILE` ones. The JSON reports when each was really taken (`at`) and how far
   after its target (`late`), since every capture takes a moment.
