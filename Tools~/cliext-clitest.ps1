@@ -2114,7 +2114,8 @@ Add-Check 'input.edit' $inRow 'cliext.input edit runs all 13 op kinds in one cal
 '@
     $r = Invoke-Cli @('cliext.input', 'edit', '--path', $script:inPath, '--ops-file', (Write-WorkFile 'in-edit.json' $ops), '--format', 'json')
     Expect ($r.exit -eq 0 -and $r.json.applied -eq 15) "exit $($r.exit): $(Short ($r.stdout + $r.stderr))"
-    Expect (@($r.json.warnings).Count -eq 1 -and "$($r.json.warnings)" -match 'buttonSouht.*Did you mean: buttonSouth') "warnings: $(Short ($r.json.warnings -join ' | '))"
+    # Two warnings: the misspelled control, and buttonEast, which the committed asset binds to Player/Crouch.
+    Expect (@($r.json.warnings).Count -eq 2 -and "$($r.json.warnings)" -match 'buttonSouht.*Did you mean: buttonSouth' -and "$($r.json.warnings)" -match 'buttonEast is also bound to Player/Crouch') "warnings: $(Short ($r.json.warnings -join ' | ') 300)"
     $j = Get-InInspect
     Expect ((@($j.maps | ForEach-Object { $_.name }) -join ',') -eq 'Player,UI,Dbg') "maps: $(@($j.maps | ForEach-Object { $_.name }) -join ',')"
     $jump = Get-InAction $j 'Player' 'Jump'
@@ -2133,7 +2134,7 @@ Add-Check 'input.edit' $inRow 'cliext.input edit runs all 13 op kinds in one cal
     Expect ($pad -and ($pad.devices -join ',') -eq '<Gamepad>,optional <Keyboard>' -and -not ($schemes | Where-Object { $_.name -eq 'XR' })) "schemes: $(Short ($schemes | ConvertTo-Json -Compress))"
     $mem = Get-InMemory
     Expect ($mem -eq (Get-InSig $j)) "in memory differs from the file: $(Short $mem 300)"
-    "15 ops (13 kinds), one warning; Jump kept its id; inspect and memory agree"
+    "15 ops (13 kinds), two warnings (a typo, an overlap with Crouch); Jump kept its id; inspect and memory agree"
 }
 
 Add-Check 'input.edit-errors' $inRow 'cliext.input edit fails (exit 6, one line, with the fix) on unknown maps, actions, bindings, schemes, ops, action types, interactions, processors, composites and parts, missing fields and ops that would change nothing, saving nothing' {
@@ -2226,6 +2227,25 @@ Add-Check 'input.missing-asset' $inRow 'cliext.input edit given an .inputactions
     Expect ($bad.Count -eq 0) ($bad -join '; ')
     Expect (-not (Test-Path (Join-Path $scratch 'NoSuch.inputactions')) -and -not (Test-Path (Join-Path $projectPath 'NotAssets'))) 'a failed call created a file'
     'missing 13 naming Create > Input Actions; a scene 2; outside Assets 2'
+}
+
+Add-Check 'input.edit-warnings' $inRow 'cliext.input edit warns (and still saves) when an added binding''s control is already bound to another action, naming it, and when a binding''s groups match no control scheme, suggesting the close one; a group the same batch adds a scheme for gives none' {
+    Reset-InAsset
+    $ops = '[{"op":"add_action","map":"Player","action":"Dash","type":"Button"},' +
+           '{"op":"add_binding","map":"Player","action":"Dash","path":"<Keyboard>/leftShift","groups":"Keyboard"},' +
+           '{"op":"add_binding","map":"Player","action":"Dash","path":"<Gamepad>/leftShoulder","groups":"Gamepad"},' +
+           '{"op":"add_binding","map":"Player","action":"Dash","path":"<Keyboard>/f12","groups":"Arcade"},' +
+           '{"op":"add_scheme","name":"Arcade","devices":"<Keyboard>"}]'
+    $r = Invoke-Cli @('cliext.input', 'edit', '--path', $script:inPath, '--ops-file', (Write-WorkFile 'in-warn.json' $ops), '--format', 'json')
+    Expect ($r.exit -eq 0 -and $r.json.applied -eq 5) "edit: exit $($r.exit): $(Short ($r.stdout + $r.stderr))"
+    $w = @($r.json.warnings)
+    Expect (@($w | Where-Object { $_ -match '<Keyboard>/leftShift is also bound to Player/Sprint' }).Count -eq 1) "no overlap warning naming Player/Sprint: $(Short ($w -join ' | ') 300)"
+    Expect (@($w | Where-Object { $_ -match "groups 'Keyboard'.*matches no control scheme.*Did you mean: Keyboard&Mouse" }).Count -eq 1) "no groups warning for Keyboard: $(Short ($w -join ' | ') 300)"
+    Expect (@($w | Where-Object { $_ -match 'Arcade|leftShoulder|f12' }).Count -eq 0) "a warning for a scheme the batch adds or a free control: $(Short ($w -join ' | ') 300)"
+    Expect ("$($r.stderr)" -match 'also bound to Player/Sprint') "the warning isn't on stderr: $(Short $r.stderr)"
+    $dash = Get-InAction (Get-InInspect) 'Player' 'Dash'
+    Expect (@($dash.bindings).Count -eq 3) "Dash wasn't saved with its bindings: $(Short ($dash | ConvertTo-Json -Compress -Depth 4))"
+    "$($w.Count) warnings: overlap with Player/Sprint, groups Keyboard (did you mean Keyboard&Mouse); saved"
 }
 
 Add-Check 'input.edit-mode' $inRow 'in Edit mode, add_device, set, press, record_start and replay exit 6 naming editor.playmode start and add no device; devices and replay_status still answer' {

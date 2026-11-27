@@ -591,7 +591,9 @@ applies a JSON list of ops and saves once (an op that fails saves nothing):
 Ops: `add_map`, `remove_map`, `rename_map`, `add_action`, `remove_action`, `rename_action`, `set_action` (type,
 control type, interactions, processors; the action moves to the end of its map), `add_binding`, `add_composite`
 (`parts` as `name=path;...`), `set_binding` and `remove_binding` (by `index` or `id`), `add_scheme` (`devices`
-separated by `;`, `?` for optional), `remove_scheme`. Unknown device layouts in a path come back as warnings.
+separated by `;`, `?` for optional), `remove_scheme`. Unknown device layouts in a path come back as warnings, and so
+do a binding's control that another action in the asset is already bound to (naming it: `<Keyboard>/leftShift is also
+bound to Player/Sprint`) and `groups` that match none of the asset's control schemes once the batch has run.
 
 **Drive the game.** In Play mode:
 ```
@@ -929,7 +931,7 @@ All under `unity command --project-path <project>`:
 | `cliext.shadergraph create --path <graph> --target T [--material M] \| --from <graph>` | Creates a graph. |
 | `cliext.shadergraph add` / `add_property` / `remove` / `set` / `link` / `unlink` | One edit, then save and compile. |
 | `cliext.shadergraph edit --path <graph> --ops-file <path>` | Many edits, one save and compile; `set_target` (alpha clipping, surface type, ...) and `set_mode` (slider, integer, HDR) included. |
-| `cliext.input inspect --path <inputactions>` / `edit --ops-file <path>` | Read and edit maps, actions, bindings and schemes. |
+| `cliext.input inspect --path <inputactions>` / `edit --ops-file <path>` | Read and edit maps, actions, bindings and schemes; warns on controls bound twice and groups with no scheme. |
 | `cliext.input add_device` / `remove_device` / `devices` | Virtual input devices. |
 | `cliext.input set` / `press` / `actions` | Drive controls and read the game's actions (Play mode). |
 | `cliext.input record_start` / `record_stop` / `replay` / `replay_status` | Record and replay input. |

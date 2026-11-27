@@ -142,6 +142,8 @@ namespace UnityCLIExtensions.InputSystem
                         return ExitCode.Failed;
                     }
                 }
+                // Groups are checked against the schemes the asset has once every op ran (a batch may add the scheme last).
+                warnings.AddRange(InputActionsEditing.GroupWarnings(asset, list.ops));
                 InputActionsEditing.Save(asset, resolved);
                 foreach (var w in warnings) cmd.Log.Warning(w);
                 cmd.Result.Write(new { path = resolved, applied = results.Count, results, warnings });

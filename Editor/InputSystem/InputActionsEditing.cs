@@ -229,6 +229,44 @@ namespace UnityCLIExtensions.InputSystem
         private static readonly FieldInfo s_ActionInteractions = typeof(InputAction).GetField("m_Interactions", BindingFlags.Instance | BindingFlags.NonPublic);
         private static readonly FieldInfo s_ActionProcessors = typeof(InputAction).GetField("m_Processors", BindingFlags.Instance | BindingFlags.NonPublic);
 
+        /// <summary>
+        /// A warning when <paramref name="path"/> is already bound to another action in the asset (any map), naming
+        /// them: pressing that control then triggers both. Null when it isn't.
+        /// </summary>
+        public static string OverlapWarning(InputActionAsset asset, InputAction action, string path)
+        {
+            string p = (path ?? "").Trim();
+            if (p.Length == 0) return null;
+            var others = asset.actionMaps.SelectMany(m => m.actions)
+                .Where(x => x != action && x.bindings.Any(b => !b.isComposite && string.Equals((b.path ?? "").Trim(), p, StringComparison.OrdinalIgnoreCase)))
+                .Select(x => $"{x.actionMap.name}/{x.name}").ToList();
+            return others.Count == 0 ? null
+                : $"{p} is also bound to {string.Join(", ", others)}: pressing it triggers {(others.Count == 1 ? "both actions" : "all of them")}. Bind another control, or keep it if that is meant.";
+        }
+
+        /// <summary>
+        /// Warnings for the groups the ops gave bindings that match none of the asset's control schemes (so the
+        /// binding is left out whenever a scheme is in use), checked against the schemes after the whole batch.
+        /// </summary>
+        public static IEnumerable<string> GroupWarnings(InputActionAsset asset, IEnumerable<InputOp> ops)
+        {
+            var schemes = asset.controlSchemes.Select(s => s.bindingGroup).Where(g => !string.IsNullOrEmpty(g)).ToList();
+            var reported = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var op in ops)
+            {
+                string kind = (op.op ?? "").Trim().ToLowerInvariant();
+                if (op.groups == null || (kind != "add_binding" && kind != "add_composite" && kind != "set_binding")) continue;
+                foreach (string g in op.groups.Split(new[] { InputBinding.Separator }, StringSplitOptions.RemoveEmptyEntries).Select(x => x.Trim()))
+                {
+                    if (g.Length == 0 || schemes.Any(s => string.Equals(s, g, StringComparison.OrdinalIgnoreCase)) || !reported.Add(g)) continue;
+                    yield return schemes.Count == 0
+                        ? $"groups '{g}' ({op.action}): the asset has no control schemes, so the group selects nothing. Add one with add_scheme, or leave groups out."
+                        : $"groups '{g}' ({op.action}) matches no control scheme, so the binding is left out while a scheme is active." +
+                          AnimationErrors.Hint(g, schemes, "Schemes", Inspect);
+                }
+            }
+        }
+
         public static object Apply(InputActionAsset asset, InputOp op, List<string> warnings)
         {
             string opName = (op.op ?? "").Trim().ToLowerInvariant();
@@ -263,6 +301,11 @@ namespace UnityCLIExtensions.InputSystem
             {
                 string problem = PathProblem(p);
                 if (problem != null) warnings.Add(problem);
+            }
+            void CheckOverlap(InputAction a, string p)
+            {
+                string overlap = OverlapWarning(asset, a, p);
+                if (overlap != null) warnings.Add(overlap);
             }
             InputActionType ActionType(InputActionType fallback) =>
                 string.IsNullOrWhiteSpace(op.type) ? fallback : AnimationErrors.ParseEnum<InputActionType>(op.type, "action type");
@@ -342,6 +385,7 @@ namespace UnityCLIExtensions.InputSystem
                     CheckInteractions(op.interactions);
                     CheckProcessors(op.processors);
                     CheckPath(op.path);
+                    CheckOverlap(a, op.path);
                     a.AddBinding(op.path, interactions: op.interactions, processors: op.processors, groups: op.groups);
                     return new { op = "add_binding", action = a.name, path = op.path, index = a.bindings.Count - 1 };
                 }
@@ -377,6 +421,7 @@ namespace UnityCLIExtensions.InputSystem
                     foreach (var (partName, partPath) in parts)
                     {
                         CheckPath(partPath);
+                        CheckOverlap(a, partPath);
                         composite = composite.With(partName, partPath, op.groups);
                     }
                     return new { op = "add_composite", action = a.name, composite = op.composite, count = a.bindings.Count };
@@ -389,7 +434,7 @@ namespace UnityCLIExtensions.InputSystem
                     if (op.path == null && op.groups == null && op.interactions == null && op.processors == null)
                         throw new ArgumentException("set_binding needs path, groups, interactions or processors.");
                     var before = binding;
-                    if (op.path != null) { if (op.path.Trim().Length == 0 && !binding.isComposite) throw new ArgumentException("set_binding's path is empty: give a control path, or remove_binding."); CheckPath(op.path); binding.path = op.path; }
+                    if (op.path != null) { if (op.path.Trim().Length == 0 && !binding.isComposite) throw new ArgumentException("set_binding's path is empty: give a control path, or remove_binding."); CheckPath(op.path); if (!binding.isComposite) CheckOverlap(a, op.path); binding.path = op.path; }
                     if (op.groups != null) binding.groups = op.groups;
                     if (op.interactions != null) { CheckInteractions(op.interactions); binding.interactions = op.interactions; }
                     if (op.processors != null) { CheckProcessors(op.processors); binding.processors = op.processors; }
