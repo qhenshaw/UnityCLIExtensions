@@ -121,12 +121,15 @@ namespace UnityCLIExtensions.ShaderGraph
                         graph.RemoveNode(node);
                         return new { op = "remove", id, removed = node.name };
                     }
-                    var property = doc.FindProperty(id);
+                    if (!doc.TryFindProperty(id, out var property))
+                        throw new ArgumentException($"No node or property '{op.id}'. See cliext.shadergraph inspect for the ids" +
+                                                    (graph.properties.Any() ? $" (properties: {string.Join(", ", graph.properties.Select(x => x.displayName))})." : "."));
                     graph.RemoveGraphInput(property);
                     return new { op = "remove", id, removed = property.displayName };
                 }
                 case "set":
                 {
+                    if (op.value == null) throw new ArgumentException("set needs a value (a number, true/false, [x,y,z,w], #RRGGBB, a texture path or an enum name).");
                     if (!string.IsNullOrEmpty(op.setting))
                     {
                         var node = doc.FindNode(Id(op.id));
@@ -186,6 +189,9 @@ namespace UnityCLIExtensions.ShaderGraph
                         var (_, fromSlot) = Slot(op.from, output: true);
                         edges = edges.Where(e => e.outputSlot.Equals(fromSlot.slotReference)).ToList();
                     }
+                    // Unlinking what isn't linked would save an unchanged graph: say so instead.
+                    if (edges.Count == 0)
+                        throw new ArgumentException($"No link into {op.to}{(string.IsNullOrWhiteSpace(op.from) ? "" : $" from {op.from}")}. See cliext.shadergraph inspect for the slot's links.");
                     foreach (var e in edges) graph.RemoveEdge(e);
                     return new { op = "unlink", to = op.to, removed = edges.Count };
                 }
@@ -216,6 +222,7 @@ namespace UnityCLIExtensions.ShaderGraph
                 }
                 case "move":
                 {
+                    if (float.IsNaN(op.x) && float.IsNaN(op.y)) throw new ArgumentException("move needs x and/or y.");
                     var node = doc.FindNode(Id(op.id));
                     var ds = node.drawState;
                     ds.position = new Rect(float.IsNaN(op.x) ? ds.position.x : op.x, float.IsNaN(op.y) ? ds.position.y : op.y, ds.position.width, ds.position.height);
@@ -224,6 +231,7 @@ namespace UnityCLIExtensions.ShaderGraph
                 }
                 case "rename":
                 {
+                    if (string.IsNullOrWhiteSpace(op.name) && string.IsNullOrWhiteSpace(op.reference)) throw new ArgumentException("rename needs a name and/or a reference.");
                     var property = doc.FindProperty(Id(op.id));
                     if (!string.IsNullOrWhiteSpace(op.name)) property.SetDisplayNameAndSanitizeForGraph(graph, op.name);
                     if (!string.IsNullOrWhiteSpace(op.reference)) property.SetReferenceNameAndSanitizeForGraph(graph, op.reference);
@@ -236,7 +244,7 @@ namespace UnityCLIExtensions.ShaderGraph
                     return new { op = "expose", id = op.id, exposed = property.generatePropertyBlock };
                 }
                 default:
-                    throw new ArgumentException($"Unknown op '{op.op}'. Ops: add_node, add_property, add_block, remove, set, link, unlink, move, rename, expose.");
+                    throw new ArgumentException($"Unknown op '{op.op}'. Ops: add_node, add_property, add_block, add_port, remove_port, remove, set, link, unlink, move, rename, expose.");
             }
         }
 

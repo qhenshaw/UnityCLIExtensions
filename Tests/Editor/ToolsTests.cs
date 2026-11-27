@@ -39,6 +39,16 @@ namespace UnityCLIExtensions.Tests
         }
 
         [Test]
+        public void Parse_BadTextGivesAOneLineMessageNamingTheForm()
+        {
+            StringAssert.Contains("a number", Assert.Throws<ArgumentException>(() => ValueText.Parse("abc", typeof(float))).Message);
+            StringAssert.Contains("true or false", Assert.Throws<ArgumentException>(() => ValueText.Parse("maybe", typeof(bool))).Message);
+            StringAssert.Contains("colour", Assert.Throws<ArgumentException>(() => ValueText.Parse("notacolor", typeof(Color))).Message);
+            var e = Assert.Throws<ArgumentException>(() => ValueText.Parse("Glowy", typeof(FilterMode)));
+            StringAssert.Contains("Use one of: Point, Bilinear, Trilinear", e.Message);
+        }
+
+        [Test]
         public void Format_RoundTripsWhatParseReads()
         {
             foreach (var (text, type) in new[] { ("[1,2,3]", typeof(Vector3)), ("0.25", typeof(float)), ("[[0,0],[1,2]]", typeof(AnimationCurve)) })

@@ -699,6 +699,368 @@ Add-Check 'vfx.play-mode' 'cliext.vfx' 'in Play mode an edit applies and stays a
     'edit applied in Play mode and kept after it; bad value saved nothing; back in Edit mode'
 }
 
+# --- cliext.shadergraph -----------------------------------------------------------------------------------------------
+
+# One scratch graph made by sg.create and built by sg.edit-batch; later checks edit it by the ids those returned.
+$script:sgPath = "$scratchRel/CliTestSg.shadergraph"
+$script:sgIds = @{}
+$sgTexture = 'Assets/ThirdParty/VFXTexturePack/TX_Noise_01.png'
+
+function Get-SgHash { (Get-FileHash (Join-Path $projectPath ($script:sgPath -replace '/', '\'))).Hash }
+function Get-SgGraph { $r = Invoke-Cli @('cliext.shadergraph', 'inspect', '--path', $script:sgPath, '--format', 'json'); Expect ($r.exit -eq 0) "inspect: exit $($r.exit): $(Short $r.stderr)"; $r.json }
+function Get-SgNode([string]$id) { $r = Invoke-Cli @('cliext.shadergraph', 'inspect', '--path', $script:sgPath, '--id', $id, '--format', 'json'); if ($r.exit -eq 0) { $r.json } else { $null } }
+function Get-SgSlot($node, [string]$slot) { @($node.inputs) | Where-Object { $_.name -eq $slot } | Select-Object -First 1 }
+function Get-SgSetting($node, [string]$name) { "$((@($node.settings) | Where-Object { $_.name -eq $name } | Select-Object -First 1).value)" }
+function Need-SgIds { Expect ($script:sgIds.ContainsKey('mul')) 'no scratch graph: sg.create or sg.edit-batch did not run or failed' }
+function Get-SgShader {
+    # The compiled shader's property names, and a new material's defaults: what a material using the graph gets.
+    $code = @"
+var s = UnityEditor.AssetDatabase.LoadAssetAtPath<UnityEngine.Shader>("$($script:sgPath)");
+if (s == null) return "no shader";
+var names = new System.Collections.Generic.List<string>();
+for (int i = 0; i < s.GetPropertyCount(); i++) names.Add(s.GetPropertyName(i));
+var m = new UnityEngine.Material(s);
+var tex = m.HasTexture("_Noise") ? m.GetTexture("_Noise") : null;
+string r = string.Join(",", names) + "|" + (tex != null ? UnityEditor.AssetDatabase.GetAssetPath(tex) : "") + "|"
+    + (m.HasColor("_Tint") ? UnityEngine.ColorUtility.ToHtmlStringRGB(m.GetColor("_Tint")) : "") + "|"
+    + (m.HasFloat("_Speed") ? m.GetFloat("_Speed").ToString(System.Globalization.CultureInfo.InvariantCulture) : "");
+UnityEngine.Object.DestroyImmediate(m);
+return r;
+"@
+    $r = Invoke-Cli @('script', 'eval', '--file', (Write-WorkFile 'sg-shader.cs' $code), '--format', 'json')
+    Expect ($r.exit -eq 0) "script eval: exit $($r.exit): $(Short ($r.stdout + $r.stderr))"
+    $parts = $r.stdout.Trim().Trim('"') -split '\|'
+    Expect ($parts.Count -eq 4) "script eval: $(Short $r.stdout)"
+    [pscustomobject]@{ properties = @($parts[0] -split ','); noise = $parts[1]; tint = $parts[2]; speed = $parts[3] }
+}
+function Expect-SgFailure($r, [string]$hint, [string]$before, [string]$what) {
+    Expect ($r.exit -ne 0) "${what}: exit 0"
+    Expect ($r.exit -ne 124) "${what}: timed out"
+    Expect ("$($r.stderr)" -match $hint) "${what}: the error doesn't say '$hint': $(Short $r.stderr)"
+    Expect ("$($r.stderr)" -notmatch '   at ') "${what}: a stack trace instead of a message: $(Short $r.stderr)"
+    if ($before) { Expect ((Get-SgHash) -eq $before) "${what}: the .shadergraph on disk changed" }
+}
+
+Add-Check 'sg.types' 'cliext.shadergraph' 'cliext.shadergraph types finds a node key by filter and lists the targets with their materials' {
+    $r = Invoke-Cli @('cliext.shadergraph', 'types', '--filter', 'Multiply', '--format', 'json')
+    Expect ($r.exit -eq 0) "exit $($r.exit): $(Short $r.stderr)"
+    $keys = @(@($r.json) | ForEach-Object { $_.key })
+    Expect ($keys -contains 'Math/Basic/Multiply') "no Math/Basic/Multiply in: $($keys -join ', ')"
+    Expect (@($keys | Where-Object { $_ -notmatch 'Multiply' }).Count -eq 0) "keys that don't match the filter: $($keys -join ', ')"
+    $t = Invoke-Cli @('cliext.shadergraph', 'types', '--targets', 'true', '--format', 'json')
+    Expect ($t.exit -eq 0) "--targets: exit $($t.exit): $(Short $t.stderr)"
+    $urp = @($t.json) | Where-Object { $_.target -eq 'Universal' }
+    Expect ($null -ne $urp -and @($urp.materials) -contains 'Unlit' -and @($urp.materials) -contains 'Lit') "no Universal with Lit and Unlit: $(Short $t.stdout)"
+    "$($keys.Count) match(es); $(@($t.json).Count) targets, Universal has $(@($urp.materials).Count) materials"
+}
+
+Add-Check 'sg.create' 'cliext.shadergraph' 'cliext.shadergraph create makes a URP Unlit graph and copies one (--from); an existing path, a path outside Assets, an unknown target or material, or a missing --from fails with the fix' {
+    $r = Invoke-Cli @('cliext.shadergraph', 'create', '--path', $script:sgPath, '--target', 'Universal', '--material', 'Unlit', '--format', 'json') 180
+    Expect ($r.exit -eq 0) "exit $($r.exit): $(Short ($r.stdout + $r.stderr))"
+    Expect ($r.json.compile.hasErrors -eq $false) "the new graph has compile errors: $(Short ($r.json.compile | ConvertTo-Json -Compress))"
+    $g = Get-SgGraph
+    Expect (@($g.targets).Count -eq 1 -and $g.targets[0].target -eq 'Universal' -and $g.targets[0].material -eq 'Unlit') "targets: $(Short ($g.targets | ConvertTo-Json -Compress))"
+    $base = @($g.fragment) | Where-Object { $_.name -eq 'Base Color' } | Select-Object -First 1
+    Expect ($null -ne $base) "no Base Color block: $(@($g.fragment | ForEach-Object { $_.name }) -join ', ')"
+    $script:sgIds['base'] = "$($base.id)"
+    $copy = "$scratchRel/CliTestSgCopy.shadergraph"
+    $c = Invoke-Cli @('cliext.shadergraph', 'create', '--path', $copy, '--from', $script:sgPath, '--format', 'json') 180
+    Expect ($c.exit -eq 0) "--from: exit $($c.exit): $(Short ($c.stdout + $c.stderr))"
+    $ci = Invoke-Cli @('cliext.shadergraph', 'inspect', '--path', $copy, '--details', 'false', '--format', 'json')
+    Expect ($ci.exit -eq 0 -and $ci.json.targets[0].material -eq 'Unlit') "the copy: exit $($ci.exit): $(Short ($ci.stdout + $ci.stderr))"
+
+    $before = Get-SgHash
+    $again = Invoke-Cli @('cliext.shadergraph', 'create', '--path', $script:sgPath, '--target', 'Universal', '--format', 'json')
+    Expect-SgFailure $again 'already exists.*cliext\.shadergraph edit' $before 'existing path'
+    Expect ($again.exit -eq 6) "existing path: exit $($again.exit), expected 6"
+    $cases = @(
+        @(@('--path', 'NotAssets/CliTest.shadergraph', '--target', 'Universal'), 2, "isn't under Assets/", 'path outside Assets'),
+        @(@('--path', 'CliTest.shadergraph', '--target', 'Universal'), 2, "isn't under Assets/", 'bare file name'),
+        @(@('--path', "$scratchRel/BadTarget.shadergraph", '--target', 'Glowy'), 2, 'Targets:.*Universal', 'unknown target'),
+        @(@('--path', "$scratchRel/BadMaterial.shadergraph", '--target', 'Universal', '--material', 'Glowy'), 2, 'It has:.*Unlit', 'unknown material'),
+        @(@('--path', "$scratchRel/BadFrom.shadergraph", '--from', "$scratchRel/NoSuch.shadergraph"), 13, 'No Shader Graph to copy', 'missing --from')
+    )
+    $seen = @()
+    foreach ($k in $cases) {
+        $f = Invoke-Cli (@('cliext.shadergraph', 'create') + $k[0] + @('--format', 'json'))
+        Expect-SgFailure $f $k[2] '' $k[3]
+        Expect ($f.exit -eq $k[1]) "$($k[3]): exit $($f.exit), expected $($k[1])"
+        $seen += "$($k[3]) $($f.exit)"
+    }
+    foreach ($left in 'NotAssets', 'CliTest.shadergraph', "$($scratchRel -replace '/', '\')\BadTarget.shadergraph", "$($scratchRel -replace '/', '\')\BadMaterial.shadergraph", "$($scratchRel -replace '/', '\')\BadFrom.shadergraph") {
+        Expect (-not (Test-Path (Join-Path $projectPath $left))) "a failed create left $left"
+    }
+    "Universal/Unlit with Base Color; copy made; existing exit 6; $($seen -join ', ')"
+}
+
+Add-Check 'sg.edit-batch' 'cliext.shadergraph' 'cliext.shadergraph edit adds two properties (a pack texture), two nodes and four links in one call; the compiled shader and a material using it show them' {
+    Expect ($script:sgIds.ContainsKey('base')) 'no scratch graph: sg.create did not run or failed'
+    Expect (Test-Path (Join-Path $projectPath ($sgTexture -replace '/', '\'))) "no texture at $sgTexture"
+    $ops = @(
+        @{ op = 'add_property'; type = 'color'; name = 'Tint'; reference = '_Tint'; value = '#FF8000'; as = 'tint' },
+        @{ op = 'add_property'; type = 'texture2d'; name = 'Noise'; reference = '_Noise'; value = $sgTexture; as = 'noise' },
+        @{ op = 'add_node'; type = 'Input/Texture/Sample Texture 2D'; as = 'tex' },
+        @{ op = 'add_node'; type = 'Math/Basic/Multiply'; as = 'mul' },
+        @{ op = 'link'; from = '$noise'; to = '$tex:Texture' },
+        @{ op = 'link'; from = '$tex:RGBA'; to = '$mul:A' },
+        @{ op = 'link'; from = '$tint'; to = '$mul:B' },
+        @{ op = 'link'; from = '$mul:Out'; to = "$($script:sgIds.base):Base Color" }
+    )
+    $f = Write-WorkFile 'sg-batch.json' ($ops | ConvertTo-Json -Compress)
+    $r = Invoke-Cli @('cliext.shadergraph', 'edit', '--path', $script:sgPath, '--ops-file', $f, '--format', 'json') 180
+    Expect ($r.exit -eq 0) "exit $($r.exit): $(Short ($r.stdout + $r.stderr))"
+    Expect ($r.json.applied -eq 8 -and $r.json.total -eq 8) "applied $($r.json.applied) of $($r.json.total)"
+    Expect ($r.json.compile.hasErrors -eq $false) "compile errors: $(Short ($r.json.compile | ConvertTo-Json -Compress))"
+    foreach ($a in @($r.json.results | Where-Object { $_.alias })) { $script:sgIds[$a.alias] = "$($a.id)" }
+    foreach ($k in 'tint', 'noise', 'tex', 'mul') { Expect ($script:sgIds.ContainsKey($k)) "no id for `$$k in the results" }
+    $base = Get-SgSlot (Get-SgNode $script:sgIds.base) 'Base Color'
+    Expect (@($base.links) -contains "$($script:sgIds.mul):2") "Base Color isn't linked from Multiply: $(Short ($base | ConvertTo-Json -Compress))"
+    $s = Get-SgShader
+    Expect ($s.properties -contains '_Tint' -and $s.properties -contains '_Noise') "shader properties: $($s.properties -join ', ')"
+    Expect ($s.noise -eq $sgTexture) "a material's _Noise is '$($s.noise)', expected $sgTexture"
+    Expect ($s.tint -eq 'FF8000') "a material's _Tint is '$($s.tint)'"
+    "8 ops in one call; shader has _Tint and _Noise; a material gets the noise texture and FF8000"
+}
+
+Add-Check 'sg.add' 'cliext.shadergraph' 'cliext.shadergraph add puts a node at a position; an unknown node key fails, suggests a match or the types command, and saves nothing' {
+    Need-SgIds
+    $r = Invoke-Cli @('cliext.shadergraph', 'add', '--path', $script:sgPath, '--type', 'Math/Basic/Add', '--x', '-700', '--y', '320', '--format', 'json')
+    Expect ($r.exit -eq 0) "exit $($r.exit): $(Short ($r.stdout + $r.stderr))"
+    $id = "$(@($r.json.results)[0].id)"
+    Expect ($id -match '^[0-9a-f]{32}$') "no id for the new node: $(Short $r.stdout)"
+    $script:sgIds['add'] = $id
+    $n = Get-SgNode $id
+    Expect ($null -ne $n -and $n.type -eq 'AddNode') "inspect --id: $(Short ($n | ConvertTo-Json -Compress))"
+    Expect ($n.position[0] -eq -700 -and $n.position[1] -eq 320) "position: $($n.position -join ',')"
+    $before = Get-SgHash
+    $none = Invoke-Cli @('cliext.shadergraph', 'add', '--path', $script:sgPath, '--type', 'Zzqx', '--format', 'json')
+    Expect-SgFailure $none 'cliext\.shadergraph types' $before 'unknown key, no close match'
+    $close = Invoke-Cli @('cliext.shadergraph', 'add', '--path', $script:sgPath, '--type', 'Math/Basic/Mult', '--format', 'json')
+    Expect-SgFailure $close 'Did you mean: Math/Basic/Multiply' $before 'unknown key with a close match'
+    $x = Invoke-Cli @('cliext.shadergraph', 'add', '--path', $script:sgPath, '--type', 'Multiply', '--x', 'abc', '--format', 'json')
+    Expect-SgFailure $x 'abc' $before 'non-numeric --x'
+    Expect ($x.exit -eq 2) "non-numeric --x: exit $($x.exit), expected 2"
+    "added $id at -700,320; no match exit $($none.exit), close match exit $($close.exit), bad --x exit 2"
+}
+
+Add-Check 'sg.add_property' 'cliext.shadergraph' 'cliext.shadergraph add_property adds an exposed float with a default a material reads; an unknown type is invalid usage and a bad default is one line' {
+    Need-SgIds
+    $r = Invoke-Cli @('cliext.shadergraph', 'add_property', '--path', $script:sgPath, '--type', 'float', '--name', 'Speed', '--reference', '_Speed', '--value', '2.5', '--format', 'json')
+    Expect ($r.exit -eq 0) "exit $($r.exit): $(Short ($r.stdout + $r.stderr))"
+    $script:sgIds['speed'] = "$(@($r.json.results)[0].id)"
+    $p = @((Get-SgGraph).properties) | Where-Object { $_.reference -eq '_Speed' }
+    Expect ($null -ne $p -and $p.exposed -eq $true -and $p.value -eq '2.5') "inspect: $(Short ($p | ConvertTo-Json -Compress))"
+    $s = Get-SgShader
+    Expect ($s.properties -contains '_Speed' -and $s.speed -eq '2.5') "shader: _Speed default '$($s.speed)' in $($s.properties -join ', ')"
+    $before = Get-SgHash
+    $t = Invoke-Cli @('cliext.shadergraph', 'add_property', '--path', $script:sgPath, '--type', 'colour', '--format', 'json')
+    Expect-SgFailure $t 'Unknown property type.*color, texture2d' $before 'unknown --type'
+    Expect ($t.exit -eq 2) "unknown --type: exit $($t.exit), expected 2"
+    $v = Invoke-Cli @('cliext.shadergraph', 'add_property', '--path', $script:sgPath, '--type', 'float', '--name', 'Bad', '--value', 'abc', '--format', 'json')
+    Expect-SgFailure $v 'a number' $before 'non-numeric --value'
+    $b = Invoke-Cli @('cliext.shadergraph', 'add_property', '--path', $script:sgPath, '--type', 'boolean', '--name', 'Bad', '--value', 'maybe', '--format', 'json')
+    Expect-SgFailure $b 'true or false' $before 'non-boolean --value'
+    "Speed 2.5 exposed; unknown type exit 2, bad float exit $($v.exit), bad bool exit $($b.exit)"
+}
+
+Add-Check 'sg.set' 'cliext.shadergraph' 'cliext.shadergraph set changes a slot, a property default and a node setting; bad values, unknown slots, settings, properties or ids fail, name the fix and save nothing' {
+    Need-SgIds
+    $r = Invoke-Cli @('cliext.shadergraph', 'set', '--path', $script:sgPath, '--id', $script:sgIds.add, '--slot', 'B', '--value', '0.5', '--format', 'json')
+    Expect ($r.exit -eq 0) "slot: exit $($r.exit): $(Short ($r.stdout + $r.stderr))"
+    $p = Invoke-Cli @('cliext.shadergraph', 'set', '--path', $script:sgPath, '--id', 'Tint', '--value', '#00FF00', '--format', 'json')
+    Expect ($p.exit -eq 0) "property: exit $($p.exit): $(Short ($p.stdout + $p.stderr))"
+    $st = Invoke-Cli @('cliext.shadergraph', 'set', '--path', $script:sgPath, '--id', $script:sgIds.tex, '--setting', 'mipSamplingMode', '--value', 'LOD', '--format', 'json')
+    Expect ($st.exit -eq 0) "setting: exit $($st.exit): $(Short ($st.stdout + $st.stderr))"
+    Expect ("$((Get-SgSlot (Get-SgNode $script:sgIds.add) 'B').value)" -match '^\[?0\.5') "Add B is '$((Get-SgSlot (Get-SgNode $script:sgIds.add) 'B').value)'"
+    Expect ((Get-SgShader).tint -eq '00FF00') 'a material does not get the new Tint'
+    Expect ((Get-SgSetting (Get-SgNode $script:sgIds.tex) 'mipSamplingMode') -eq 'LOD') "mipSamplingMode is '$(Get-SgSetting (Get-SgNode $script:sgIds.tex) 'mipSamplingMode')'"
+    $before = Get-SgHash
+    $cases = @(
+        @(@('--id', $script:sgIds.add, '--slot', 'B', '--value', 'abc'), 'a ', 'non-numeric slot value'),
+        @(@('--id', 'Tint', '--value', 'notacolor'), 'colour', 'bad colour'),
+        @(@('--id', $script:sgIds.tex, '--setting', 'textureType', '--value', 'Glowy'), 'Use one of:.*Normal', 'unknown enum name'),
+        @(@('--id', $script:sgIds.add, '--slot', 'Bee', '--value', '1'), 'It has: 0 A, 1 B', 'unknown slot'),
+        @(@('--id', $script:sgIds.mul, '--slot', 'B', '--value', '1'), 'unlink it', 'linked slot'),
+        @(@('--id', $script:sgIds.tex, '--setting', 'nope', '--value', '1'), 'It has:.*textureType', 'unknown setting'),
+        @(@('--id', 'NoSuchProperty', '--value', '1'), 'Properties:.*Tint', 'unknown property'),
+        @(@('--id', 'Noise', '--value', 'Assets/NoSuchTexture.png'), 'No Texture at', 'missing texture'),
+        @(@('--id', 'ffffffffffffffffffffffffffffffff', '--slot', 'B', '--value', '1'), 'cliext\.shadergraph inspect', 'unknown node id')
+    )
+    $seen = @()
+    foreach ($c in $cases) {
+        $f = Invoke-Cli (@('cliext.shadergraph', 'set', '--path', $script:sgPath) + $c[0] + @('--format', 'json'))
+        Expect-SgFailure $f $c[1] $before $c[2]
+        $seen += "$($c[2]) $($f.exit)"
+    }
+    $nv = Invoke-Cli @('cliext.shadergraph', 'set', '--path', $script:sgPath, '--id', $script:sgIds.add, '--slot', 'B', '--format', 'json')
+    Expect-SgFailure $nv 'value' $before 'no --value'
+    Expect ($nv.exit -eq 2) "no --value: exit $($nv.exit), expected 2"
+    "B 0.5, Tint 00FF00, mipSamplingMode LOD; failures: $($seen -join ', '), no value 2"
+}
+
+Add-Check 'sg.link-unlink' 'cliext.shadergraph' 'cliext.shadergraph link (a property and a slot) and unlink; unlinking what is not linked, a type mismatch, or an unknown slot or property fails and saves nothing' {
+    Need-SgIds
+    $l = Invoke-Cli @('cliext.shadergraph', 'link', '--path', $script:sgPath, '--from', 'Speed', '--to', "$($script:sgIds.add):A", '--format', 'json')
+    Expect ($l.exit -eq 0) "link a property: exit $($l.exit): $(Short ($l.stdout + $l.stderr))"
+    $pn = "$(@($l.json.results)[0].fromNode)"
+    Expect (@((Get-SgSlot (Get-SgNode $script:sgIds.add) 'A').links) -contains "${pn}:0") "Add A isn't linked from the Speed node $pn"
+    Expect ((Get-SgNode $pn).property -eq 'Speed') "node $pn isn't a Speed property node"
+    $u = Invoke-Cli @('cliext.shadergraph', 'unlink', '--path', $script:sgPath, '--to', "$($script:sgIds.add):A", '--format', 'json')
+    Expect ($u.exit -eq 0 -and @($u.json.results)[0].removed -eq 1) "unlink: exit $($u.exit): $(Short ($u.stdout + $u.stderr))"
+    Expect ($null -eq (Get-SgSlot (Get-SgNode $script:sgIds.add) 'A').links) 'Add A is still linked after unlink'
+    $before = Get-SgHash
+    $again = Invoke-Cli @('cliext.shadergraph', 'unlink', '--path', $script:sgPath, '--to', "$($script:sgIds.add):A", '--format', 'json')
+    Expect-SgFailure $again 'No link into.*inspect' $before 'unlink of a slot with no link'
+    $from = Invoke-Cli @('cliext.shadergraph', 'unlink', '--path', $script:sgPath, '--to', "$($script:sgIds.mul):A", '--from', "$($script:sgIds.add):Out", '--format', 'json')
+    Expect-SgFailure $from 'No link into.*from' $before 'unlink --from a node that is not linked there'
+    $type = Invoke-Cli @('cliext.shadergraph', 'link', '--path', $script:sgPath, '--from', "$($script:sgIds.add):Out", '--to', "$($script:sgIds.tex):Texture", '--format', 'json')
+    Expect-SgFailure $type "Can't link|refused" $before 'a vector into a texture slot'
+    $slot = Invoke-Cli @('cliext.shadergraph', 'link', '--path', $script:sgPath, '--from', "$($script:sgIds.add):Nope", '--to', "$($script:sgIds.mul):A", '--format', 'json')
+    Expect-SgFailure $slot 'has no output slot.*It has: 2 Out' $before 'unknown output slot'
+    $prop = Invoke-Cli @('cliext.shadergraph', 'link', '--path', $script:sgPath, '--from', 'NoSuchProperty', '--to', "$($script:sgIds.add):A", '--format', 'json')
+    Expect-SgFailure $prop 'No property.*Properties:' $before 'unknown property'
+    $form = Invoke-Cli @('cliext.shadergraph', 'link', '--path', $script:sgPath, '--from', "$($script:sgIds.add):Out", '--to', $script:sgIds.mul, '--format', 'json')
+    Expect-SgFailure $form '<node id>:<slot>' $before 'a --to without a slot'
+    "linked Speed into Add A and unlinked; failures: $($again.exit), $($from.exit), $($type.exit), $($slot.exit), $($prop.exit), $($form.exit)"
+}
+
+Add-Check 'sg.hlsl' 'cliext.shadergraph' 'a Custom Function with bad HLSL saves but exits 6 with the compile error in the reply; fixing the body compiles clean' {
+    Need-SgIds
+    $ops = @(
+        @{ op = 'add_node'; type = 'Utility/Custom Function'; as = 'cf' },
+        @{ op = 'add_port'; id = '$cf'; name = 'In'; type = 'vector3' },
+        @{ op = 'add_port'; id = '$cf'; name = 'Out'; type = 'vector3'; value = 'out' },
+        @{ op = 'set'; id = '$cf'; setting = 'sourceType'; value = 'String' },
+        @{ op = 'set'; id = '$cf'; setting = 'functionName'; value = 'CliTestGlow' },
+        @{ op = 'set'; id = '$cf'; setting = 'functionBody'; value = 'Out = In * 2 +;' },
+        @{ op = 'link'; from = "$($script:sgIds.mul):Out"; to = '$cf:In' },
+        @{ op = 'link'; from = '$cf:Out'; to = "$($script:sgIds.base):Base Color" }
+    )
+    $r = Invoke-Cli @('cliext.shadergraph', 'edit', '--path', $script:sgPath, '--ops-file', (Write-WorkFile 'sg-cf.json' ($ops | ConvertTo-Json -Compress)), '--format', 'json') 180
+    Expect ($r.exit -eq 6) "bad HLSL: exit $($r.exit), expected 6: $(Short ($r.stdout + $r.stderr))"
+    Expect ($r.json.applied -eq 8 -and @($r.json.compile.shaderErrors).Count -gt 0) "no shader error in the reply: $(Short ($r.json.compile | ConvertTo-Json -Compress))"
+    Expect ("$($r.stderr)" -match 'compile error') "stderr doesn't say why it exited 6: $(Short $r.stderr)"
+    $cf = "$((@($r.json.results) | Where-Object { $_.alias -eq 'cf' }).id)"
+    $script:sgIds['cf'] = $cf
+    $err = Short "$(@($r.json.compile.shaderErrors)[0])" 80
+    $fix = Invoke-Cli @('cliext.shadergraph', 'set', '--path', $script:sgPath, '--id', $cf, '--setting', 'functionBody', '--value', 'Out = In * 2;', '--format', 'json') 180
+    Expect ($fix.exit -eq 0) "good HLSL: exit $($fix.exit): $(Short ($fix.stdout + $fix.stderr))"
+    Expect (@($fix.json.compile.shaderErrors).Count -eq 0) "still errors: $(Short ($fix.json.compile | ConvertTo-Json -Compress))"
+    $i = Get-SgGraph
+    Expect ($i.compile.hasErrors -eq $false) "inspect still reports errors: $(Short ($i.compile | ConvertTo-Json -Compress))"
+    Expect ((Get-SgSetting (Get-SgNode $cf) 'functionBody') -eq 'Out = In * 2;') 'inspect shows another body'
+    "bad body exit 6 ($err); fixed body exit 0, no errors"
+}
+
+Add-Check 'sg.remove' 'cliext.shadergraph' 'cliext.shadergraph remove takes out a node and a property (by name); an unknown id fails, points at inspect and saves nothing' {
+    Need-SgIds
+    $r = Invoke-Cli @('cliext.shadergraph', 'remove', '--path', $script:sgPath, '--id', $script:sgIds.add, '--format', 'json')
+    Expect ($r.exit -eq 0) "node: exit $($r.exit): $(Short ($r.stdout + $r.stderr))"
+    Expect ($null -eq (Get-SgNode $script:sgIds.add)) 'the Add node is still there'
+    $p = Invoke-Cli @('cliext.shadergraph', 'remove', '--path', $script:sgPath, '--id', 'Speed', '--format', 'json')
+    Expect ($p.exit -eq 0) "property: exit $($p.exit): $(Short ($p.stdout + $p.stderr))"
+    $g = Get-SgGraph
+    Expect (@($g.properties | Where-Object { $_.name -eq 'Speed' }).Count -eq 0) 'the Speed property is still there'
+    Expect (@($g.nodes | Where-Object { $_.property -eq 'Speed' }).Count -eq 0) 'a Speed property node is left over'
+    Expect ((Get-SgShader).properties -notcontains '_Speed') 'the compiled shader still has _Speed'
+    $before = Get-SgHash
+    $bad = Invoke-Cli @('cliext.shadergraph', 'remove', '--path', $script:sgPath, '--id', $script:sgIds.add, '--format', 'json')
+    Expect-SgFailure $bad 'No node or property.*cliext\.shadergraph inspect' $before 'unknown id'
+    "removed Add and Speed; again: exit $($bad.exit)"
+}
+
+Add-Check 'sg.batch-rollback' 'cliext.shadergraph' 'an edit batch with one bad op saves nothing, on disk or in memory, and the next good edit saves only its own change' {
+    Need-SgIds
+    $before = Get-SgHash
+    $g0 = Get-SgGraph
+    $ops = @(
+        @{ op = 'add_node'; type = 'Math/Basic/Subtract'; as = 'extra' },
+        @{ op = 'add_property'; type = 'float'; name = 'Extra' },
+        @{ op = 'set'; id = 'Tint'; value = '#0000FF' },
+        @{ op = 'remove'; id = $script:sgIds.tex },
+        @{ op = 'unlink'; to = "$($script:sgIds.base):Base Color" },
+        @{ op = 'add_node'; type = 'Math/Basic/NoSuchNode' }
+    )
+    $r = Invoke-Cli @('cliext.shadergraph', 'edit', '--path', $script:sgPath, '--ops-file', (Write-WorkFile 'sg-bad-batch.json' ($ops | ConvertTo-Json -Compress)), '--format', 'json')
+    Expect-SgFailure $r 'Op 5 \(add_node\) failed.*Nothing was saved' $before 'bad batch'
+    Expect ($r.json.saved -eq $false -and $r.json.failedAt -eq 5 -and $r.json.applied -eq 0) "reply: $(Short $r.stdout)"
+    $g1 = Get-SgGraph
+    Expect (@($g1.nodes).Count -eq @($g0.nodes).Count -and @($g1.properties).Count -eq @($g0.properties).Count) "in memory: $(@($g0.nodes).Count) nodes, $(@($g0.properties).Count) properties -> $(@($g1.nodes).Count), $(@($g1.properties).Count)"
+    $good = Write-WorkFile 'sg-good.json' ('[' + (@{ op = 'move'; id = $script:sgIds.mul; x = -333; y = 44 } | ConvertTo-Json -Compress) + ']')
+    $ok = Invoke-Cli @('cliext.shadergraph', 'edit', '--path', $script:sgPath, '--ops-file', $good, '--format', 'json')
+    Expect ($ok.exit -eq 0) "good edit: exit $($ok.exit): $(Short ($ok.stdout + $ok.stderr))"
+    $g2 = Get-SgGraph
+    Expect (@($g2.nodes).Count -eq @($g0.nodes).Count) "the failed batch's nodes were saved: $(@($g0.nodes).Count) -> $(@($g2.nodes).Count) nodes"
+    Expect (@($g2.properties | Where-Object { $_.name -eq 'Extra' }).Count -eq 0) "the failed batch's property was saved"
+    Expect ($null -ne (Get-SgNode $script:sgIds.tex)) "the failed batch's remove was saved: node $($script:sgIds.tex) is gone"
+    Expect (@((Get-SgSlot (@($g2.fragment) | Where-Object { $_.id -eq $script:sgIds.base }) 'Base Color').links).Count -eq 1) "the failed batch's unlink was saved"
+    Expect ((Get-SgShader).tint -eq '00FF00') "the failed batch's Tint was saved: $((Get-SgShader).tint)"
+    $mul = Get-SgNode $script:sgIds.mul
+    Expect ($mul.position[0] -eq -333 -and $mul.position[1] -eq 44) "the good edit's move isn't there: $($mul.position -join ',')"
+    'failed at op 5, file unchanged; next edit saved only its own change'
+}
+
+Add-Check 'sg.window-open' 'cliext.shadergraph' 'with the graph open in a Shader Graph window, add and edit refuse (exit 6, naming --force) and save nothing' {
+    Need-SgIds
+    $open = Write-WorkFile 'sg-open.cs' "UnityEditor.AssetDatabase.OpenAsset(UnityEditor.AssetDatabase.LoadMainAssetAtPath(`"$($script:sgPath)`")); return `"opened`";"
+    $close = Write-WorkFile 'sg-close.cs' 'int n = 0; foreach (var w in UnityEngine.Resources.FindObjectsOfTypeAll<UnityEditor.EditorWindow>()) if (w.GetType().Name == "MaterialGraphEditWindow") { w.Close(); n++; } return n;'
+    $before = Get-SgHash
+    $o = Invoke-Cli @('script', 'eval', '--file', $open, '--format', 'json')
+    try {
+        Expect ($o.exit -eq 0) "couldn't open the window: $(Short ($o.stdout + $o.stderr))"
+        $a = Invoke-Cli @('cliext.shadergraph', 'add', '--path', $script:sgPath, '--type', 'Math/Basic/Add', '--format', 'json')
+        Expect-SgFailure $a 'open in a Shader Graph window.*cliext\.shadergraph edit --force true' $before 'add with the window open'
+        Expect ($a.exit -eq 6) "add: exit $($a.exit), expected 6"
+        $e = Invoke-Cli @('cliext.shadergraph', 'edit', '--path', $script:sgPath, '--ops-file', (Write-WorkFile 'sg-win.json' '[{"op":"add_node","type":"Math/Basic/Add"}]'), '--format', 'json')
+        Expect-SgFailure $e 'open in a Shader Graph window.*pass --force true' $before 'edit with the window open'
+        $i = Invoke-Cli @('cliext.shadergraph', 'inspect', '--path', $script:sgPath, '--details', 'false', '--format', 'json')
+        Expect ($i.exit -eq 0) "inspect (read-only) with the window open: exit $($i.exit)"
+    }
+    finally { $c = Invoke-Cli @('script', 'eval', '--file', $close, '--format', 'json') }
+    Expect ("$($c.stdout)" -match '1') "closed $(Short $c.stdout) window(s), expected 1"
+    'add and edit refused while open; inspect works; window closed'
+}
+
+Add-Check 'sg.missing-asset' 'cliext.shadergraph' 'every cliext.shadergraph command given a graph that does not exist exits 13 at once, pointing at cliext.shadergraph create; a path that is not a graph is invalid usage' {
+    $none = "$scratchRel/NoSuch.shadergraph"
+    $cmds = @(
+        @('inspect'), @('add', '--type', 'Math/Basic/Add'), @('add_property', '--type', 'float'), @('remove', '--id', 'x'),
+        @('set', '--id', 'x', '--value', '1'), @('link', '--from', 'a:Out', '--to', 'b:A'), @('unlink', '--to', 'b:A')
+    )
+    $f = Write-WorkFile 'sg-one.json' '[{"op":"add_node","type":"Math/Basic/Add"}]'
+    $bad = @()
+    foreach ($c in $cmds + , @('edit', '--ops-file', $f)) {
+        $r = Invoke-Cli (@('cliext.shadergraph', $c[0], '--path', $none) + @($c | Select-Object -Skip 1) + @('--format', 'json')) 60
+        if ($r.exit -ne 13 -or "$($r.stderr)" -notmatch 'cliext\.shadergraph create' -or $r.ms -gt 30000) { $bad += "$($c[0]): exit $($r.exit) in $($r.ms) ms ($(Short $r.stderr 60))" }
+    }
+    Expect ($bad.Count -eq 0) ($bad -join '; ')
+    Expect (-not (Test-Path (Join-Path $projectPath ($none -replace '/', '\')))) 'a graph was made at the missing path'
+    $png = Invoke-Cli @('cliext.shadergraph', 'inspect', '--path', $sgTexture, '--format', 'json')
+    Expect-SgFailure $png "isn't a Shader Graph" '' 'a .png as --path'
+    Expect ($png.exit -eq 2) "a .png as --path: exit $($png.exit), expected 2"
+    "all $($cmds.Count + 1) exit 13 naming cliext.shadergraph create; a .png exit 2"
+}
+
+Add-Check 'sg.edit-usage' 'cliext.shadergraph' 'cliext.shadergraph edit with no ops, bad JSON or an unknown op fails with the fix and saves nothing' {
+    Need-SgIds
+    $before = Get-SgHash
+    $no = Invoke-Cli @('cliext.shadergraph', 'edit', '--path', $script:sgPath, '--format', 'json')
+    Expect-SgFailure $no '--ops-file' $before 'no ops'
+    Expect ($no.exit -eq 2) "no ops: exit $($no.exit), expected 2"
+    $json = Invoke-Cli @('cliext.shadergraph', 'edit', '--path', $script:sgPath, '--ops-file', (Write-WorkFile 'sg-badjson.json' '[{"op":'), '--format', 'json')
+    Expect-SgFailure $json "aren't valid JSON" $before 'bad JSON'
+    Expect ($json.exit -eq 2) "bad JSON: exit $($json.exit), expected 2"
+    $op = Invoke-Cli @('cliext.shadergraph', 'edit', '--path', $script:sgPath, '--ops-file', (Write-WorkFile 'sg-badop.json' '[{"op":"frob"}]'), '--format', 'json')
+    Expect-SgFailure $op 'Unknown op.*add_port, remove_port' $before 'unknown op'
+    $mv = Invoke-Cli @('cliext.shadergraph', 'edit', '--path', $script:sgPath, '--ops-file', (Write-WorkFile 'sg-noop.json' "[{`"op`":`"move`",`"id`":`"$($script:sgIds.mul)`"}]"), '--format', 'json')
+    Expect-SgFailure $mv 'move needs x' $before 'a move with no x or y'
+    $rn = Invoke-Cli @('cliext.shadergraph', 'edit', '--path', $script:sgPath, '--ops-file', (Write-WorkFile 'sg-norename.json' '[{"op":"rename","id":"Tint"}]'), '--format', 'json')
+    Expect-SgFailure $rn 'rename needs a name' $before 'a rename with no name'
+    $sv = Invoke-Cli @('cliext.shadergraph', 'edit', '--path', $script:sgPath, '--ops-file', (Write-WorkFile 'sg-noval.json' '[{"op":"set","id":"Tint"}]'), '--format', 'json')
+    Expect-SgFailure $sv 'set needs a value' $before 'a set with no value'
+    "no ops 2, bad JSON 2, unknown op $($op.exit), empty move/rename/set $($mv.exit)/$($rn.exit)/$($sv.exit)"
+}
+
 # --- Cross-cutting ----------------------------------------------------------------------------------------------------
 
 $batchEdits = @(

@@ -43,16 +43,41 @@ namespace UnityCLIExtensions
         private static string Arr(params float[] values) => "[" + string.Join(",", values.Select(v => v.ToString("R", CultureInfo.InvariantCulture))) + "]";
 
         /// <summary>Parses <paramref name="text"/> into <paramref name="type"/>; see the class summary for the forms.</summary>
+        /// <remarks>
+        /// Text that isn't a value of the type throws <see cref="ArgumentException"/> with a one-line message naming
+        /// the form to give (or, for an enum, its names), never a bare <see cref="FormatException"/>.
+        /// </remarks>
         public static object Parse(string text, Type type)
         {
             if (type == null) throw new ArgumentException("Unknown value type.");
+            try { return ParseValue(text, type); }
+            catch (Exception e) when (e is FormatException || e is OverflowException)
+            {
+                string form = type == typeof(bool) ? "true or false"
+                    : type.IsPrimitive ? "a number such as 1 or 0.5"
+                    : type == typeof(Color) ? "a colour [r,g,b], [r,g,b,a] or #RRGGBB"
+                    : type == typeof(AnimationCurve) ? "a curve [[t,v],...]"
+                    : type == typeof(Gradient) ? "a gradient [[t,r,g,b],...]"
+                    : type == typeof(Matrix4x4) ? "16 numbers [m00,m10,...]"
+                    : "a vector such as [x,y,z]";
+                throw new ArgumentException($"'{text}' isn't a {type.Name} value: give {form}.");
+            }
+        }
+
+        private static object ParseValue(string text, Type type)
+        {
             string s = (text ?? "").Trim();
             if (type == typeof(string)) return text ?? "";
             if (type == typeof(bool)) return s == "1" || bool.Parse(s);
             if (type.IsEnum)
             {
                 if (int.TryParse(s, out int asInt)) return Enum.ToObject(type, asInt);
-                return Enum.Parse(type, string.Join(", ", s.Split(new[] { '|', ',' }, StringSplitOptions.RemoveEmptyEntries).Select(n => n.Trim())), true);
+                var names = s.Split(new[] { '|', ',' }, StringSplitOptions.RemoveEmptyEntries).Select(n => n.Trim()).ToList();
+                foreach (string n in names)
+                    if (!Enum.GetNames(type).Any(e => string.Equals(e, n, StringComparison.OrdinalIgnoreCase)))
+                        throw new ArgumentException($"'{n}' isn't a {type.Name}. Use one of: {string.Join(", ", Enum.GetNames(type))}.");
+                if (names.Count == 0) throw new ArgumentException($"No {type.Name} given. Use one of: {string.Join(", ", Enum.GetNames(type))}.");
+                return Enum.Parse(type, string.Join(", ", names), true);
             }
             if (type == typeof(float)) return float.Parse(s, CultureInfo.InvariantCulture);
             if (type == typeof(double)) return double.Parse(s, CultureInfo.InvariantCulture);

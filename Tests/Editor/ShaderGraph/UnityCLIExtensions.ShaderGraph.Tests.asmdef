@@ -1,0 +1,33 @@
+{
+    "name": "UnityCLIExtensions.ShaderGraph.Tests",
+    "rootNamespace": "UnityCLIExtensions.ShaderGraph.Tests",
+    "references": [
+        "Unity.ShaderGraphTool.Editor",
+        "UnityCLIExtensions.Editor",
+        "Unity.ShaderGraph.Editor",
+        "UnityEngine.TestRunner",
+        "UnityEditor.TestRunner"
+    ],
+    "includePlatforms": [
+        "Editor"
+    ],
+    "excludePlatforms": [],
+    "allowUnsafeCode": false,
+    "overrideReferences": true,
+    "precompiledReferences": [
+        "nunit.framework.dll"
+    ],
+    "autoReferenced": false,
+    "defineConstraints": [
+        "UNITY_INCLUDE_TESTS",
+        "CLIEXT_SHADER_GRAPH"
+    ],
+    "versionDefines": [
+        {
+            "name": "com.unity.shadergraph",
+            "expression": "",
+            "define": "CLIEXT_SHADER_GRAPH"
+        }
+    ],
+    "noEngineReferences": false
+}

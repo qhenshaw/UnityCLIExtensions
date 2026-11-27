@@ -46,6 +46,7 @@ namespace UnityCLIExtensions.ShaderGraph
             [CliArg("details", "Include slots (false: just the structure)")] bool details = true)
         {
             try { return InspectBody(cmd, path, id, details); }
+            catch (ShaderGraphDocument.UsageException e) { cmd.Fail(e.Message); return ExitCode.InvalidUsage; }
             catch (ArgumentException e) { cmd.Fail(e.Message); return ExitCode.NotFound; }
             catch (Exception e) { cmd.Fail(e.ToString()); return ExitCode.Failed; }
         }
@@ -98,6 +99,10 @@ namespace UnityCLIExtensions.ShaderGraph
                 });
                 return ExitCode.Success;
             }
+            // A bad path, target or material is invalid usage (2); a missing --from graph is not found (13); an
+            // existing --path is a failure (6) whose message names cliext.shadergraph edit.
+            catch (ShaderGraphDocument.UsageException e) { cmd.Fail(e.Message); return ExitCode.InvalidUsage; }
+            catch (FileNotFoundException e) { cmd.Fail(e.Message); return ExitCode.NotFound; }
             catch (ArgumentException e) { cmd.Fail(e.Message); return ExitCode.Failed; }
         }
 
@@ -111,16 +116,22 @@ namespace UnityCLIExtensions.ShaderGraph
             [CliArg("y", "Graph position (leave out to place it automatically)")] float y = float.NaN)
             => RunOps(cmd, path, new[] { new ShaderGraphOp { op = "add_node", type = type, x = x, y = y } }, false);
 
-        [CliGroupCommand(Group, "Add a property (--type float, vector2-4, color, texture2d, cubemap, boolean, ...) with a name, reference, default value and exposed flag; then save and compile.",
+        [CliGroupCommand(Group, "Add a property (--type float, vector2-4, color, texture2d, cubemap, boolean, ...) with a name, reference and default value; then save and compile. " +
+                                "Properties are exposed to materials; hide one with the edit op {\"op\":\"expose\",\"id\":\"<property>\",\"value\":\"false\"}.",
             Name = "add_property", Tags = new[] { "cliext", "shadergraph" }, Effect = CommandEffect.Destructive)]
         internal static ExitCode AddProperty(
             CommandContext cmd,
             [CliArg("path", "The .shadergraph asset path or GUID", Required = true)] string path,
-            [CliArg("type", "The property type: float, vector2, vector3, vector4, color, texture2d, cubemap, boolean, ...", Required = true)] string type,
+            [CliArg("type", "The property type: float, vector2, vector3, vector4, color, texture2d, texture2darray, texture3d, cubemap, boolean, matrix2-4, gradient, samplerstate", Required = true)] string type,
             [CliArg("name", "Display name")] string name = "",
             [CliArg("reference", "Reference name, such as _BaseColor")] string reference = "",
-            [CliArg("value", "Default value")] string value = null)
-            => RunOps(cmd, path, new[] { new ShaderGraphOp { op = "add_property", type = type, name = name, reference = reference, value = value } }, false);
+            [CliArg("value", "Default value: a number, true/false, an [x,y,z,w] vector or colour (or #RRGGBB), or a texture asset path")] string value = null)
+        {
+            // An unknown --type is a bad argument (exit 2), not a failed edit.
+            try { ShaderGraphDocument.NewProperty(type); }
+            catch (ArgumentException e) { cmd.Fail(e.Message); return ExitCode.InvalidUsage; }
+            return RunOps(cmd, path, new[] { new ShaderGraphOp { op = "add_property", type = type, name = name, reference = reference, value = value } }, false);
+        }
 
         [CliGroupCommand(Group, "Remove a node, block or property (with its links); then save and compile.",
             Name = "remove", Tags = new[] { "cliext", "shadergraph" }, Effect = CommandEffect.Destructive)]
@@ -161,8 +172,10 @@ namespace UnityCLIExtensions.ShaderGraph
             => RunOps(cmd, path, new[] { new ShaderGraphOp { op = "unlink", from = from, to = to } }, false);
 
         [CliGroupCommand(Group, "Apply many edits in order, then save and compile once. --ops (or --ops-file) is a JSON array: " +
-                                "{\"op\":\"add_node\",\"type\":\"Math/Basic/Multiply\",\"as\":\"mul\"}, then \"$mul\". Ops: add_node, add_property, add_block, add_port, remove_port, remove, set (slot, setting or property), link, unlink, move, rename, expose. " +
-                                "An op that fails saves nothing: the graph is left as it was. Refuses while the graph is open in a Shader Graph window (--force true to edit anyway).",
+                                "{\"op\":\"add_node\",\"type\":\"Math/Basic/Multiply\",\"as\":\"mul\"}, then \"$mul\". Ops: add_node, add_property, add_block, add_port, remove_port, remove, set (slot, setting or property), link, unlink, move, rename, expose, " +
+                                "with the fields of the single commands; add_block takes block (see inspect blocksAvailable); add_port takes id (a Custom Function), name, type and value \"out\" for an output; " +
+                                "remove_port takes id, name and value \"out\"; move takes id, x, y; rename takes id (a property) and name and/or reference; expose takes id (a property) and value true/false. " +
+                                "An op that fails saves nothing: the graph is left as it was. When the saved shader has compile or node errors the edit is kept but exits 6 (see compile in the reply). Refuses while the graph is open in a Shader Graph window (--force true to edit anyway).",
             Name = "edit", Tags = new[] { "cliext", "shadergraph" }, Effect = CommandEffect.Destructive)]
         internal static ExitCode Edit(
             CommandContext cmd,
@@ -180,19 +193,22 @@ namespace UnityCLIExtensions.ShaderGraph
             }
             catch (Exception e) { cmd.Fail($"The ops aren't valid JSON: {e.Message}"); return ExitCode.InvalidUsage; }
             if (list?.ops == null || list.ops.Length == 0) { cmd.Fail("No ops given."); return ExitCode.InvalidUsage; }
-            return RunOps(cmd, path, list.ops, force);
+            return RunOps(cmd, path, list.ops, force, canForce: true);
         }
 
         // ---------------------------------------------------------------------------------------------------------
 
-        private static ExitCode RunOps(CommandContext cmd, string path, IReadOnlyList<ShaderGraphOp> ops, bool force)
+        private static ExitCode RunOps(CommandContext cmd, string path, IReadOnlyList<ShaderGraphOp> ops, bool force, bool canForce = false)
         {
             ShaderGraphDocument doc;
             try { doc = ShaderGraphDocument.Open(path); }
+            catch (ShaderGraphDocument.UsageException e) { cmd.Fail(e.Message); return ExitCode.InvalidUsage; }
             catch (ArgumentException e) { cmd.Fail(e.Message); return ExitCode.NotFound; }
             if (!force && ShaderGraphDocument.IsOpenInWindow(doc.path))
             {
-                cmd.Fail($"{doc.path} is open in a Shader Graph window, whose own copy would overwrite this edit (and may prompt about the file changing). Close it, or pass --force true.");
+                // Only edit has --force; the single commands point at it.
+                string forceHint = canForce ? "pass --force true" : "make the change with cliext.shadergraph edit --force true";
+                cmd.Fail($"{doc.path} is open in a Shader Graph window, whose own copy would overwrite this edit (and may prompt about the file changing). Close the window, or {forceHint}.");
                 return ExitCode.Failed;
             }
 

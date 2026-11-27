@@ -31,10 +31,18 @@ namespace UnityCLIExtensions.ShaderGraph
             this.graph = graph;
         }
 
+        /// <summary>A bad argument rather than a missing asset: the commands exit 2 (invalid usage) for it.</summary>
+        internal sealed class UsageException : ArgumentException
+        {
+            public UsageException(string message) : base(message) { }
+        }
+
         public static ShaderGraphDocument Open(string path)
         {
+            string given = path;
             path = Normalize(path);
-            if (!File.Exists(path)) throw new ArgumentException($"No Shader Graph at '{path}'.");
+            if (!IsGraphPath(path)) throw new UsageException($"'{given}' isn't a Shader Graph: pass a .shadergraph or .shadersubgraph asset path (or its GUID).");
+            if (!File.Exists(path)) throw new ArgumentException($"No Shader Graph at '{(path.Length > 0 ? path : given)}'. Make one with cliext.shadergraph create, or check the path.");
             string guid = AssetDatabase.AssetPathToGUID(path);
             var graph = new GraphData
             {
@@ -56,6 +64,17 @@ namespace UnityCLIExtensions.ShaderGraph
             return path;
         }
 
+        private static bool IsGraphPath(string path) =>
+            path.Length == 0 // an unknown GUID: reported as missing
+            || path.EndsWith(".shadergraph", StringComparison.OrdinalIgnoreCase) || path.EndsWith(".shadersubgraph", StringComparison.OrdinalIgnoreCase);
+
+        /// <summary>True for a project path a new asset can go to: under Assets/ or Packages/.</summary>
+        public static bool IsProjectPath(string path)
+        {
+            path = (path ?? "").Trim().Replace('\\', '/');
+            return path.StartsWith("Assets/", StringComparison.Ordinal) || path.StartsWith("Packages/", StringComparison.Ordinal);
+        }
+
         /// <summary>
         /// Creates a graph for a render pipeline target ("HDRP", "Universal", "Built-In", ...; see cliext.shadergraph
         /// targets) and, optionally, a material type (its sub-target, such as Lit or Unlit), with the target's default
@@ -63,18 +82,20 @@ namespace UnityCLIExtensions.ShaderGraph
         /// </summary>
         public static ShaderGraphDocument Create(string path, string target, string subTarget, string from)
         {
-            path = Normalize(path);
-            if (!path.EndsWith(".shadergraph", StringComparison.OrdinalIgnoreCase)) path += ".shadergraph";
-            if (File.Exists(path)) throw new ArgumentException($"'{path}' already exists.");
-            string folder = Path.GetDirectoryName(path)?.Replace('\\', '/');
-            if (!string.IsNullOrEmpty(folder) && !AssetDatabase.IsValidFolder(folder)) CreateFolders(folder);
+            path = NewGraphPath(path);
+            if (File.Exists(path)) throw new ArgumentException($"'{path}' already exists. Edit it with cliext.shadergraph edit, or pass another --path.");
 
             if (!string.IsNullOrWhiteSpace(from))
             {
-                if (!AssetDatabase.CopyAsset(Normalize(from), path)) throw new ArgumentException($"Couldn't copy '{from}' to '{path}'.");
+                string source = Normalize(from);
+                if (!File.Exists(source)) throw new FileNotFoundException($"No Shader Graph to copy at '{from}'. Pass an existing .shadergraph to --from, or leave --from out to make a new graph.");
+                if (!IsGraphPath(source)) throw new UsageException($"--from '{from}' isn't a Shader Graph: pass a .shadergraph.");
+                CreateParentFolders(path);
+                if (!AssetDatabase.CopyAsset(source, path)) throw new ArgumentException($"Couldn't copy '{from}' to '{path}'.");
                 return Open(path);
             }
 
+            // Resolve the target and material before anything is written, so a bad name leaves no folder behind.
             var graph = new GraphData();
             graph.AddContexts();
             Target chosen = null;
@@ -86,10 +107,12 @@ namespace UnityCLIExtensions.ShaderGraph
                     var subs = SubTargetsOf(chosen);
                     var sub = subs.FirstOrDefault(s => string.Equals(s.displayName, subTarget, StringComparison.OrdinalIgnoreCase))
                               ?? subs.FirstOrDefault(s => s.displayName.IndexOf(subTarget, StringComparison.OrdinalIgnoreCase) >= 0);
-                    if (sub == null) throw new ArgumentException($"{chosen.displayName} has no material '{subTarget}'. It has: {string.Join(", ", subs.Select(s => s.displayName))}");
+                    if (sub == null) throw new UsageException($"{chosen.displayName} has no material '{subTarget}'. It has: {string.Join(", ", subs.Select(s => s.displayName))}");
                     WireSubTarget(chosen, sub);
                 }
             }
+            else if (!string.IsNullOrWhiteSpace(subTarget)) throw new UsageException("--material needs a --target (see cliext.shadergraph types --targets true).");
+            CreateParentFolders(path);
             graph.InitializeOutputs(chosen != null ? new[] { chosen } : null, null);
             // The target's own default blocks (Base Color, Normal, ... for Lit), as the Create menu adds them.
             foreach (var descriptor in graph.GetActiveBlocksForAllActiveTargets())
@@ -145,13 +168,33 @@ namespace UnityCLIExtensions.ShaderGraph
             var all = graph.allPotentialTargets.ToList();
             return all.FirstOrDefault(t => string.Equals(t.displayName, name, StringComparison.OrdinalIgnoreCase))
                    ?? all.FirstOrDefault(t => t.displayName.IndexOf(name, StringComparison.OrdinalIgnoreCase) >= 0)
-                   ?? throw new ArgumentException($"No target '{name}'. Targets: {string.Join(", ", all.Select(t => t.displayName))}");
+                   ?? throw new UsageException($"No target '{name}'. Targets: {string.Join(", ", all.Select(t => t.displayName))}");
+        }
+
+        /// <summary>
+        /// The normalized path for a new graph (".shadergraph" added when missing). Throws <see cref="UsageException"/>
+        /// for a path outside Assets/ and Packages/, which would otherwise be written outside the project's assets.
+        /// </summary>
+        public static string NewGraphPath(string path)
+        {
+            string given = path;
+            path = (path ?? "").Trim().Replace('\\', '/');
+            if (!IsProjectPath(path)) throw new UsageException($"'{given}' isn't under Assets/: pass a project path such as Assets/Shaders/Glow.shadergraph.");
+            if (!path.EndsWith(".shadergraph", StringComparison.OrdinalIgnoreCase)) path += ".shadergraph";
+            return path;
+        }
+
+        private static void CreateParentFolders(string path)
+        {
+            string folder = Path.GetDirectoryName(path)?.Replace('\\', '/');
+            if (!string.IsNullOrEmpty(folder) && !AssetDatabase.IsValidFolder(folder)) CreateFolders(folder);
         }
 
         private static void CreateFolders(string folder)
         {
             string parent = Path.GetDirectoryName(folder)?.Replace('\\', '/');
-            if (string.IsNullOrEmpty(parent) || !(parent == "Assets" || parent.StartsWith("Assets/"))) throw new ArgumentException($"'{folder}' isn't under Assets/.");
+            if (string.IsNullOrEmpty(parent) || !(parent == "Assets" || parent.StartsWith("Assets/") || parent.StartsWith("Packages/")))
+                throw new UsageException($"'{folder}' isn't under Assets/ (or inside a package): pass a path such as Assets/Shaders/Glow.shadergraph.");
             if (!AssetDatabase.IsValidFolder(parent)) CreateFolders(parent);
             AssetDatabase.CreateFolder(parent, Path.GetFileName(folder));
         }
@@ -237,13 +280,20 @@ namespace UnityCLIExtensions.ShaderGraph
             return node;
         }
 
-        public AbstractShaderProperty FindProperty(string idOrName)
+        public bool HasNode(string id) => !string.IsNullOrWhiteSpace(id) && graph.GetNodeFromId(id.Trim()) != null;
+
+        public bool TryFindProperty(string idOrName, out AbstractShaderProperty property)
         {
             string s = (idOrName ?? "").Trim();
-            var p = graph.properties.FirstOrDefault(x => x.objectId == s)
-                    ?? graph.properties.FirstOrDefault(x => string.Equals(x.referenceName, s, StringComparison.Ordinal))
-                    ?? graph.properties.FirstOrDefault(x => string.Equals(x.displayName, s, StringComparison.OrdinalIgnoreCase));
-            if (p == null) throw new ArgumentException($"No property '{idOrName}'. Properties: {string.Join(", ", graph.properties.Select(x => x.displayName))}");
+            property = graph.properties.FirstOrDefault(x => x.objectId == s)
+                       ?? graph.properties.FirstOrDefault(x => string.Equals(x.referenceName, s, StringComparison.Ordinal))
+                       ?? graph.properties.FirstOrDefault(x => string.Equals(x.displayName, s, StringComparison.OrdinalIgnoreCase));
+            return property != null;
+        }
+
+        public AbstractShaderProperty FindProperty(string idOrName)
+        {
+            if (!TryFindProperty(idOrName, out var p)) throw new ArgumentException($"No property '{idOrName}'. Properties: {string.Join(", ", graph.properties.Select(x => x.displayName))}");
             return p;
         }
 
