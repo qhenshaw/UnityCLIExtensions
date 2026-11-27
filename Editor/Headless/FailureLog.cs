@@ -49,6 +49,11 @@ namespace UnityCLIExtensions
 
         public static string LogFile => Path.Combine(CliExtPaths.StateDirectory, "failures.jsonl");
 
+        /// <summary>The versions every entry is stamped with, read once when the package loads (also used by <see cref="FieldNotes"/>).</summary>
+        internal static string UnityVersion => s_Unity;
+        internal static string PipelineVersion => s_Pipeline;
+        internal static string PackageVersion => s_Package;
+
         static FailureLog()
         {
             // PackageInfo wants the main thread; some commands fail off it, so read the versions once here.
@@ -116,22 +121,29 @@ namespace UnityCLIExtensions
         }
 
         /// <summary>The last <paramref name="count"/> entries, oldest first, optionally only those at or after <paramref name="sinceUtc"/>.</summary>
-        public static List<FailureLogEntry> ReadLast(int count, DateTime? sinceUtc = null)
+        public static List<FailureLogEntry> ReadLast(int count, DateTime? sinceUtc = null) =>
+            ReadLastLines<FailureLogEntry>(LogFile, count, sinceUtc, e => e.time);
+
+        /// <summary>
+        /// The last <paramref name="count"/> objects of a JSON-lines file, oldest first, optionally only those whose time
+        /// (from <paramref name="timeOf"/>) is at or after <paramref name="sinceUtc"/>. Lines that don't parse are skipped.
+        /// </summary>
+        internal static List<T> ReadLastLines<T>(string file, int count, DateTime? sinceUtc, Func<T, string> timeOf) where T : class
         {
-            var result = new List<FailureLogEntry>();
-            if (!File.Exists(LogFile)) return result;
+            var result = new List<T>();
+            if (!File.Exists(file)) return result;
             string[] lines;
-            using (var stream = new FileStream(LogFile, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
+            using (var stream = new FileStream(file, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
             using (var reader = new StreamReader(stream))
                 lines = reader.ReadToEnd().Split('\n');
             for (int i = lines.Length - 1; i >= 0 && result.Count < count; i--)
             {
                 string line = lines[i].Trim();
                 if (line.Length == 0) continue;
-                FailureLogEntry entry;
-                try { entry = JsonUtility.FromJson<FailureLogEntry>(line); } catch { continue; }
+                T entry;
+                try { entry = JsonUtility.FromJson<T>(line); } catch { continue; }
                 if (entry == null) continue;
-                if (sinceUtc.HasValue && DateTime.TryParse(entry.time, null, System.Globalization.DateTimeStyles.RoundtripKind, out DateTime t)
+                if (sinceUtc.HasValue && DateTime.TryParse(timeOf(entry), null, System.Globalization.DateTimeStyles.RoundtripKind, out DateTime t)
                     && t.ToUniversalTime() < sinceUtc.Value) break;
                 result.Add(entry);
             }

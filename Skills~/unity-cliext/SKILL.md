@@ -79,6 +79,12 @@ scripts named below are in `{{cliext-tools}}` (`cliext-wait.ps1`, `cliext-run.ps
 - To see a short effect, capture it in slow motion with real commands rather than snippets:
   `cliext-play-capture.ps1 -TimeScale 0.005 -Run "<the command that triggers it>" a@0 b@1.5 c@3`.
 - Leave the project as you found it: revert scratch assets, Play mode objects and setting changes you made to test.
+- Record a field note before moving on when a cliext command fails in a way its error doesn't explain, when you work
+  around one (hand-editing a file a cliext command edits, a `script eval` where a command should exist, reading the
+  package source or README to learn a command), or when a command you need doesn't exist:
+  `cliext.failures note --kind bug|workaround|missing|docs|slow --command "cliext.<group> <command>" --what "<one line>"
+  [--workaround "<one line>"]`, or `--file note.json` with the same fields (safer under PowerShell 5.1). One note per
+  problem; it stores only those fields.
 
 ## Command map
 
@@ -88,7 +94,7 @@ scripts named below are in `{{cliext-tools}}` (`cliext-wait.ps1`, `cliext-run.ps
 | `cliext.wait`, `cliext.compile`, `cliext.edits` | idle waits, compiles with errors as data, edit batches |
 | `cliext.test` | `affected`, `run`, `result`: runs whose result is their own; an empty filter fails |
 | `cliext.eval`, `cliext.playmode` | snippets with `{{placeholders}}`; `wait_until` a game state; `time_scale`; fast Play mode, `check_statics` |
-| `cliext.dialogs`, `cliext.watchdog`, `cliext.failures` | the dialog journal, a scan for blocking dialog calls, the out-of-process watchdog; the local log of failed cliext commands |
+| `cliext.dialogs`, `cliext.watchdog`, `cliext.failures` | the dialog journal, a scan for blocking dialog calls, the out-of-process watchdog; the local log of failed cliext commands (`log`, `summary`, `clear`), `note` to record a field note, `report` for a bug report zip |
 | `cliext.asset`, `cliext.diff` | `uses` / `used_by` dependencies; snapshot and compare scenes and prefabs |
 | `cliext.vfx` | VFX Graph: `types`, `inspect`, `create`, `edit` (contexts, blocks, operators, parameters, links), `check` |
 | `cliext.shadergraph` | Shader Graph: `types`, `inspect`, `create`, `edit`; every edit returns HLSL and node errors |

@@ -409,6 +409,133 @@ Add-Check 'dialogs.failure-log' 'cliext.dialogs, cliext.watchdog, cliext.failure
     "logged as $($entry.command) [$(@($entry.parameters) -join ',')]; summary groups it; bad --since exit 2; clear empties it (restored)"
 }
 
+# Backs up field-notes.jsonl, runs $Body, and puts it back, so the note checks leave the project's notes as they were.
+function Invoke-WithNotesRestored([scriptblock]$Body) {
+    $notesFile = Join-Path (Invoke-Cli @('cliext', 'status', '--format', 'json')).json.stateDirectory 'field-notes.jsonl'
+    $bak = Join-Path $work ('field-notes-' + [Guid]::NewGuid().ToString('N') + '.bak')
+    $had = Test-Path $notesFile
+    if ($had) { Copy-Item $notesFile $bak -Force }
+    try { & $Body $notesFile }
+    finally { if ($had) { Copy-Item $bak $notesFile -Force } elseif (Test-Path $notesFile) { Remove-Item $notesFile -Force } }
+}
+
+Add-Check 'failures.note' 'cliext.dialogs, cliext.watchdog, cliext.failures' 'cliext.failures note records a note from flags and from --file (quotes and apostrophes intact); an unknown kind or no --what exits 2; log --notes, summary and clear --notes see it (notes restored)' {
+    Invoke-WithNotesRestored {
+        param($notesFile)
+        $since = [DateTime]::UtcNow.AddSeconds(-1).ToString('o')
+        $marker = 'clitest-note-' + [Guid]::NewGuid().ToString('N')
+        $a = Invoke-Cli @('cliext.failures', 'note', '--kind', 'workaround', '--command', 'cliext.vfx edit', '--what', "$marker flags", '--workaround', 'edited the file', '--format', 'json')
+        Expect ($a.exit -eq 0 -and $a.json.recorded -and $a.json.kind -eq 'workaround' -and $a.json.what -eq "$marker flags" -and $a.json.command -eq 'cliext.vfx edit') "flags: exit $($a.exit): $(Short ($a.stdout + $a.stderr))"
+        # The reason --file exists: PowerShell 5.1 strips the quotes inside a native command's arguments.
+        $text = "It's the `"bounds`" op; $marker file"
+        $file = Write-WorkFile 'note.json' (@{ kind = 'Missing'; command = 'cliext.vfx'; what = $text } | ConvertTo-Json -Compress)
+        $b = Invoke-Cli @('cliext.failures', 'note', '--file', $file, '--format', 'json')
+        Expect ($b.exit -eq 0 -and $b.json.kind -eq 'missing' -and $b.json.what -eq $text) "--file: exit $($b.exit): $(Short ($b.stdout + $b.stderr))"
+        $c = Invoke-Cli @('cliext.failures', 'note', '--kind', 'annoyance', '--what', 'x', '--format', 'json')
+        Expect ($c.exit -eq 2) "unknown kind: exit $($c.exit), expected 2"
+        Expect ("$($c.stderr) $($c.stdout)" -match 'bug, workaround, missing, docs, slow') "the unknown kind's error doesn't list the kinds: $(Short ($c.stderr + $c.stdout))"
+        $d = Invoke-Cli @('cliext.failures', 'note', '--kind', 'bug', '--format', 'json')
+        Expect ($d.exit -eq 2) "no --what: exit $($d.exit), expected 2"
+        $e = Invoke-Cli @('cliext.failures', 'note', '--file', (Join-Path $work 'no-such-note.json'), '--format', 'json')
+        Expect ($e.exit -eq 13) "a missing --file: exit $($e.exit), expected 13"
+        $l = Invoke-Cli @('cliext.failures', 'log', '--notes', 'true', '--since', $since, '--format', 'json')
+        $mine = @(@($l.json) | Where-Object { "$($_.what)" -like "*$marker*" })
+        Expect ($l.exit -eq 0 -and $mine.Count -eq 2) "log --notes shows $($mine.Count) of the 2 notes: $(Short $l.stdout)"
+        Expect (@($mine | Where-Object { $_.unity -and $_.package -and $_.time }).Count -eq 2) "a note without its time or versions: $(Short ($mine | ConvertTo-Json -Compress))"
+        $s = Invoke-Cli @('cliext.failures', 'summary', '--since', $since, '--format', 'json')
+        Expect ($s.exit -eq 0 -and @(@($s.json) | Where-Object { $_.source -eq 'note' -and $_.kind -eq 'missing' -and $_.command -eq 'cliext.vfx' }).Count -gt 0) "summary has no note group: $(Short $s.stdout)"
+        Expect (@(@($s.json) | Where-Object { $_.source -eq 'failure' -and $_.command -eq 'cliext.failures note' }).Count -gt 0) "summary has no failure group for the refused notes: $(Short $s.stdout)"
+        $x = Invoke-Cli @('cliext.failures', 'clear', '--notes', 'true', '--format', 'json')
+        $after = Invoke-Cli @('cliext.failures', 'log', '--notes', 'true', '--format', 'json')
+        Expect ($x.exit -eq 0 -and "$($x.json.file)" -like '*field-notes.jsonl' -and "$($after.stdout)".Trim() -eq '') "clear --notes: exit $($x.exit), file '$($x.json.file)'; after: $(Short $after.stdout)"
+        Expect (Test-Path (Join-Path (Split-Path $notesFile) 'failures.jsonl')) 'clear --notes also deleted failures.jsonl'
+        "flags and --file recorded (quotes kept); unknown kind and no --what exit 2, missing file 13; log --notes, summary and clear --notes see them (restored)"
+    }
+}
+
+Add-Check 'failures.field-report' 'cliext.dialogs, cliext.watchdog, cliext.failures' 'cliext-field-report.ps1 writes the Markdown and JSON report, and says a note made outside any transcript is unmatched (notes restored)' {
+    Invoke-WithNotesRestored {
+        param($notesFile)
+        $marker = 'clitest-report-note-' + [Guid]::NewGuid().ToString('N')
+        $n = Invoke-Cli @('cliext.failures', 'note', '--kind', 'docs', '--command', 'cliext.failures note', '--what', $marker, '--format', 'json')
+        Expect ($n.exit -eq 0) "note: exit $($n.exit): $(Short $n.stderr)"
+        $out = Join-Path $work 'field-report'
+        $sw = [Diagnostics.Stopwatch]::StartNew()
+        # Under -ErrorAction Stop, Windows PowerShell turns the script's stderr into errors; keep it as text.
+        $ErrorActionPreference = 'Continue'
+        $log = & powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $tools 'cliext-field-report.ps1') -Project $projectPath -Days 1 -Out $out 2>&1 | Out-String
+        $exit = $LASTEXITCODE
+        $ErrorActionPreference = 'Stop'
+        Expect ($exit -eq 0) "exit $exit`: $(Short $log)"
+        $md = Join-Path $out 'field-report.md'; $js = Join-Path $out 'field-report.json'
+        Expect ((Test-Path $md) -and (Test-Path $js)) "no report in $out"
+        $r = [IO.File]::ReadAllText($js) | ConvertFrom-Json
+        foreach ($k in 'failedByCause', 'failedByCommand', 'packageReads', 'opFileEdits', 'helpRepeats', 'evals', 'skillsBeforeFirstCall', 'notes', 'failures', 'sessions') {
+            Expect ($r.PSObject.Properties.Name -contains $k) "field-report.json has no '$k'"
+        }
+        $item = @($r.notes.items) | Where-Object { $_.what -eq $marker } | Select-Object -First 1
+        Expect ($item -and $item.unmatched -and -not $item.context) "the note is missing or claimed matched: $(Short ($item | ConvertTo-Json -Compress))"
+        Expect ([IO.File]::ReadAllText($md) -match [regex]::Escape($marker)) 'the Markdown does not show the note'
+        "$($r.transcripts) session and $($r.subagentTranscripts) subagent transcripts, $($r.toolCalls) calls, $($r.failedCalls) failed; the note reported unmatched; $([math]::Round($sw.Elapsed.TotalSeconds, 1)) s"
+    }
+}
+
+Add-Check 'failures.report-zip' 'cliext.dialogs, cliext.watchdog, cliext.failures' 'cliext-report.ps1 -NoEditor builds a zip with the field report, state files, versions, skills, the CLAUDE.md block and README.txt (zip and folder deleted after)' {
+    $out = Join-Path $work 'report'
+    $unz = Join-Path $work 'report-unzipped'
+    try {
+        # Under -ErrorAction Stop, Windows PowerShell turns the script's stderr into errors; keep it as text.
+        $ErrorActionPreference = 'Continue'
+        $log = & powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $tools 'cliext-report.ps1') -Project $projectPath -Days 1 -NoEditor -NoExplorer -Out $out 2>&1 | Out-String
+        $exit = $LASTEXITCODE
+        $ErrorActionPreference = 'Stop'
+        Expect ($exit -eq 0) "exit $exit`: $(Short $log)"
+        $zip = Get-ChildItem $out -Filter 'cliext-report-*.zip' | Select-Object -First 1
+        Expect ($zip -and $zip.Name -match '^cliext-report-\d{8}-\d{6}\.zip$') "no cliext-report-<time>.zip in $out"
+        Expect ("$log" -match [regex]::Escape($zip.FullName)) "the script didn't print the zip's path: $(Short $log)"
+        Add-Type -AssemblyName System.IO.Compression.FileSystem
+        [IO.Compression.ZipFile]::ExtractToDirectory($zip.FullName, $unz)
+        $want = @('README.txt', 'versions.json', 'editor\editor-queries.json', 'field-report\field-report.md', 'field-report\field-report.json',
+                  'project\manifest.json', 'project\packages-lock.json', 'project\skills.json', 'project\claude-md-block.md')
+        foreach ($f in @('failures.jsonl', 'dialogs.jsonl', 'watchdog-status.json')) { if (Test-Path (Join-Path $projectPath "Library\CLIExtensions\$f")) { $want += "state\$f" } }
+        $missing = @($want | Where-Object { -not (Test-Path (Join-Path $unz $_)) })
+        Expect ($missing.Count -eq 0) "missing from the zip: $($missing -join ', ')"
+        $q = [IO.File]::ReadAllText((Join-Path $unz 'editor\editor-queries.json')) | ConvertFrom-Json
+        Expect (-not $q.queried) 'editor-queries.json says the Editor was queried under -NoEditor'
+        $readme = [IO.File]::ReadAllText((Join-Path $unz 'README.txt'))
+        Expect ($readme -match 'github\.com/qhenshaw/UnityCLIExtensions/issues' -and $readme -match 'field-report\\field-report\.md') 'README.txt lacks the issues link or the file list'
+        $skills = @([IO.File]::ReadAllText((Join-Path $unz 'project\skills.json')) | ConvertFrom-Json)
+        Expect (@($skills | Where-Object { $_.name -eq 'unity-cliext' -and $_.stamp }).Count -gt 0) "skills.json has no stamped unity-cliext: $(Short ($skills | ConvertTo-Json -Compress))"
+        "$([math]::Round($zip.Length / 1MB, 2)) MB, $(@(Get-ChildItem $unz -Recurse -File).Count) files, all expected ones there; skills: " + (($skills | ForEach-Object { "$($_.name)=$($_.status)" }) -join ', ')
+    }
+    finally { Remove-Item $out, $unz -Recurse -Force -ErrorAction SilentlyContinue }
+}
+
+Add-Check 'failures.report-command' 'cliext.dialogs, cliext.watchdog, cliext.failures' 'cliext.failures report starts the report script out of process and the zip appears at the path it returns (deleted after)' {
+    $r = Invoke-Cli @('cliext.failures', 'report', '--days', '1', '--open-folder', 'false', '--format', 'json')
+    Expect ($r.exit -eq 0 -and $r.json.started -and "$($r.json.zip)" -like '*CLIExtensionsReports*cliext-report-*.zip') "exit $($r.exit): $(Short ($r.stdout + $r.stderr))"
+    $bad = Invoke-Cli @('cliext.failures', 'report', '--days', '0', '--format', 'json')
+    Expect ($bad.exit -eq 2) "--days 0: exit $($bad.exit), expected 2"
+    $zip = "$($r.json.zip)"
+    $sw = [Diagnostics.Stopwatch]::StartNew()
+    try {
+        # The script runs on its own; wait for its zip (renamed into place only when complete).
+        while (-not (Test-Path -LiteralPath $zip) -and $sw.Elapsed.TotalSeconds -lt 180) { Start-Sleep -Milliseconds 500 }
+        Expect (Test-Path -LiteralPath $zip) "no zip at $zip after 180 s"
+        Add-Type -AssemblyName System.IO.Compression.FileSystem
+        $z = [IO.Compression.ZipFile]::OpenRead($zip)
+        try { $names = @($z.Entries | ForEach-Object { $_.FullName }) } finally { $z.Dispose() }
+        $q = $names -contains 'editor/editor-queries.json' -or $names -contains 'editor\editor-queries.json'
+        Expect ($q -and ($names -match 'README\.txt').Count -gt 0) "zip entries: $($names -join ', ')"
+        "zip after $([math]::Round($sw.Elapsed.TotalSeconds, 1)) s with $($names.Count) files; --days 0 exit 2"
+    }
+    finally {
+        Remove-Item -LiteralPath $zip -Force -ErrorAction SilentlyContinue
+        $dir = Split-Path -Parent $zip
+        if ((Test-Path $dir) -and -not (Get-ChildItem $dir -Force)) { Remove-Item $dir -Force }
+    }
+}
+
 Add-Check 'dialogs.real-blocking-dialog' 'cliext.dialogs, cliext.watchdog, cliext.failures' 'a real modal dialog: a main-thread command reports it, the watchdog names it and presses Cancel, and the Editor answers again' {
     $title = 'CliTest blocking dialog'
     $f = Write-WorkFile 'dialog.cs' "UnityEditor.EditorApplication.delayCall += () => UnityEditor.EditorUtility.DisplayDialog(`"$title`", `"Scheduled by cliext-clitest.ps1.`", `"OK`", `"Cancel`"); return `"scheduled`";"
@@ -2462,7 +2589,7 @@ function Get-UiInspect([string]$path) {
 function Get-UiSig {
     # The same text Get-UiMemory builds from the imported assets, from inspect's reading of the files.
     $els = New-Object Collections.Generic.List[string]
-    function Walk($nodes) { foreach ($n in @($nodes)) { if ($n -eq $null) { continue }; if ($n.name) { $els.Add("$($n.type)#$($n.name)" + (@(("$($n.class)" -split ' ') | Where-Object { $_ } | ForEach-Object { ".$_" }) -join '') + $(if ($n.text -ne $null) { "=$($n.text)" } else { '' })) }; Walk $n.children } }
+    function Walk($nodes) { foreach ($n in @($nodes)) { if ($n -eq $null) { continue }; if ($n.name) { $els.Add("$($n.type)#$($n.name)" + (@(("$($n.class)" -split ' ') | Where-Object { $_ } | Sort-Object | ForEach-Object { ".$_" }) -join '') + $(if ($n.text -ne $null) { "=$($n.text)" } else { '' })) }; Walk $n.children } }
     Walk (Get-UiInspect $script:uiUxml).tree
     $rules = @((Get-UiInspect $script:uiUss).rules | ForEach-Object { "$($_.selector){" + (@($_.properties | ForEach-Object { ($_ -split ':')[0] }) -join ',') + '}' })
     ($els -join ',') + '|' + ($rules -join ';')
@@ -2476,7 +2603,7 @@ var els = new System.Collections.Generic.List<string>();
 UnityEngine.UIElements.UQueryExtensions.Query<UnityEngine.UIElements.VisualElement>(vta.CloneTree()).ForEach(e =>
 {
     if (string.IsNullOrEmpty(e.name) || e.name.StartsWith("unity-")) return;
-    els.Add(e.GetType().Name + "#" + e.name + string.Concat(e.GetClasses().Where(c => !c.StartsWith("unity-")).Select(c => "." + c)) + (e is UnityEngine.UIElements.TextElement t ? "=" + t.text : ""));
+    els.Add(e.GetType().Name + "#" + e.name + string.Concat(e.GetClasses().Where(c => !c.StartsWith("unity-")).OrderBy(c => c, System.StringComparer.Ordinal).Select(c => "." + c)) + (e is UnityEngine.UIElements.TextElement t ? "=" + t.text : ""));
 });
 var F = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Public;
 var rules = new System.Collections.Generic.List<string>();
