@@ -137,7 +137,8 @@ namespace UnityCLIExtensions.Splines
         }
 
         [CliGroupCommand(Group, "Edit a SplineContainer with a JSON list of ops: add_knot (position, index, mode), set_knot (index, position, tangentIn, tangentOut, rotation, mode; world: true for world positions), " +
-                                "remove_knot, set_closed (value), set_tangent_mode (mode, index or all knots), add_spline (knots, mode), remove_spline. Undoable; marks the scene dirty.",
+                                "remove_knot, set_closed (value), set_tangent_mode (mode, index or all knots), add_spline (knots, mode), remove_spline. Undoable as one step; marks the scene dirty. " +
+                                "An op that fails saves nothing: the splines are left as they were.",
             Name = "edit", Tags = new[] { "cliext", "splines" }, Effect = CommandEffect.Destructive)]
         internal static ExitCode Edit(
             CommandContext cmd,
@@ -156,6 +157,8 @@ namespace UnityCLIExtensions.Splines
 
             SplineContainer c;
             try { c = Find(obj); } catch (ArgumentException e) { cmd.Log.Error(e.Message); return ExitCode.NotFound; }
+            Undo.IncrementCurrentGroup();
+            int undoGroup = Undo.GetCurrentGroup();
             Undo.RecordObject(c, "cliext.splines edit");
             var results = new List<object>();
             for (int i = 0; i < list.ops.Length; i++)
@@ -163,11 +166,14 @@ namespace UnityCLIExtensions.Splines
                 try { results.Add(Apply(c, list.ops[i])); }
                 catch (Exception e) when (e is ArgumentException || e is FormatException || e is ArgumentOutOfRangeException)
                 {
-                    cmd.Result.Write(new { obj, applied = results.Count, results, failedAt = i, error = e.Message });
-                    cmd.Log.Error($"Op {i} ({list.ops[i].op}) failed: {e.Message}" + (results.Count > 0 ? " The ops before it stay (Undo reverts them)." : ""));
+                    // All or nothing: undo the ops before this one.
+                    Undo.RevertAllDownToGroup(undoGroup);
+                    cmd.Result.Write(new { obj, applied = 0, failedAt = i, error = e.Message, saved = false });
+                    cmd.Log.Error($"Op {i} ({list.ops[i].op}) failed: {e.Message} Nothing was saved.");
                     return ExitCode.Failed;
                 }
             }
+            Undo.CollapseUndoOperations(undoGroup);
             EditorUtility.SetDirty(c);
             if (!Application.isPlaying) EditorSceneManager.MarkSceneDirty(c.gameObject.scene);
             cmd.Result.Write(new { obj, applied = results.Count, results, splines = Enumerable.Range(0, c.Splines.Count).Select(n => DescribeSpline(c, n, false)).ToArray() });
@@ -257,8 +263,8 @@ namespace UnityCLIExtensions.Splines
             CommandContext cmd,
             [CliArg("object", "The GameObject with the SplineContainer", Required = true)] string obj,
             [CliArg("spline", "Which spline")] int spline = 0,
-            [CliArg("t", "Normalized position 0-1")] float t = -1,
-            [CliArg("distance", "World distance from the start")] float distance = -1,
+            [CliArg("t", "Normalized position along the spline, 0 to 1 (default -1: not used)")] float t = -1,
+            [CliArg("distance", "World distance from the start (default -1: not used)")] float distance = -1,
             [CliArg("near", "A world point [x,y,z]")] string near = "",
             [CliArg("count", "With no t, distance or near: this many evenly spaced samples")] int count = 0)
         {

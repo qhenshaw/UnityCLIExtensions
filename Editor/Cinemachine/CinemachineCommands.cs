@@ -84,7 +84,7 @@ namespace UnityCLIExtensions.Cinemachine
             [CliArg("rig", "follow, orbital, thirdperson, lookat or fixed")] string rig = "follow",
             [CliArg("follow", "Tracking target (GameObject name or path)")] string follow = "",
             [CliArg("lookat", "Look-at target, when it differs from follow")] string lookAt = "",
-            [CliArg("priority", "Priority")] int priority = 10,
+            [CliArg("priority", "Priority, an integer; the highest live camera wins")] int priority = 10,
             [CliArg("fov", "Vertical field of view (0: keep the default)")] float fov = 0,
             [CliArg("position", "World position [x,y,z]")] string position = "")
         {
@@ -120,25 +120,25 @@ namespace UnityCLIExtensions.Cinemachine
         internal static ExitCode Set(
             CommandContext cmd,
             [CliArg("camera", "The camera (name or path)", Required = true)] string camera,
-            [CliArg("priority", "Priority")] string priority = "",
-            [CliArg("follow", "Tracking target, or none")] string follow = "",
-            [CliArg("lookat", "Look-at target, or none")] string lookAt = "",
-            [CliArg("fov", "Vertical field of view")] string fov = "",
-            [CliArg("enabled", "Enable or disable the camera")] string enabled = "")
+            [CliArg("priority", "Priority, an integer; the highest live camera wins (leave out to keep it)")] int? priority = null,
+            [CliArg("follow", "Tracking target (GameObject name or path), or none to clear it")] string follow = "",
+            [CliArg("lookat", "Look-at target (GameObject name or path), or none to clear it")] string lookAt = "",
+            [CliArg("fov", "Vertical field of view in degrees (leave out to keep it)")] float? fov = null,
+            [CliArg("enabled", "true to enable the camera, false to disable it (leave out to keep it)")] bool? enabled = null)
         {
             try
             {
                 var cam = FindCamera(camera);
                 Undo.RecordObject(cam, "cliext.cinemachine set");
-                if (priority != "") cam.Priority.Value = int.Parse(priority);
+                if (priority.HasValue) cam.Priority.Value = priority.Value;
                 if (follow != "") cam.Target.TrackingTarget = follow == "none" ? null : FindTransform(follow);
                 if (lookAt != "")
                 {
                     cam.Target.CustomLookAtTarget = lookAt != "none";
                     cam.Target.LookAtTarget = lookAt == "none" ? null : FindTransform(lookAt);
                 }
-                if (fov != "") cam.Lens.FieldOfView = (float)ValueText.Parse(fov, typeof(float));
-                if (enabled != "") cam.enabled = (bool)ValueText.Parse(enabled, typeof(bool));
+                if (fov.HasValue) cam.Lens.FieldOfView = fov.Value;
+                if (enabled.HasValue) cam.enabled = enabled.Value;
                 if (!Application.isPlaying) EditorSceneManager.MarkSceneDirty(cam.gameObject.scene);
                 cmd.Result.Write(Describe(cam));
                 return ExitCode.Success;
@@ -151,8 +151,8 @@ namespace UnityCLIExtensions.Cinemachine
             Name = "blend", Tags = new[] { "cliext", "cinemachine" }, Effect = CommandEffect.Destructive)]
         internal static ExitCode Blend(
             CommandContext cmd,
-            [CliArg("style", "The blend curve", Required = true)] string style,
-            [CliArg("time", "Seconds")] float time = 1,
+            [CliArg("style", "The blend curve: Cut, EaseInOut, EaseIn, EaseOut, HardIn, HardOut or Linear", Required = true)] string style,
+            [CliArg("time", "Blend duration in seconds")] float time = 1,
             [CliArg("from", "Custom blend: from this camera")] string from = "",
             [CliArg("to", "Custom blend: to this camera")] string to = "",
             [CliArg("asset", "Where to create a Custom Blends asset if the brain has none")] string asset = "")

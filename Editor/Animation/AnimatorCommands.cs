@@ -21,7 +21,7 @@ namespace UnityCLIExtensions.Animation
         [CliGroupCommand(Group, "Describe an AnimatorController: parameters with defaults, layers (weight, blending, mask, sync), states by path with motion, blend tree, speed, tag, behaviours, " +
                                 "and every transition with conditions, exit time, duration, offset and interruption, plus Any State transitions and sub-state machines.",
             Name = "inspect", Tags = new[] { "cliext", "animation" }, Effect = CommandEffect.ReadOnly)]
-        internal static ExitCode Inspect(CommandContext cmd, [CliArg("path", "The .controller asset", Required = true)] string path)
+        internal static ExitCode Inspect(CommandContext cmd, [CliArg("path", "The .controller asset path or GUID", Required = true)] string path)
         {
             try { cmd.Result.Write(AnimatorEditing.Describe(AnimatorEditing.Load(path))); return ExitCode.Success; }
             catch (ArgumentException e) { cmd.Log.Error(e.Message); return ExitCode.NotFound; }
@@ -30,7 +30,7 @@ namespace UnityCLIExtensions.Animation
         [CliGroupCommand(Group, "Check an AnimatorController: states with no motion, unreachable states, transitions that can never fire, conditions on missing or mistyped parameters, " +
                                 "blend trees on missing or non-Float parameters, and unused parameters. Exit 6 when there are errors.",
             Name = "validate", Tags = new[] { "cliext", "animation" }, Effect = CommandEffect.ReadOnly)]
-        internal static ExitCode Validate(CommandContext cmd, [CliArg("path", "The .controller asset", Required = true)] string path)
+        internal static ExitCode Validate(CommandContext cmd, [CliArg("path", "The .controller asset path or GUID", Required = true)] string path)
         {
             AnimatorController c;
             try { c = AnimatorEditing.Load(path); }
@@ -46,11 +46,11 @@ namespace UnityCLIExtensions.Animation
                                 "set_default, add_substatemachine, remove_substatemachine, set_transition (from, to or Exit, from Any; conditions=\"Speed Greater 0.1;Grounded If\"; set=\"hasExitTime=false;duration=0.1\"), " +
                                 "remove_transition, remove_parameter (also strips its conditions), set_parameter (default value), set_layer (set=\"defaultWeight=1;blendingMode=Additive;iKPass=true\"), remove_layer, " +
                                 "add_blendtree (state, type Simple1D|SimpleDirectional2D|FreeformDirectional2D|FreeformCartesian2D|Direct, parameter, parameterY, children=\"Assets/Walk.anim@0;Assets/Run.anim@1\"). " +
-                                "Pipeline's animation.animator commands add states, transitions, parameters and layers. An op that fails stops the run; the ones before it stay (Undo in the Editor reverts).",
+                                "Pipeline's animation.animator commands add states, transitions, parameters and layers. An op that fails saves nothing: the controller is left as it was.",
             Name = "edit", Tags = new[] { "cliext", "animation" }, Effect = CommandEffect.Destructive)]
         internal static ExitCode Edit(
             CommandContext cmd,
-            [CliArg("path", "The .controller asset", Required = true)] string path,
+            [CliArg("path", "The .controller asset path or GUID", Required = true)] string path,
             [CliArg("ops", "JSON array of ops")] string ops = "",
             [CliArg("ops-file", "A file holding the JSON array")] string opsFile = "")
         {
@@ -66,7 +66,8 @@ namespace UnityCLIExtensions.Animation
             AnimatorController c;
             try { c = AnimatorEditing.Load(path); }
             catch (ArgumentException e) { cmd.Log.Error(e.Message); return ExitCode.NotFound; }
-            Undo.RegisterCompleteObjectUndo(c, "cliext.animator edit");
+            string assetPath = AssetDatabase.GetAssetPath(c);
+            using var rollback = AssetRollback.Begin(new[] { assetPath });
             var results = new List<object>();
             for (int i = 0; i < list.ops.Length; i++)
             {
@@ -74,10 +75,9 @@ namespace UnityCLIExtensions.Animation
                 catch (Exception e)
                 {
                     string message = e is ArgumentException ? e.Message : e.ToString();
-                    EditorUtility.SetDirty(c);
-                    AssetDatabase.SaveAssets();
-                    cmd.Result.Write(new { path, applied = results.Count, results, failedAt = i, error = message });
-                    cmd.Log.Error($"Op {i} ({list.ops[i].op}) failed: {message}" + (results.Count > 0 ? $" The {results.Count} op(s) before it were saved." : ""));
+                    rollback.Rollback();
+                    cmd.Result.Write(new { path, applied = 0, failedAt = i, error = message, saved = false });
+                    cmd.Log.Error($"Op {i} ({list.ops[i].op}) failed: {message} Nothing was saved.");
                     return ExitCode.Failed;
                 }
             }
@@ -140,9 +140,9 @@ namespace UnityCLIExtensions.Animation
             CommandContext cmd,
             [CliArg("object", "GameObject name or hierarchy path with an Animator", Required = true)] string obj,
             [CliArg("parameter", "The parameter to set")] string parameter = "",
-            [CliArg("value", "Its value")] string value = "",
+            [CliArg("value", "The parameter's value: a number for Float and Int, true/false for Bool and Trigger (false resets a Trigger)")] string value = "",
             [CliArg("state", "A state to cross-fade to instead (Base Layer.Run)")] string state = "",
-            [CliArg("layer", "The layer for --state")] int layer = -1,
+            [CliArg("layer", "The layer index for --state (default -1: the first layer that has the state)")] int layer = -1,
             [CliArg("fade", "Cross-fade seconds for --state")] float fade = 0.1f)
         {
             var animator = FindAnimator(obj, out string error);

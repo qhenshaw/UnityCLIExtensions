@@ -20,8 +20,9 @@ with the compile log, `warnings` and `eventAttributes`. Ids are stable file ids,
    (the exact attribute names C# must send). `unity command cliext.vfx check --path <vfx>` reruns the checks.
 5. Look at it (see "Seeing it"), tune with small `set` ops, repeat.
 
-An op that fails stops the run, but the ops before it are saved. Never rerun the whole file after a failure: `add` is
-not idempotent and you get duplicate systems. Inspect, then fix with `set`, `remove` or a small follow-up file.
+An op that fails saves nothing: the graph is left as it was (`saved: false`, `failedAt` and `error` say which op and
+why). Fix that op and rerun the whole file. Once a file has applied, don't rerun it: `add` is not idempotent and you
+get duplicate systems; change the graph with `set`, `remove` or a small follow-up file.
 `$alias` names live only inside one `edit` call; afterwards use the ids from `results` or `inspect`.
 
 ## Templates (`ops/` next to this file)

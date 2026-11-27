@@ -83,8 +83,8 @@ namespace UnityCLIExtensions.ShaderGraph
         internal static ExitCode Create(
             CommandContext cmd,
             [CliArg("path", "Where to create it, such as Assets/Shaders/Glow.shadergraph", Required = true)] string path,
-            [CliArg("target", "The render pipeline target")] string target = "",
-            [CliArg("material", "The target's material type (sub-target)")] string material = "",
+            [CliArg("target", "The render pipeline target: Universal, HDRP, Built-In, ... (see cliext.shadergraph types --targets true)")] string target = "",
+            [CliArg("material", "The target's material type (sub-target): Lit, Unlit, ... (see cliext.shadergraph types --targets true)")] string material = "",
             [CliArg("from", "Copy this graph instead")] string from = "")
         {
             try
@@ -105,18 +105,18 @@ namespace UnityCLIExtensions.ShaderGraph
             Name = "add", Tags = new[] { "cliext", "shadergraph" }, Effect = CommandEffect.Destructive)]
         internal static ExitCode Add(
             CommandContext cmd,
-            [CliArg("path", "The .shadergraph asset", Required = true)] string path,
+            [CliArg("path", "The .shadergraph asset path or GUID", Required = true)] string path,
             [CliArg("type", "The node (menu path, name or class)", Required = true)] string type,
-            [CliArg("x", "Graph position")] float x = float.NaN,
-            [CliArg("y", "Graph position")] float y = float.NaN)
+            [CliArg("x", "Graph position (leave out to place it automatically)")] float x = float.NaN,
+            [CliArg("y", "Graph position (leave out to place it automatically)")] float y = float.NaN)
             => RunOps(cmd, path, new[] { new ShaderGraphOp { op = "add_node", type = type, x = x, y = y } }, false);
 
         [CliGroupCommand(Group, "Add a property (--type float, vector2-4, color, texture2d, cubemap, boolean, ...) with a name, reference, default value and exposed flag; then save and compile.",
             Name = "add_property", Tags = new[] { "cliext", "shadergraph" }, Effect = CommandEffect.Destructive)]
         internal static ExitCode AddProperty(
             CommandContext cmd,
-            [CliArg("path", "The .shadergraph asset", Required = true)] string path,
-            [CliArg("type", "The property type", Required = true)] string type,
+            [CliArg("path", "The .shadergraph asset path or GUID", Required = true)] string path,
+            [CliArg("type", "The property type: float, vector2, vector3, vector4, color, texture2d, cubemap, boolean, ...", Required = true)] string type,
             [CliArg("name", "Display name")] string name = "",
             [CliArg("reference", "Reference name, such as _BaseColor")] string reference = "",
             [CliArg("value", "Default value")] string value = null)
@@ -126,7 +126,7 @@ namespace UnityCLIExtensions.ShaderGraph
             Name = "remove", Tags = new[] { "cliext", "shadergraph" }, Effect = CommandEffect.Destructive)]
         internal static ExitCode Remove(
             CommandContext cmd,
-            [CliArg("path", "The .shadergraph asset", Required = true)] string path,
+            [CliArg("path", "The .shadergraph asset path or GUID", Required = true)] string path,
             [CliArg("id", "Node id, or property id or name", Required = true)] string id)
             => RunOps(cmd, path, new[] { new ShaderGraphOp { op = "remove", id = id } }, false);
 
@@ -135,18 +135,18 @@ namespace UnityCLIExtensions.ShaderGraph
             Name = "set", Tags = new[] { "cliext", "shadergraph" }, Effect = CommandEffect.Destructive)]
         internal static ExitCode Set(
             CommandContext cmd,
-            [CliArg("path", "The .shadergraph asset", Required = true)] string path,
+            [CliArg("path", "The .shadergraph asset path or GUID", Required = true)] string path,
             [CliArg("id", "Node id, or property id or name", Required = true)] string id,
             [CliArg("slot", "A node's input slot (id, display name or shader name)")] string slot = "",
             [CliArg("setting", "A node's own setting, such as a Custom Function's functionBody (see inspect --id)")] string setting = "",
-            [CliArg("value", "The value", Required = true)] string value = null)
+            [CliArg("value", "The value: a number, true/false, an [x,y,z,w] vector or colour (or #RRGGBB), a texture asset path, or an enum name", Required = true)] string value = null)
             => RunOps(cmd, path, new[] { new ShaderGraphOp { op = "set", id = id, slot = slot, setting = setting, value = value } }, false);
 
         [CliGroupCommand(Group, "Link an output slot (<node>:<slot>) to an input slot, or a property (its name or id) to an input slot through a new property node; then save and compile.",
             Name = "link", Tags = new[] { "cliext", "shadergraph" }, Effect = CommandEffect.Destructive)]
         internal static ExitCode Link(
             CommandContext cmd,
-            [CliArg("path", "The .shadergraph asset", Required = true)] string path,
+            [CliArg("path", "The .shadergraph asset path or GUID", Required = true)] string path,
             [CliArg("from", "<node id>:<output slot>, or a property", Required = true)] string from,
             [CliArg("to", "<node id>:<input slot>", Required = true)] string to)
             => RunOps(cmd, path, new[] { new ShaderGraphOp { op = "link", from = from, to = to } }, false);
@@ -155,18 +155,18 @@ namespace UnityCLIExtensions.ShaderGraph
             Name = "unlink", Tags = new[] { "cliext", "shadergraph" }, Effect = CommandEffect.Destructive)]
         internal static ExitCode Unlink(
             CommandContext cmd,
-            [CliArg("path", "The .shadergraph asset", Required = true)] string path,
+            [CliArg("path", "The .shadergraph asset path or GUID", Required = true)] string path,
             [CliArg("to", "<node id>:<input slot>", Required = true)] string to,
             [CliArg("from", "<node id>:<output slot> (default: every link into to)")] string from = "")
             => RunOps(cmd, path, new[] { new ShaderGraphOp { op = "unlink", from = from, to = to } }, false);
 
         [CliGroupCommand(Group, "Apply many edits in order, then save and compile once. --ops (or --ops-file) is a JSON array: " +
                                 "{\"op\":\"add_node\",\"type\":\"Math/Basic/Multiply\",\"as\":\"mul\"}, then \"$mul\". Ops: add_node, add_property, add_block, add_port, remove_port, remove, set (slot, setting or property), link, unlink, move, rename, expose. " +
-                                "An op that fails stops the run and nothing is saved. Refuses while the graph is open in a Shader Graph window (--force true to edit anyway).",
+                                "An op that fails saves nothing: the graph is left as it was. Refuses while the graph is open in a Shader Graph window (--force true to edit anyway).",
             Name = "edit", Tags = new[] { "cliext", "shadergraph" }, Effect = CommandEffect.Destructive)]
         internal static ExitCode Edit(
             CommandContext cmd,
-            [CliArg("path", "The .shadergraph asset", Required = true)] string path,
+            [CliArg("path", "The .shadergraph asset path or GUID", Required = true)] string path,
             [CliArg("ops", "JSON array of ops")] string ops = "",
             [CliArg("ops-file", "A file holding the JSON array")] string opsFile = "",
             [CliArg("force", "Edit even while a Shader Graph window has it open (the window's copy may overwrite the edit)")] bool force = false)

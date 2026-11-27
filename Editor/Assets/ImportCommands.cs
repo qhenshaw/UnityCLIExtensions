@@ -164,7 +164,7 @@ namespace UnityCLIExtensions.Assets
         internal static ExitCode Apply(
             CommandContext cmd,
             [CliArg("preset", "The .preset asset", Required = true)] string presetPath,
-            [CliArg("folder", "Folder", Required = true)] string folder,
+            [CliArg("folder", "Folder whose assets get the preset, subfolders included", Required = true)] string folder,
             [CliArg("filter", "File name filter")] string filter = "",
             [CliArg("dry-run", "List changes only")] bool dryRun = false)
         {

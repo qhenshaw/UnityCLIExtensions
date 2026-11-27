@@ -105,20 +105,20 @@ namespace UnityCLIExtensions.VFX
             Tags = new[] { "cliext", "vfx" }, Effect = CommandEffect.Destructive)]
         internal static ExitCode Add(
             CommandContext cmd,
-            [CliArg("path", "The .vfx asset", Required = true)] string path,
+            [CliArg("path", "The .vfx asset path or GUID", Required = true)] string path,
             [CliArg("kind", "context, block, operator or parameter", Required = true)] string kind,
             [CliArg("type", "What to add (see cliext.vfx types)", Required = true)] string type,
             [CliArg("context", "For a block: the context's id")] string context = "",
             [CliArg("index", "For a block: its position in the context (-1: last)")] int index = -1,
-            [CliArg("x", "Graph view position")] float x = float.NaN,
-            [CliArg("y", "Graph view position")] float y = float.NaN)
+            [CliArg("x", "Graph view position (leave out to place it automatically)")] float x = float.NaN,
+            [CliArg("y", "Graph view position (leave out to place it automatically)")] float y = float.NaN)
             => RunOps(cmd, path, new[] { new VfxOp { op = "add", kind = kind, type = type, context = context, index = index, x = x, y = y } });
 
         [CliGroupCommand(Group, "Remove a context (with its blocks), block, operator or parameter, unlinking it first; then save and compile.",
             Tags = new[] { "cliext", "vfx" }, Effect = CommandEffect.Destructive)]
         internal static ExitCode Remove(
             CommandContext cmd,
-            [CliArg("path", "The .vfx asset", Required = true)] string path,
+            [CliArg("path", "The .vfx asset path or GUID", Required = true)] string path,
             [CliArg("id", "The model's id", Required = true)] string id)
             => RunOps(cmd, path, new[] { new VfxOp { op = "remove", id = id } });
 
@@ -127,11 +127,11 @@ namespace UnityCLIExtensions.VFX
             Tags = new[] { "cliext", "vfx" }, Effect = CommandEffect.Destructive)]
         internal static ExitCode Set(
             CommandContext cmd,
-            [CliArg("path", "The .vfx asset", Required = true)] string path,
+            [CliArg("path", "The .vfx asset path or GUID", Required = true)] string path,
             [CliArg("id", "The model's id", Required = true)] string id,
             [CliArg("setting", "A setting's name")] string setting = "",
             [CliArg("slot", "An input slot's name or path")] string slot = "",
-            [CliArg("value", "The value")] string value = null,
+            [CliArg("value", "The value, in one of the formats above (leave out to change only --space)")] string value = null,
             [CliArg("space", "For a slot: Local, World or None")] string space = "")
             => RunOps(cmd, path, new[] { new VfxOp { op = "set", id = id, setting = setting, slot = slot, value = value, space = space } });
 
@@ -139,7 +139,7 @@ namespace UnityCLIExtensions.VFX
             Tags = new[] { "cliext", "vfx" }, Effect = CommandEffect.Destructive)]
         internal static ExitCode Link(
             CommandContext cmd,
-            [CliArg("path", "The .vfx asset", Required = true)] string path,
+            [CliArg("path", "The .vfx asset path or GUID", Required = true)] string path,
             [CliArg("from", "Context id, or <id>:<output slot>", Required = true)] string from,
             [CliArg("to", "Context id, or <id>:<input slot>", Required = true)] string to,
             [CliArg("from-index", "Flow output index (such as a spawner's start/stop)")] int fromIndex = 0,
@@ -150,7 +150,7 @@ namespace UnityCLIExtensions.VFX
             Tags = new[] { "cliext", "vfx" }, Effect = CommandEffect.Destructive)]
         internal static ExitCode Unlink(
             CommandContext cmd,
-            [CliArg("path", "The .vfx asset", Required = true)] string path,
+            [CliArg("path", "The .vfx asset path or GUID", Required = true)] string path,
             [CliArg("from", "Context id, or <id>:<output slot>", Required = true)] string from,
             [CliArg("to", "Context id, or <id>:<input slot>", Required = true)] string to,
             [CliArg("from-index", "Flow output index")] int fromIndex = 0,
@@ -160,11 +160,11 @@ namespace UnityCLIExtensions.VFX
         [CliGroupCommand(Group, "Apply many edits in order, then save and compile once. --ops (or --ops-file) is a JSON array of ops: " +
                                 "{\"op\":\"add\",\"kind\":\"context\",\"type\":\"Spawn\",\"as\":\"spawn\"}, then refer to it as \"$spawn\". " +
                                 "Ops: add, remove, set, link, unlink, move, rename, expose, with the fields of the single commands (from-index is fromIndex). " +
-                                "An op that fails stops the run; the ops before it are kept and saved.",
+                                "An op that fails saves nothing: the graph is left as it was.",
             Tags = new[] { "cliext", "vfx" }, Effect = CommandEffect.Destructive)]
         internal static ExitCode Edit(
             CommandContext cmd,
-            [CliArg("path", "The .vfx asset", Required = true)] string path,
+            [CliArg("path", "The .vfx asset path or GUID", Required = true)] string path,
             [CliArg("ops", "JSON array of ops")] string ops = "",
             [CliArg("ops-file", "A file holding the JSON array, for long lists or awkward shell quoting")] string opsFile = "")
         {
@@ -191,18 +191,20 @@ namespace UnityCLIExtensions.VFX
             try { doc = VfxGraphDocument.Open(path); }
             catch (ArgumentException e) { cmd.Log.Error(e.Message); return ExitCode.NotFound; }
 
+            using var rollback = AssetRollback.Begin(new[] { doc.path });
             var aliases = new Dictionary<string, VFXModel>();
             var results = new List<object>();
-            string failure = null;
-            int failedAt = -1;
             for (int i = 0; i < ops.Count; i++)
             {
                 try { results.Add(VfxGraphOps.Apply(doc, ops[i], aliases)); }
                 catch (Exception e)
                 {
-                    failure = e is ArgumentException ? e.Message : e.ToString();
-                    failedAt = i;
-                    break;
+                    // All or nothing: put the graph back as it was, in memory and on disk.
+                    string failure = e is ArgumentException ? e.Message : e.ToString();
+                    rollback.Rollback();
+                    cmd.Result.Write(new { path = doc.path, applied = 0, total = ops.Count, failedAt = i, error = failure, saved = false });
+                    cmd.Log.Error($"Op {i} ({ops[i].op}) failed: {failure} Nothing was saved.");
+                    return ExitCode.Failed;
                 }
             }
 
@@ -217,19 +219,12 @@ namespace UnityCLIExtensions.VFX
                 applied = results.Count,
                 total = ops.Count,
                 results = shaped,
-                failedAt = failedAt >= 0 ? (int?)failedAt : null,
-                error = failure,
                 compile = compileMessages.ToArray(),
                 warnings = check.warnings.ToArray(),
                 eventAttributes = check.eventAttributes.ToArray()
             });
-            if (failure == null && check.HasWarnings)
+            if (check.HasWarnings)
                 cmd.Log.Warning($"The graph has {check.warnings.Count(w => w.severity != VfxGraphCheck.Info)} warning(s); see warnings.");
-            if (failure != null)
-            {
-                cmd.Log.Error($"Op {failedAt} ({ops[failedAt].op}) failed: {failure}" + (results.Count > 0 ? $" The {results.Count} op(s) before it were saved." : ""));
-                return ExitCode.Failed;
-            }
             if (compileMessages.Any(m => m.StartsWith("Error") || m.StartsWith("Exception")))
                 cmd.Log.Warning($"The graph saved, but compiling it logged {compileMessages.Count} message(s); see compile.");
             return ExitCode.Success;

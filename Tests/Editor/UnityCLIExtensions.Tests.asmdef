@@ -3,6 +3,7 @@
     "rootNamespace": "UnityCLIExtensions.Tests",
     "references": [
         "UnityCLIExtensions.Editor",
+        "Unity.Pipeline.Attributes",
         "UnityEngine.TestRunner",
         "UnityEditor.TestRunner"
     ],

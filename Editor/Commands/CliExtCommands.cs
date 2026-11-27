@@ -68,7 +68,7 @@ namespace UnityCLIExtensions
         // cliext.setup
 
         [CliGroupCommand(SetupGroup, "Check the one-time project setup that prevents startup and first-use dialogs. Changes nothing.", Tags = new[] { "editor", "cliext", "settings" }, Effect = CommandEffect.ReadOnly)]
-        internal static ExitCode Check(CommandContext cmd, [CliArg("ids", "Comma-separated check ids (default: all)")] string ids = "")
+        internal static ExitCode Check(CommandContext cmd, [CliArg("ids", "Check ids separated by ';' (default: all)")] string ids = "")
         {
             foreach (var result in SetupChecks.RunAll(SplitIds(ids)))
                 cmd.Result.WriteRecord(result);
@@ -76,7 +76,7 @@ namespace UnityCLIExtensions
         }
 
         [CliGroupCommand(SetupGroup, "Fix what the setup checks can fix. Without --ids it applies every check except the optional ones (enter-play-mode-options), which run only when named.", Tags = new[] { "editor", "cliext", "settings" }, Effect = CommandEffect.Idempotent)]
-        internal static ExitCode Apply(CommandContext cmd, [CliArg("ids", "Comma-separated check ids (default: all non-optional)")] string ids = "")
+        internal static ExitCode Apply(CommandContext cmd, [CliArg("ids", "Check ids separated by ';' (default: all non-optional)")] string ids = "")
         {
             foreach (var result in SetupChecks.Apply(SplitIds(ids)))
                 cmd.Result.WriteRecord(result);
@@ -188,6 +188,6 @@ namespace UnityCLIExtensions
         }
 
         private static string[] SplitIds(string ids) =>
-            string.IsNullOrWhiteSpace(ids) ? null : ids.Split(new[] { ',', ' ' }, StringSplitOptions.RemoveEmptyEntries);
+            string.IsNullOrWhiteSpace(ids) ? null : ids.Split(new[] { ';', ',', ' ' }, StringSplitOptions.RemoveEmptyEntries);
     }
 }

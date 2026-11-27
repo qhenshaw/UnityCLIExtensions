@@ -127,7 +127,7 @@ namespace UnityCLIExtensions.Addressables
         }
 
         [CliGroupCommand(Group, "Edit Addressables with a JSON list of ops, saved once: add_group (name, set), remove_group, rename_group (group, name), set_group (group, set=\"bundleMode=PackSeparately;compression=LZ4;includeInBuild=true\"), " +
-                                "add_entry (path, group, address, labels), remove_entry, move_entry (path, group), set_address (path, address), set_labels (path, labels — the full set), add_label / remove_label (name: project labels).",
+                                "add_entry (path, group, address, labels), remove_entry, move_entry (path, group), set_address (path, address), set_labels (path, labels: the full set), add_label / remove_label (name: project labels). An op that fails saves nothing: groups, entries and labels are left as they were.",
             Name = "edit", Tags = new[] { "cliext", "addressables" }, Effect = CommandEffect.Destructive)]
         internal static ExitCode Edit(
             CommandContext cmd,
@@ -145,15 +145,24 @@ namespace UnityCLIExtensions.Addressables
 
             AddressableAssetSettings s;
             try { s = Settings(); } catch (ArgumentException e) { cmd.Log.Error(e.Message); return ExitCode.NotFound; }
+            // The settings, its groups and their schemas live in the settings folder; groups kept elsewhere are watched too.
+            string settingsPath = AssetDatabase.GetAssetPath(s);
+            var watched = new List<string> { settingsPath };
+            foreach (var g in s.groups.Where(g => g != null))
+            {
+                watched.Add(AssetDatabase.GetAssetPath(g));
+                watched.AddRange(g.Schemas.Where(x => x != null).Select(x => AssetDatabase.GetAssetPath(x)));
+            }
+            using var rollback = AssetRollback.Begin(watched, new[] { Path.GetDirectoryName(settingsPath) });
             var results = new List<object>();
             for (int i = 0; i < list.ops.Length; i++)
             {
                 try { results.Add(Apply(s, list.ops[i])); }
                 catch (Exception e) when (e is ArgumentException || e is FormatException)
                 {
-                    AssetDatabase.SaveAssets();
-                    cmd.Result.Write(new { applied = results.Count, results, failedAt = i, error = e.Message });
-                    cmd.Log.Error($"Op {i} ({list.ops[i].op}) failed: {e.Message}" + (results.Count > 0 ? $" The {results.Count} op(s) before it were saved." : ""));
+                    rollback.Rollback();
+                    cmd.Result.Write(new { applied = 0, failedAt = i, error = e.Message, saved = false });
+                    cmd.Log.Error($"Op {i} ({list.ops[i].op}) failed: {e.Message} Nothing was saved.");
                     return ExitCode.Failed;
                 }
             }

@@ -145,7 +145,7 @@ namespace UnityCLIExtensions.Timeline
 
         [CliGroupCommand(Group, "Edit a TimelineAsset with a JSON list of ops, saved once: add_clip (track, clip=asset path or model.fbx@take, time, set=\"duration=2\"; no clip for a track's default clip), set_clip (track, clip, set=\"start=1;duration=2;clipIn=0;easeIn=0.25;easeOut=0.25;timeScale=1\", name), " +
                                 "move_clip (to another track), remove_clip, remove_track, rename_track, mute_track and lock_track (value true/false), add_marker (time, on a track or the timeline's markers; signal=SignalAsset path), remove_marker (time). " +
-                                "Pipeline's animation.timeline commands create timelines and add tracks and clips.",
+                                "Pipeline's animation.timeline commands create timelines and add tracks and clips. An op that fails saves nothing: the timeline is left as it was.",
             Name = "edit", Tags = new[] { "cliext", "timeline" }, Effect = CommandEffect.Destructive)]
         internal static ExitCode Edit(
             CommandContext cmd,
@@ -164,7 +164,7 @@ namespace UnityCLIExtensions.Timeline
 
             TimelineAsset t;
             try { t = Load(path); } catch (ArgumentException e) { cmd.Log.Error(e.Message); return ExitCode.NotFound; }
-            Undo.RegisterCompleteObjectUndo(t, "cliext.timeline edit");
+            using var rollback = AssetRollback.Begin(new[] { AssetDatabase.GetAssetPath(t) });
             var results = new List<object>();
             for (int i = 0; i < list.ops.Length; i++)
             {
@@ -172,9 +172,9 @@ namespace UnityCLIExtensions.Timeline
                 catch (Exception e)
                 {
                     string message = e is ArgumentException || e is FormatException ? e.Message : e.ToString();
-                    Save(t);
-                    cmd.Result.Write(new { path, applied = results.Count, results, failedAt = i, error = message });
-                    cmd.Log.Error($"Op {i} ({list.ops[i].op}) failed: {message}" + (results.Count > 0 ? $" The {results.Count} op(s) before it were saved." : ""));
+                    rollback.Rollback();
+                    cmd.Result.Write(new { path, applied = 0, failedAt = i, error = message, saved = false });
+                    cmd.Log.Error($"Op {i} ({list.ops[i].op}) failed: {message} Nothing was saved.");
                     return ExitCode.Failed;
                 }
             }
@@ -346,7 +346,7 @@ namespace UnityCLIExtensions.Timeline
         internal static ExitCode Director(
             CommandContext cmd,
             [CliArg("director", "The GameObject with the PlayableDirector", Required = true)] string director,
-            [CliArg("time", "Scrub to this time (seconds)")] double time = -1,
+            [CliArg("time", "Scrub to this time in seconds (default -1: don't scrub)")] double time = -1,
             [CliArg("action", "play, pause, resume, stop, or empty to just read")] string action = "")
         {
             try

@@ -95,7 +95,7 @@ namespace UnityCLIExtensions.InputSystem
             Name = "edit", Tags = new[] { "cliext", "input" }, Effect = CommandEffect.Destructive)]
         internal static ExitCode Edit(
             CommandContext cmd,
-            [CliArg("path", "The .inputactions asset", Required = true)] string path,
+            [CliArg("path", "The .inputactions asset path or GUID", Required = true)] string path,
             [CliArg("ops", "JSON array of ops")] string ops = "",
             [CliArg("ops-file", "A file holding the JSON array")] string opsFile = "")
         {

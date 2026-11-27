@@ -447,7 +447,7 @@ namespace UnityCLIExtensions.UIToolkit
             Name = "click", Tags = new[] { "cliext", "ui" }, Effect = CommandEffect.Destructive)]
         internal static ExitCode Click(
             CommandContext cmd,
-            [CliArg("selector", "The element", Required = true)] string selector,
+            [CliArg("selector", "Selector for the element: Type, #name, .class, combined and nested (\"#menu > Button.primary\")", Required = true)] string selector,
             [CliArg("document", "The UIDocument's GameObject")] string document = "")
         {
             try
@@ -468,8 +468,8 @@ namespace UnityCLIExtensions.UIToolkit
             Name = "set_value", Tags = new[] { "cliext", "ui" }, Effect = CommandEffect.Destructive)]
         internal static ExitCode SetValue(
             CommandContext cmd,
-            [CliArg("selector", "The element", Required = true)] string selector,
-            [CliArg("value", "The value", Required = true)] string value,
+            [CliArg("selector", "Selector for the element: Type, #name, .class, combined and nested (\"#menu > Button.primary\")", Required = true)] string selector,
+            [CliArg("value", "The value as the field takes it: text, a number, true/false, or a dropdown choice", Required = true)] string value,
             [CliArg("document", "The UIDocument's GameObject")] string document = "")
         {
             try

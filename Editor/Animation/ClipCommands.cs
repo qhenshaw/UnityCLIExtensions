@@ -54,8 +54,14 @@ namespace UnityCLIExtensions.Animation
     {
         private const string Group = "cliext.anim";
 
+        private static string FromGuid(string path)
+        {
+            path = (path ?? "").Trim();
+            return path.Length == 32 && path.All(Uri.IsHexDigit) ? AssetDatabase.GUIDToAssetPath(path) : path;
+        }
+
         private static ModelImporter ModelAt(string path) =>
-            AssetImporter.GetAtPath((path ?? "").Trim()) as ModelImporter ?? throw new ArgumentException($"'{path}' isn't a model.");
+            AssetImporter.GetAtPath(FromGuid(path)) as ModelImporter ?? throw new ArgumentException($"'{path}' isn't a model.");
 
         private static ClipOpList ReadOps(string ops, string opsFile)
         {
@@ -94,7 +100,7 @@ namespace UnityCLIExtensions.Animation
 
         [CliGroupCommand(Group, "A model's animation import: rig type, avatar source, the takes in the file (with frame ranges), and the clips cut from them with loop, root motion, mirror, mask and events.",
             Name = "takes", Tags = new[] { "cliext", "animation" }, Effect = CommandEffect.ReadOnly)]
-        internal static ExitCode Takes(CommandContext cmd, [CliArg("path", "The model (.fbx, ...)", Required = true)] string path)
+        internal static ExitCode Takes(CommandContext cmd, [CliArg("path", "The model (.fbx, ...) path or GUID", Required = true)] string path)
         {
             try
             {
@@ -117,11 +123,11 @@ namespace UnityCLIExtensions.Animation
 
         [CliGroupCommand(Group, "Edit the clips a model imports, then reimport: add_clip (name, take, first, last frames), set_clip (name, set=\"loopTime=true;loopPose=true;lockRootRotation=true;keepOriginalOrientation=true;lockRootHeightY=true;lockRootPositionXZ=true;mirror=false\"; first, last), " +
                                 "remove_clip, set_events (name, events=\"0.5:Footstep;0.9:Footstep:Left\", normalized times; replaces them), set_mask (name, mask=AvatarMask path or none). " +
-                                "A model with no custom clips starts from its default ones.",
-            Name = "clips", Tags = new[] { "cliext", "animation" }, Effect = CommandEffect.Destructive)]
-        internal static ExitCode Clips(
+                                "A model with no custom clips starts from its default ones. An op that fails saves nothing: the model's import settings are left as they were.",
+            Name = "edit_clips", Tags = new[] { "cliext", "animation" }, Effect = CommandEffect.Destructive)]
+        internal static ExitCode EditClips(
             CommandContext cmd,
-            [CliArg("path", "The model", Required = true)] string path,
+            [CliArg("path", "The model (.fbx, ...) path or GUID", Required = true)] string path,
             [CliArg("ops", "JSON array of ops")] string ops = "",
             [CliArg("ops-file", "A file holding the JSON array")] string opsFile = "")
         {
@@ -222,7 +228,7 @@ namespace UnityCLIExtensions.Animation
 
         private static AnimationClip ClipAt(string path)
         {
-            path = (path ?? "").Trim();
+            path = FromGuid(path);
             int at = path.LastIndexOf('@');
             if (at > 0 && !File.Exists(path))
                 return AssetDatabase.LoadAllAssetsAtPath(path.Substring(0, at)).OfType<AnimationClip>().FirstOrDefault(c => c.name == path.Substring(at + 1))
@@ -232,7 +238,7 @@ namespace UnityCLIExtensions.Animation
 
         [CliGroupCommand(Group, "Describe an AnimationClip (.anim, or a model's clip as model.fbx@clip): length, frame rate, loop and root settings, every curve binding with its key count and time range, object reference curves (sprites), and events.",
             Name = "clip", Tags = new[] { "cliext", "animation" }, Effect = CommandEffect.ReadOnly)]
-        internal static ExitCode Clip(CommandContext cmd, [CliArg("path", "The clip", Required = true)] string path, [CliArg("keys", "Include every key")] bool keys = false)
+        internal static ExitCode Clip(CommandContext cmd, [CliArg("path", "The clip: an .anim path or GUID, or a model clip as model.fbx@clip", Required = true)] string path, [CliArg("keys", "Include every key")] bool keys = false)
         {
             try
             {
@@ -270,20 +276,22 @@ namespace UnityCLIExtensions.Animation
         }
 
         [CliGroupCommand(Group, "Edit an .anim clip key by key: set_key (path, type, property, time, value, tangent auto|linear|constant|free; adds or replaces the key at that time), remove_key (path, type, property, time), " +
-                                "add_event (time in seconds, function, parameter), remove_event (time or function), set_settings (set=\"loopTime=true;loopBlend=true;cycleOffset=0.5\"; frameRate). Pipeline's animation.clip set_curve replaces whole curves.",
+                                "add_event (time in seconds, function, parameter), remove_event (time or function), set_settings (set=\"loopTime=true;loopBlend=true;cycleOffset=0.5\"; frameRate). Pipeline's animation.clip set_curve replaces whole curves. " +
+                                "An op that fails saves nothing: the clip is left as it was.",
             Name = "edit_clip", Tags = new[] { "cliext", "animation" }, Effect = CommandEffect.Destructive)]
         internal static ExitCode EditClip(
             CommandContext cmd,
-            [CliArg("path", "The .anim clip", Required = true)] string path,
+            [CliArg("path", "The .anim clip path or GUID", Required = true)] string path,
             [CliArg("ops", "JSON array of ops")] string ops = "",
             [CliArg("ops-file", "A file holding the JSON array")] string opsFile = "")
         {
+            AssetRollback rollback = null;
             try
             {
                 var clip = ClipAt(path);
-                if (AssetDatabase.IsSubAsset(clip)) throw new ArgumentException("That clip is imported from a model; change it with cliext.anim clips on the model.");
+                if (AssetDatabase.IsSubAsset(clip)) throw new ArgumentException("That clip is imported from a model; change it with cliext.anim edit_clips on the model.");
                 var list = ReadOps(ops, opsFile);
-                Undo.RegisterCompleteObjectUndo(clip, "cliext.anim edit_clip");
+                rollback = AssetRollback.Begin(new[] { AssetDatabase.GetAssetPath(clip) });
                 var results = new List<object>();
                 foreach (var op in list.ops)
                 {
@@ -356,7 +364,13 @@ namespace UnityCLIExtensions.Animation
                 cmd.Result.Write(new { path, applied = results.Count, results, length = clip.length });
                 return ExitCode.Success;
             }
-            catch (Exception e) when (e is ArgumentException || e is FormatException || e is IOException) { cmd.Log.Error(e.Message); return ExitCode.Failed; }
+            catch (Exception e) when (e is ArgumentException || e is FormatException || e is IOException)
+            {
+                rollback?.Rollback();
+                cmd.Log.Error(e.Message + (rollback != null ? " Nothing was saved." : ""));
+                return ExitCode.Failed;
+            }
+            finally { rollback?.Dispose(); }
         }
 
         private static EditorCurveBinding Binding(ClipOp op)
@@ -376,7 +390,7 @@ namespace UnityCLIExtensions.Animation
             Name = "mask", Tags = new[] { "cliext", "animation" }, Effect = CommandEffect.Destructive)]
         internal static ExitCode Mask(
             CommandContext cmd,
-            [CliArg("path", "The .mask asset", Required = true)] string path,
+            [CliArg("path", "Where the .mask asset is, or goes when it does not exist yet", Required = true)] string path,
             [CliArg("humanoid", "Body parts: Part=true|false;...")] string humanoid = "",
             [CliArg("from", "A model whose transform hierarchy the mask lists")] string from = "",
             [CliArg("transforms", "Transform paths: path=true|false;... (a trailing /* covers the children)")] string transforms = "")

@@ -290,7 +290,7 @@ with the Editor. `cliext.edits status` says whether one is open. `cliext.compile
 
 **Only the tests a change affects.** `cliext.test affected` maps each changed script or .asmdef to its assembly and
 lists every test assembly that is it or depends on it, directly or through others, with the `cliext.test run` command
-that runs each. The changes come from `--files a,b` or from git (uncommitted changes against `--since`, default `HEAD`, plus
+that runs each. The changes come from `--files "a;b"` or from git (uncommitted changes against `--since`, default `HEAD`, plus
 untracked files); `--all true` lists every test assembly. Test assemblies are the ones whose .asmdef has the
 `UNITY_INCLUDE_TESTS` constraint. Changed scenes, prefabs and data are reported as `otherChanges`: nothing maps them to
 tests, so run everything when they matter. To run the list in one call:
@@ -478,8 +478,9 @@ Pass it with `--ops '<json>'` or, easier to quote, `--ops-file <path>` (Windows 
 quotes from an inline JSON argument, so use the file there). Ops: `add` (kind, type, context, index, x,
 y, as), `remove` (id), `set` (id, setting or slot, value, space), `link`/`unlink` (from, to, fromIndex, toIndex),
 `move` (id, x, y), `rename` (id, name: a context's label or a parameter's name), `expose` (id, value). The result
-lists each op with the ids of the models it added. An op that fails stops the run with its index and the reason; the
-ops before it are kept and saved. Contexts land under the lowest one and nodes to the left unless given x and y.
+lists each op with the ids of the models it added. An op that fails saves nothing: the graph is put back as it was,
+in memory and on disk, and the result gives the op's index and the reason. Contexts land under the lowest one and
+nodes to the left unless given x and y.
 
 The VFX Graph window can stay open on the graph while these run; edits made with it open saved and compiled cleanly.
 
@@ -607,7 +608,7 @@ Pipeline's `animation.animator` commands create controllers and add layers, para
 - `validate --path <controller>`: states with no motion, unreachable states, transitions that can never fire (no
   conditions and no exit time), conditions on missing or mistyped parameters, blend trees on missing or non-Float
   parameters, unused parameters. Exit 6 on errors.
-- `edit --path <controller> --ops-file ops.json`, saved once (Undo in the Editor reverts it):
+- `edit --path <controller> --ops-file ops.json`, saved once (Undo in the Editor reverts it; an op that fails saves nothing):
 ```json
 [
   {"op":"set_state","state":"Locomotion","set":"speed=1.25;tag=Move;speedParameterActive=true;speedParameter=Speed"},
@@ -768,7 +769,7 @@ platform override. Each changed asset comes back with `name: old -> new`.
 - `takes --path Hero@run.fbx`: the model's rig type and avatar, the takes in the file with their frame ranges, and
   the clips it imports with loop, root motion (baked or not, original or not, per rotation, height and XZ), mirror,
   mask and events.
-- `clips --path Hero@run.fbx --ops-file ops.json`: `add_clip` (name, take, first, last frames), `set_clip` (`set:
+- `edit_clips --path Hero@run.fbx --ops-file ops.json`: `add_clip` (name, take, first, last frames), `set_clip` (`set:
   "loopTime=true;loopPose=true;lockRootRotation=true;keepOriginalOrientation=true;lockRootHeightY=true"`, first,
   last), `remove_clip`, `set_events` (`"0.25:Footstep:Left;0.75:Footstep:Right"`, normalized times), `set_mask`
   (an AvatarMask, or `none`); reimports once. An op that fails saves nothing.
@@ -856,7 +857,7 @@ All under `unity command --project-path <project>`:
 | `cliext.playmode check_statics [--include-reset true]` | Static state that would survive between Play sessions without a domain reload. |
 | `cliext.playmode time_scale --value <n>` | Sets `Time.timeScale` (slow motion for captures) and returns the previous value. |
 | `cliext.edits begin [--expire-after 300]` / `end` / `status` | An edit batch: no import or reload until `end`, which compiles once. |
-| `cliext.test affected [--files a,b] [--since HEAD] [--all true]` | The test assemblies a change affects, with the commands that run them. |
+| `cliext.test affected [--files "a;b"] [--since HEAD] [--all true]` | The test assemblies a change affects, with the commands that run them. |
 | `cliext.test run [--filter f] [--filter-type name\|exact\|assembly\|category] [--mode edit\|play]` | Runs tests and returns that run's own result; an empty match fails. |
 | `cliext.test result [--run-id id] [--wait true]` | A run's result (default: the latest). |
 | `cliext.eval run --file f.cs [--vars "k=v;k=v"] [--print true]` | Runs a snippet with its `{{placeholders}}` filled. |
@@ -892,7 +893,7 @@ All under `unity command --project-path <project>`:
 | `cliext.addressables status` / `init` / `entries` / `edit` / `build` / `analyze` | Addressables groups, entries, builds and Analyze. |
 | `cliext.import batch --folder <f> --set "k=v;..."` | Import settings across many assets. |
 | `cliext.presets list` / `create` / `set_default` / `apply` / `audit` | Default presets per folder, and the assets that break them. |
-| `cliext.anim takes` / `clips --path <model>` | A model's takes and imported clips (loop, root motion, masks, events). |
+| `cliext.anim takes` / `edit_clips --path <model>` | A model's takes and imported clips (loop, root motion, masks, events). |
 | `cliext.anim clip` / `edit_clip --path <anim>` | Keys, events and settings on .anim clips. |
 | `cliext.anim mask` / `check` | Avatar masks, and whether clips fit a model. |
 | `cliext.physics matrix` / `set_matrix` / `material` / `raycast` | Collision matrix, physics materials, raycasts. |

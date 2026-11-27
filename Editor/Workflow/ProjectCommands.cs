@@ -21,7 +21,7 @@ namespace UnityCLIExtensions
             Tags = new[] { "cliext", "tests" }, Effect = CommandEffect.ReadOnly)]
         internal static ExitCode Affected(
             CommandContext cmd,
-            [CliArg("files", "Comma-separated project-relative paths of the changed files (default: from git)")] string files = "",
+            [CliArg("files", "Project-relative paths of the changed files, separated by ';' (default: from git)")] string files = "",
             [CliArg("since", "Git revision to diff against when --files is empty")] string since = "HEAD",
             [CliArg("all", "List every test assembly instead")] bool all = false)
         {
@@ -35,7 +35,7 @@ namespace UnityCLIExtensions
                 string[] changed;
                 if (!string.IsNullOrWhiteSpace(files))
                 {
-                    changed = files.Split(new[] { ',' }, StringSplitOptions.RemoveEmptyEntries).Select(f => f.Trim()).ToArray();
+                    changed = files.Split(new[] { ';', ',' }, StringSplitOptions.RemoveEmptyEntries).Select(f => f.Trim()).ToArray();
                 }
                 else
                 {
@@ -122,8 +122,8 @@ namespace UnityCLIExtensions
             return ExitCode.Success;
         }
 
-        [CliGroupCommand(DiffGroup, "Compare a snapshot with the scene or prefab now: objects added, removed or renamed (moved), components added or removed, and changed properties with their old and new values. --update saves the current state as the new snapshot.",
-            Tags = new[] { "cliext", "scenes", "prefabs" }, Effect = CommandEffect.ReadOnly)]
+        [CliGroupCommand(DiffGroup, "Compare a snapshot with the scene or prefab now: objects added, removed or renamed (moved), components added or removed, and changed properties with their old and new values. --update saves the current state as the new snapshot (without it, nothing is written).",
+            Tags = new[] { "cliext", "scenes", "prefabs" }, Effect = CommandEffect.Idempotent)]
         internal static ExitCode Compare(
             CommandContext cmd,
             [CliArg("name", "The snapshot's name (its path, unless one was given)", Required = true)] string name,
@@ -137,7 +137,7 @@ namespace UnityCLIExtensions
         }
 
         [CliGroupCommand(DiffGroup, "Delete a saved snapshot by name, or every snapshot with --all.",
-            Tags = new[] { "cliext", "scenes", "prefabs" }, Effect = CommandEffect.Idempotent)]
+            Tags = new[] { "cliext", "scenes", "prefabs" }, Effect = CommandEffect.Destructive)]
         internal static ExitCode Delete(
             CommandContext cmd,
             [CliArg("name", "The snapshot's name (its path, unless one was given)")] string name = "",

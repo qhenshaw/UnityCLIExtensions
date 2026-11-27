@@ -164,9 +164,9 @@ namespace UnityCLIExtensions.Project
             Name = "set", Tags = new[] { "cliext", "navmesh" }, Effect = CommandEffect.Destructive)]
         internal static ExitCode NavSet(
             CommandContext cmd,
-            [CliArg("index", "Area index")] int index = -1,
-            [CliArg("name", "Area name")] string name = "",
-            [CliArg("cost", "Area cost")] float cost = -1,
+            [CliArg("index", "Index of the area to change, 3-31 (default -1: no area change)")] int index = -1,
+            [CliArg("name", "New name for the area at --index")] string name = "",
+            [CliArg("cost", "New cost for the area at --index (default -1: keep it)")] float cost = -1,
             [CliArg("agent", "Agent type name or id")] string agent = "",
             [CliArg("set", "Agent settings: name=value;...")] string set = "")
         {
