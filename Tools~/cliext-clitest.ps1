@@ -396,7 +396,17 @@ Add-Check 'dialogs.failure-log' 'cliext.dialogs, cliext.watchdog, cliext.failure
     Expect (@($entry.parameters) -contains 'scene' -and -not ("$($entry.parameters)" -match 'NoSuchScene')) "parameters $(@($entry.parameters) -join ',')"
     Expect ($s.exit -eq 0 -and (@($s.json) | Where-Object { $_.command -eq 'cliext.scene save_open' })) "summary has no save_open group: $(Short $s.stdout)"
     Expect ($b.exit -eq 2) "a bad --since: exit $($b.exit), expected 2"
-    "logged as $($entry.command) [$(@($entry.parameters) -join ',')]; summary groups it; bad --since exit 2"
+    # clear, with the log backed up and put back
+    $log = Join-Path (Invoke-Cli @('cliext', 'status', '--format', 'json')).json.stateDirectory 'failures.jsonl'
+    $bak = Join-Path $work 'failures.jsonl.bak'
+    Copy-Item $log $bak -Force
+    try {
+        $c = Invoke-Cli @('cliext.failures', 'clear', '--format', 'json')
+        $after = Invoke-Cli @('cliext.failures', 'log', '--format', 'json')
+        Expect ($c.exit -eq 0 -and "$($after.stdout)".Trim() -eq '') "clear: exit $($c.exit); log after: $(Short $after.stdout)"
+    }
+    finally { Copy-Item $bak $log -Force }
+    "logged as $($entry.command) [$(@($entry.parameters) -join ',')]; summary groups it; bad --since exit 2; clear empties it (restored)"
 }
 
 Add-Check 'dialogs.real-blocking-dialog' 'cliext.dialogs, cliext.watchdog, cliext.failures' 'a real modal dialog: a main-thread command reports it, the watchdog names it and presses Cancel, and the Editor answers again' {
