@@ -727,6 +727,12 @@ UXML ops: `add` (no selector adds at the top level), `remove`, `move`, `set_attr
 `properties: "padding: 8px; color: #fff"`, merged into the rule or `replace: true`; a missing rule is added),
 `remove_rule`, `remove_property`. An op that fails saves nothing.
 
+**Style sheet links.** A UXML imported right after the USS it names was (re)imported can load with that style sheet
+null, so the UI draws unstyled although the file is right. `inspect` lists each `<Style src>` under `styleSheets`
+(the `.uss` it names, whether it `exists`, whether the imported asset `linked` it) with a warning naming the fix;
+`inspect --reimport true` reimports the UXML and relinks it. `edit` of a UXML checks the links after saving, reimports
+once when one is null, and returns `styleSheets`, `relinked` and `warnings`.
+
 **Live UI** (UIDocuments in the open scenes, so mostly Play mode):
 - `tree [--document <GameObject>] [--depth 8]`: each element's type, name, classes, text or value, screen rect, and
   whether it is hidden or disabled.

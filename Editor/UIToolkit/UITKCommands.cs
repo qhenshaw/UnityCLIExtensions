@@ -55,6 +55,12 @@ namespace UnityCLIExtensions.UIToolkit
         public List<object> results = new List<object>();
         /// <summary>The importer's warnings and errors for the saved file (ones it already had before the edit).</summary>
         public List<string> import = new List<string>();
+        /// <summary>UXML: each &lt;Style src&gt; and whether the imported asset links it, after the save.</summary>
+        public List<UITKCommands.StyleLink> styleSheets;
+        /// <summary>UXML: the import left a style sheet null and a second import linked it.</summary>
+        public bool relinked;
+        /// <summary>Style sheet links still unresolved after the save, with the fix.</summary>
+        public List<string> warnings = new List<string>();
     }
 
     /// <summary>
@@ -142,9 +148,12 @@ namespace UnityCLIExtensions.UIToolkit
             catch (System.Xml.XmlException e) { throw new ArgumentException($"'{path}' isn't valid UXML ({e.Message}). Fix or replace the file."); }
         }
 
-        [CliGroupCommand(Group, "Describe a UXML file as a tree (type, name, classes, text, other attributes) and its style sheets; or a USS file as its rules and properties.",
+        [CliGroupCommand(Group, "Describe a UXML file as a tree (type, name, classes, text, other attributes) and its style sheets; or a USS file as its rules and properties. " +
+                                "styleSheets says, for each <Style src>, which .uss it names and whether the imported VisualTreeAsset links it (linked false: the UI draws without those styles; warnings names the fix, --reimport true).",
             Name = "inspect", Tags = new[] { "cliext", "ui" }, Effect = CommandEffect.ReadOnly)]
-        internal static ExitCode Inspect(CommandContext cmd, [CliArg("path", "A .uxml or .uss file under Assets/ or Packages/", Required = true)] string path)
+        internal static ExitCode Inspect(CommandContext cmd,
+            [CliArg("path", "A .uxml or .uss file under Assets/ or Packages/", Required = true)] string path,
+            [CliArg("reimport", "Reimport the UXML first: relinks a style sheet the imported asset holds as null")] bool reimport = false)
         {
             try
             {
@@ -155,22 +164,113 @@ namespace UnityCLIExtensions.UIToolkit
                     return ExitCode.Success;
                 }
                 var doc = ParseUxml(File.ReadAllText(FullPath(path)), path);
+                if (reimport) ReimportUxml(path);
+                var links = StyleLinks(doc, path);
                 cmd.Result.Write(new
                 {
                     path,
                     styles = doc.Root.Descendants().Where(e => e.Name.LocalName == "Style").Select(e => (string)e.Attribute("src")).ToArray(),
+                    styleSheets = links.Select(l => new { l.src, l.sheet, l.exists, l.linked }).ToArray(),
                     templates = doc.Root.Descendants().Where(e => e.Name.LocalName == "Template").Select(e => $"{(string)e.Attribute("name")}: {(string)e.Attribute("src")}").ToArray(),
-                    tree = TreeChildren(doc.Root).Select(e => DescribeXml(e, 50)).ToArray()
+                    tree = TreeChildren(doc.Root).Select(e => DescribeXml(e, 50)).ToArray(),
+                    reimported = reimport,
+                    warnings = StyleLinkWarnings(links, path)
                 });
                 return ExitCode.Success;
             }
             catch (Exception e) when (e is ArgumentException || e is IOException) { return Fail(cmd, e); }
         }
 
+        /// <summary>One &lt;Style src&gt; of a UXML: the .uss it names and whether the imported asset links it.</summary>
+        internal sealed class StyleLink
+        {
+            public string src;
+            /// <summary>The asset path the src names, or null when it names no file in the project.</summary>
+            public string sheet;
+            /// <summary>The style sheet file is there and imported.</summary>
+            public bool exists;
+            /// <summary>The imported VisualTreeAsset holds that style sheet (false: it holds null, the UI draws unstyled).</summary>
+            public bool linked;
+        }
+
+        /// <summary>
+        /// The style sheets a UXML's &lt;Style&gt; elements name, checked against the imported VisualTreeAsset. A UXML
+        /// imported right after the USS it names was (re)imported can hold a destroyed StyleSheet: the serialized link
+        /// is right but the loaded asset's style sheet is null until the UXML is imported again.
+        /// </summary>
+        internal static List<StyleLink> StyleLinks(XDocument doc, string path)
+        {
+            var vta = AssetDatabase.LoadAssetAtPath<VisualTreeAsset>(path);
+            var loaded = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            if (vta != null)
+                foreach (var s in vta.stylesheets)
+                    if (s != null) loaded.Add(AssetDatabase.GetAssetPath(s));
+            var links = new List<StyleLink>();
+            foreach (var e in doc.Root.Descendants().Where(x => x.Name.LocalName == "Style"))
+            {
+                string src = (string)e.Attribute("src") ?? (string)e.Attribute("path") ?? "";
+                string sheet = StyleSrcPath(src, path);
+                bool exists = sheet != null && AssetDatabase.LoadAssetAtPath<StyleSheet>(sheet) != null;
+                links.Add(new StyleLink { src = src, sheet = sheet, exists = exists, linked = exists && loaded.Contains(sheet) });
+            }
+            return links;
+        }
+
+        internal static List<string> StyleLinkWarnings(List<StyleLink> links, string path)
+        {
+            var warnings = new List<string>();
+            foreach (var l in links)
+            {
+                if (!l.exists)
+                    warnings.Add($"<Style src=\"{l.src}\"> names no imported style sheet{(l.sheet != null ? $" (looked for {l.sheet})" : "")}: fix the src, or import the .uss first.");
+                else if (!l.linked)
+                    warnings.Add($"The imported VisualTreeAsset holds null for <Style src=\"{l.src}\"> although {l.sheet} is imported: the UI draws without those styles. " +
+                                 $"Reimport the UXML: cliext.uitk inspect --path {path} --reimport true.");
+            }
+            return warnings;
+        }
+
+        /// <summary>The asset path a &lt;Style src&gt; names: a project:// URL (by its guid), a /Assets/ path, or a path relative to the UXML.</summary>
+        internal static string StyleSrcPath(string src, string uxmlPath)
+        {
+            string s = (src ?? "").Trim();
+            if (s.Length == 0) return null;
+            var guid = Regex.Match(s, @"[?&]guid=([0-9a-fA-F]{32})");
+            if (guid.Success)
+            {
+                string byGuid = AssetDatabase.GUIDToAssetPath(guid.Groups[1].Value);
+                if (!string.IsNullOrEmpty(byGuid)) return byGuid;
+            }
+            s = Uri.UnescapeDataString(Regex.Replace(s, @"[?#].*$", "")).Replace('\\', '/');
+            const string db = "project://database/";
+            if (s.StartsWith(db, StringComparison.OrdinalIgnoreCase)) s = s.Substring(db.Length);
+            else if (s.StartsWith("/")) s = s.TrimStart('/');
+            else s = (Path.GetDirectoryName(uxmlPath) ?? "").Replace('\\', '/') + "/" + s;
+            var parts = new List<string>();
+            foreach (string part in s.Split('/'))
+            {
+                if (part.Length == 0 || part == ".") continue;
+                if (part == "..") { if (parts.Count > 0) parts.RemoveAt(parts.Count - 1); continue; }
+                parts.Add(part);
+            }
+            return parts.Count == 0 ? null : string.Join("/", parts);
+        }
+
+        /// <summary>
+        /// Imports the UXML again after unloading unused assets, so it loads the style sheets' current objects; importing
+        /// it again without the unload, in the same call, keeps the destroyed one.
+        /// </summary>
+        internal static void ReimportUxml(string path)
+        {
+            EditorUtility.UnloadUnusedAssetsImmediate();
+            AssetDatabase.ImportAsset(path, ImportAssetOptions.ForceUpdate);
+        }
+
         [CliGroupCommand(Group, "Edit a UXML or USS file with a JSON list of ops, saved once and checked by Unity's importer. " +
                                 "UXML: add (selector=parent, type, name, class, text, attributes=\"k=v;k=v\", index), remove, move (to, index), set_attributes (attributes, text, name), add_class, remove_class; selectors are Type, #name, .class, combined and nested (\"#menu > Button.primary\"). " +
                                 "USS: set_rule (selector as written, properties=\"color: #fff; width: 120px\", replace), remove_rule, remove_property (properties=\"color; width\"). " +
-                                "An op that fails saves nothing, and so does one that would change nothing, or an importer error or new importer warning (an unknown USS property, a bad value). cliext.uitk inspect shows the file.",
+                                "An op that fails saves nothing, and so does one that would change nothing, or an importer error or new importer warning (an unknown USS property, a bad value). " +
+                                "A saved UXML reports styleSheets (each <Style src> and whether the imported asset links it), reimports once when one is null (relinked) and warns when one stays unresolved. cliext.uitk inspect shows the file.",
             Name = "edit", Tags = new[] { "cliext", "ui" }, Effect = CommandEffect.Destructive)]
         internal static ExitCode Edit(
             CommandContext cmd,
@@ -196,7 +296,11 @@ namespace UnityCLIExtensions.UIToolkit
                 cmd.Fail($"{which}{outcome.error} Nothing was saved.");
                 return ExitCode.Failed;
             }
-            cmd.Result.Write(new { path, applied = outcome.results.Count, results = outcome.results, saved = true, import = outcome.import });
+            if (outcome.styleSheets == null)
+                cmd.Result.Write(new { path, applied = outcome.results.Count, results = outcome.results, saved = true, import = outcome.import });
+            else
+                cmd.Result.Write(new { path, applied = outcome.results.Count, results = outcome.results, saved = true, import = outcome.import,
+                                       styleSheets = outcome.styleSheets.Select(l => new { l.src, l.sheet, l.exists, l.linked }).ToArray(), relinked = outcome.relinked, warnings = outcome.warnings });
             return ExitCode.Success;
         }
 
@@ -254,7 +358,7 @@ namespace UnityCLIExtensions.UIToolkit
             File.WriteAllText(full, output, new UTF8Encoding(false));
             if (!imported) { outcome.saved = true; return outcome; }
             var after = Import(path);
-            if (after.Count == 0) { outcome.saved = true; return outcome; }
+            if (after.Count == 0) { outcome.saved = true; CheckStyleLinks(outcome, path, uss, output); return outcome; }
 
             // Something to report: put the old text back, and see which messages the file already had.
             File.WriteAllText(full, original, new UTF8Encoding(false));
@@ -269,7 +373,28 @@ namespace UnityCLIExtensions.UIToolkit
             File.WriteAllText(full, output, new UTF8Encoding(false));
             outcome.import = Import(path).Select(OneLine).ToList();
             outcome.saved = true;
+            CheckStyleLinks(outcome, path, uss, output);
             return outcome;
+        }
+
+        /// <summary>
+        /// After a UXML is saved and imported: when the imported asset holds null for a style sheet that is there,
+        /// import it once more (after unloading unused assets) and report the links, warning about any still unresolved.
+        /// </summary>
+        private static void CheckStyleLinks(UitkEditOutcome outcome, string path, bool uss, string text)
+        {
+            if (uss) return;
+            var doc = ParseUxml(text, path);
+            var links = StyleLinks(doc, path);
+            if (links.Count == 0) return;
+            if (links.Any(l => l.exists && !l.linked))
+            {
+                ReimportUxml(path);
+                links = StyleLinks(doc, path);
+                outcome.relinked = links.All(l => !l.exists || l.linked);
+            }
+            outcome.styleSheets = links;
+            outcome.warnings = StyleLinkWarnings(links, path);
         }
 
         /// <summary>Imports the asset, returning the warnings and errors Unity logged meanwhile.</summary>

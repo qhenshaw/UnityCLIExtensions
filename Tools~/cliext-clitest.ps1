@@ -2696,6 +2696,40 @@ Add-Check 'uitk.inspect' $uiRow 'cliext.uitk inspect reads a UXML as its tree an
     "menu with 6 controls, 1 style sheet; 3 rules; $($seen -join ', ')"
 }
 
+Add-Check 'uitk.style-link' $uiRow 'a UXML imported right after the USS it names was reimported loads with a null style sheet: cliext.uitk inspect reports linked false with the fix, inspect --reimport true relinks it (the loaded asset agrees); inspect of a linked one has no warning' {
+    New-ScratchFolder
+    $stale = @'
+string d = "{{dir}}";
+System.IO.File.WriteAllText(d + "/CliTestLink.uss", "/* empty */\n");
+System.IO.File.WriteAllText(d + "/CliTestLink.uxml", "<ui:UXML xmlns:ui=\"UnityEngine.UIElements\"></ui:UXML>\n");
+UnityEditor.AssetDatabase.ImportAsset(d + "/CliTestLink.uss", UnityEditor.ImportAssetOptions.ForceUpdate);
+UnityEditor.AssetDatabase.ImportAsset(d + "/CliTestLink.uxml", UnityEditor.ImportAssetOptions.ForceUpdate);
+System.IO.File.WriteAllText(d + "/CliTestLink.uss", ".panel { width: 260px; }\n");
+UnityEditor.AssetDatabase.ImportAsset(d + "/CliTestLink.uss", UnityEditor.ImportAssetOptions.ForceUpdate);
+System.IO.File.WriteAllText(d + "/CliTestLink.uxml", "<ui:UXML xmlns:ui=\"UnityEngine.UIElements\">\n    <ui:Style src=\"CliTestLink.uss\" />\n    <ui:VisualElement class=\"panel\" />\n</ui:UXML>\n");
+UnityEditor.AssetDatabase.ImportAsset(d + "/CliTestLink.uxml", UnityEditor.ImportAssetOptions.ForceUpdate);
+return "ok";
+'@
+    $loaded = "var v = UnityEditor.AssetDatabase.LoadAssetAtPath<UnityEngine.UIElements.VisualTreeAsset>(`"$scratchRel/CliTestLink.uxml`"); return string.Join(`",`", v.stylesheets.Select(s => s == null ? `"null`" : s.name));"
+    $uxml = "$scratchRel/CliTestLink.uxml"
+    try {
+        Expect ((Invoke-Eval 'ui-stale.cs' $stale.Replace('{{dir}}', $scratchRel)) -eq 'ok') 'scratch UXML and USS'
+        $before = Invoke-Eval 'ui-loaded.cs' $loaded
+        Expect ($before -eq 'null') "the stale link didn't happen (loaded: $before): the check needs it"
+        $i = Invoke-Cli @('cliext.uitk', 'inspect', '--path', $uxml, '--format', 'json')
+        Expect ($i.exit -eq 0) "inspect: exit $($i.exit): $(Short $i.stderr)"
+        $l = @($i.json.styleSheets)
+        Expect ($l.Count -eq 1 -and $l[0].sheet -eq "$scratchRel/CliTestLink.uss" -and $l[0].exists -and -not $l[0].linked) "styleSheets: $(Short ($i.json.styleSheets | ConvertTo-Json -Compress))"
+        Expect ((@($i.json.warnings) -join ' ') -match 'holds null.*--reimport true') "warnings: $(@($i.json.warnings) -join ' ')"
+        $r = Invoke-Cli @('cliext.uitk', 'inspect', '--path', $uxml, '--reimport', 'true', '--format', 'json')
+        Expect ($r.exit -eq 0 -and $r.json.reimported -and @($r.json.styleSheets)[0].linked -and @($r.json.warnings).Count -eq 0) "--reimport: $(Short $r.stdout 300)"
+        $after = Invoke-Eval 'ui-loaded.cs' $loaded
+        Expect ($after -eq 'CliTestLink') "loaded after --reimport: $after"
+        "inspect named the null link and the fix; --reimport relinked it (loaded: $after)"
+    }
+    finally { [void](Invoke-Eval 'ui-link-clean.cs' "UnityEditor.AssetDatabase.DeleteAsset(`"$uxml`"); UnityEditor.AssetDatabase.DeleteAsset(`"$scratchRel/CliTestLink.uss`"); return `"ok`";") }
+}
+
 Add-Check 'uitk.edit' $uiRow 'cliext.uitk edit runs every UXML op (add, remove, move, set_attributes, add_class, remove_class) in one batch and every USS op (set_rule merge, new and replace, remove_property, remove_rule) in another; inspect and the imported assets in memory show them all' {
     Reset-UiFiles
     $uops = @'

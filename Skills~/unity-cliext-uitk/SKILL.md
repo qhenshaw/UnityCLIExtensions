@@ -20,8 +20,16 @@ how to apply them and test them through commands. Read each command's `--help` b
    PowerShell 5.1 always use `--ops-file`: inline JSON loses its quotes. A relative `--ops-file` is read from the
    project root, not your shell's folder: pass an absolute path.
 3. Read the result: `saved`, `applied`, `results`, and `import` (importer messages the file already had).
-4. `unity command cliext.uitk inspect --path <file> --format json`: a UXML's `tree`, `styles` and `templates`, or a
-   USS file's `rules`. Use `styles` to confirm the UXML references its style sheet.
+4. `unity command cliext.uitk inspect --path <file> --format json`: a UXML's `tree`, `styles`, `styleSheets` and
+   `templates`, or a USS file's `rules`. `styleSheets` says, for each `<Style src>`, which `.uss` it names and whether
+   the imported asset `linked` it.
+
+**Style sheet link rule.** A UXML imported right after the USS it names was (re)imported, in the same refresh or call,
+can load with that style sheet null: the UI draws unstyled while the file and its `src` look right. Import the USS
+first, then the UXML in a later step (link it with `cliext.uitk edit`, which checks the link after saving and
+reimports once when it is null: read `styleSheets`, `relinked` and `warnings`). After writing a UXML and its USS
+yourself, run `inspect` on the UXML: `linked: false` (or a warning) means run
+`cliext.uitk inspect --path <uxml> --reimport true`, which reimports it and relinks.
 
 The batch is all or nothing. An op that fails, an op that would change nothing ("would change nothing: the elements
 are already like that"), or an importer error or *new* importer warning (an unknown USS property, a bad value) saves
