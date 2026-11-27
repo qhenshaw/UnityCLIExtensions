@@ -47,6 +47,8 @@ This package works in three layers:
 - [Animation import, clips and avatar masks](#animation-import-clips-and-avatar-masks)
 - [Physics, NavMesh and quality settings](#physics-navmesh-and-quality-settings)
 - [Agent files: the skills and CLAUDE.md](#agent-files-the-skills-and-claudemd)
+- [Field notes and the field report](#field-notes-and-the-field-report)
+- [Reporting a problem](#reporting-a-problem)
 - [Testing the package](#testing-the-package)
 - [Commands](#commands)
 - [Files](#files)
@@ -876,7 +878,8 @@ Agents find skills in the project's `.claude/skills/`, so the package puts them 
 
 - When the package loads (so on install and on every update), it copies the skills that apply to
   `.claude/skills/<name>/` and keeps a marked block in the project's `CLAUDE.md` that tells agents to load them
-  (`<!-- BEGIN unity-cliext ... -->` to `<!-- END unity-cliext -->`). `CLAUDE.md` is created if missing; everything
+  (`<!-- BEGIN unity-cliext ... -->` to `<!-- END unity-cliext -->`) and to record a field note when they work around a
+  cliext command (see [Field notes](#field-notes-and-the-field-report)). `CLAUDE.md` is created if missing; everything
   outside the block is left as it is. A package skill whose package was removed (VFX Graph) is taken out again.
 - Only what differs from the installed package version is written, so it does nothing on most loads. The installed
   skill carries a version stamp: a newer package replaces it, while edits made by hand to the current version's copy
@@ -886,6 +889,76 @@ Agents find skills in the project's `.claude/skills/`, so the package puts them 
 - Turn it off per user in Project Settings > CLI Extensions > Keep Skill and CLAUDE.md Current.
 
 `cliext status` also reports the package `version` and `tools`, the folder of the `Tools~` scripts the skill refers to.
+
+## Field notes and the field report
+Failed cliext commands are logged by themselves (`failures.jsonl`). An agent that succeeds the slow way is not: it
+hand-edits a `.shadergraph` because no op covers a setting, writes a `script eval` where a command should exist, or
+reads the package source to learn a command. Two things capture that.
+
+**Field notes.** The CLAUDE.md block and the `unity-cliext` skill tell agents to record a note before moving on when a
+cliext command fails in a way its error doesn't explain, when they work around one, or when a command they need doesn't
+exist:
+```powershell
+unity command cliext.failures note --kind workaround --command "cliext.shadergraph edit" --what "No op turns on alpha clipping" --workaround "Edited m_AlphaClip in the file"
+unity command cliext.failures note --file note.json     # the same fields as JSON, safe under Windows PowerShell 5.1
+```
+`--kind` is `bug`, `workaround`, `missing`, `docs` or `slow` (anything else exits 2 and lists them); `--what` is one
+line; `--command` and `--workaround` are optional. Each note is one line of `Library/CLIExtensions/field-notes.jsonl`
+with the time and the Unity, Pipeline and package versions, and nothing else: no parameter values of the command it is
+about. `cliext.failures log --notes true` lists the notes, `summary` groups them by kind and command after the failure
+groups (each record has `source`: `failure` or `note`), and `clear --notes true` deletes them (`clear` alone still
+deletes only the failure log).
+
+**The field report.** `Tools~/cliext-field-report.ps1` reads the project's Claude Code transcripts
+(`%USERPROFILE%\.claude\projects\<slug>\*.jsonl` and each session's `subagents\*.jsonl`; the slug is the project path
+with every character other than a letter or digit replaced by `-`), the failure log and the field notes, and reports by
+cliext command or area:
+- failed tool calls by cause (`cliext`, `pipeline`, `shell`, `hook`, `permission`, `other`), classified as the T3 scorer
+  does, including errors printed by compound calls that exited 0;
+- reads and searches of the package's own source or README;
+- Edit or Write of files cliext commands edit (`.shadergraph`, `.vfx`, `.controller`, `.anim`, `.overrideController`,
+  `.mask`, `.playable`, `.inputactions`, `.uxml`, `.uss`, `.preset`), and shell commands that write them;
+- three or more `--help` calls on one command in one transcript;
+- `script eval` and `cliext.eval run` calls, with an excerpt of the snippet;
+- for each area, whether its skill was loaded before the first call in that area;
+- each field note and each failure in the window, matched to the tool call that made it (by time, and by the note's
+  text or the failure's command and error), with the 15 calls before it and the 5 after, their arguments, a short
+  excerpt of each output, the session id and the transcript path. One that matches no call says so.
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File <package>/Tools~/cliext-field-report.ps1 -Project <project> [-Days 14] [-Out <dir>]
+```
+It writes `field-report.md` and `field-report.json` to `-Out` (default `Library/CLIExtensions/field-report/`) and
+changes nothing else; on about 160 transcripts it takes under 10 seconds. The report stays on the machine, and because
+it quotes tool arguments and outputs it can hold project code, paths and prompts.
+
+## Reporting a problem
+If the package gets in your way (a command fails, the Editor hangs, an agent keeps working around something), you can
+send the author everything needed to fix it in one zip. You don't need to know how the package works.
+
+1. In Unity, choose **Tools > CLI Extensions > Create Bug Report**. If the Editor is frozen or closed, run this in
+   PowerShell instead (it works without the Editor):
+   ```powershell
+   powershell -NoProfile -ExecutionPolicy Bypass -File <package>/Tools~/cliext-report.ps1 -Project <your project folder>
+   ```
+   `<package>` is the folder `cliext status` reports as `tools`, without the `Tools~` at the end; for a git install it
+   is `<project>/Library/PackageCache/com.qhenshaw.unitycliextensions@<hash>`.
+2. After a minute or less, Explorer opens with `cliext-report-<date>-<time>.zip` selected, in the project's
+   `CLIExtensionsReports` folder.
+3. **Look through it before you send it.** The transcript excerpts and logs can contain your project's code, file
+   paths and the prompts you gave the agent. `README.txt` in the zip lists every file. Delete anything you don't want
+   to share.
+4. Attach the zip to a new issue at https://github.com/qhenshaw/UnityCLIExtensions/issues and say in a sentence or two
+   what went wrong.
+
+Nothing is uploaded by the package; the zip only leaves your machine when you attach it. It holds the field report
+above, the failure log, the field notes, the dialog journal and watchdog status, the Unity, Pipeline and package
+versions, `Packages/manifest.json` and `packages-lock.json`, each installed skill's version and whether it was edited,
+the cliext block of `CLAUDE.md`, the end of `Editor.log`, the OS and PowerShell versions, and the Editor's answers to
+`cliext status`, `cliext.setup check` and `cliext.compile diagnostics` if it answered within a few seconds. It is
+usually well under a few MB. Options: `-Days 3` covers fewer days; `-FullTranscripts` adds the whole transcripts of the
+sessions with a note or a failure (much larger, and they hold every prompt); `-NoEditor` doesn't ask the Editor at
+all; `-Out <folder>` puts the zip elsewhere. Agents can start the same thing with `unity command cliext.failures report`,
+which returns the zip's path at once and writes the zip in the background.
 
 ## Testing the package
 Two layers. EditMode tests in `Tests/` run inside the Editor: list the package under `testables` in the project's
@@ -904,7 +977,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File <package>/Tools~/cliext-clit
 It checks setup, compile errors and edit batches, test runs, the dialog journal and the watchdog, snippets with
 placeholders, exit codes (a reply dropped by a domain reload is exit 6 with `EDITOR_CONNECTION_LOST`; a real failure
 is exit 6 with its reason on stderr), reply shapes, misspelled and either/or parameters on every batch edit, that the
-installed skills match `Skills~/`, and how Windows PowerShell 5.1 passes quoted arguments. It prints one line per check,
+installed skills match `Skills~/`, field notes, the field report and the bug report zip, and how Windows PowerShell
+5.1 passes quoted arguments. It prints one line per check,
 then T1 coverage (for each core-loop group, the commands this run called and the ones it didn't), and exits 0 when all
 pass, 1 when one fails, 2 when no Editor answers. Scratch files go in `Assets/_CliextTests/CliTest` and are removed at
 the end (`-Keep` leaves them). `-T3Ready` runs only an environment check for agent scenario runs: setup checks applied,
@@ -922,9 +996,11 @@ All under `unity command --project-path <project>`:
 | `cliext.dialogs log [--tail 20] [--since <UTC ISO time>]` | The journal: dialogs answered in agent mode, and what the watchdog saw, pressed or escalated. |
 | `cliext.dialogs scan [--local-packages true]` | Finds blocking dialog calls in the project's scripts. |
 | `cliext.dialogs clear_log` | Deletes the journal. |
-| `cliext.failures log [--tail 20] [--since <UTC ISO time>]` | The local failure log: every cliext command that reported an error, with its parameter names (no values), the error, the package's stack frames and the versions. |
-| `cliext.failures summary [--since <UTC ISO time>]` | The failure log grouped by command, exception type and top frame, most frequent first. |
-| `cliext.failures clear` | Deletes the failure log. |
+| `cliext.failures log [--tail 20] [--since <UTC ISO time>] [--notes true]` | The local failure log: every cliext command that reported an error, with its parameter names (no values), the error, the package's stack frames and the versions. `--notes true` lists the field notes instead. |
+| `cliext.failures summary [--since <UTC ISO time>]` | The failure log grouped by command, exception type and top frame, then the field notes grouped by kind and command; most frequent first. |
+| `cliext.failures clear [--notes true]` | Deletes the failure log, or with `--notes true` the field notes. |
+| `cliext.failures note --kind <kind> --what "<one line>" [--command <cmd>] [--workaround "<one line>"]` or `--file note.json` | Records a field note: a cliext problem the failure log can't see. Kinds: bug, workaround, missing, docs, slow. |
+| `cliext.failures report [--days 14] [--open-folder true]` | Starts `Tools~/cliext-report.ps1` and returns the bug report zip's path (see [Reporting a problem](#reporting-a-problem)). |
 | `cliext.watchdog start` / `stop` | Starts or stops the watchdog. |
 | `cliext.watchdog report` | The watchdog's last report. |
 | `cliext.package import --path <file.unitypackage>` | Imports a .unitypackage without the Import dialog. |
@@ -990,6 +1066,8 @@ Everything the package writes at runtime is under `Library/CLIExtensions/` (git-
 | `heartbeat.json` | Editor, about once a second from `EditorApplication.update` | pid, Play mode, compiling, agent mode, `quitting` on a normal quit. A stale file means the main thread is blocked. |
 | `dialogs.jsonl` | Editor and watchdog | One JSON object per line: `time`, `source`, `kind` (`answered`, `clicked`, `escalated`, `shown`, `progress`, `crashed`, `exited`, `restarted`, `killed`), `title`, `message`, `buttons`, `answer`, `detail`. |
 | `failures.jsonl` | Editor, whenever a cliext command reports an error or throws | One JSON object per line: `time`, `command`, `parameters` (names only), `message`, `exception`, `frames` (the package's own), `unity`, `pipeline`, `package`, `os`, `agentMode`. Nothing is sent anywhere. |
+| `field-notes.jsonl` | Editor, `cliext.failures note` | One JSON object per line: `time`, `kind`, `command`, `what`, `workaround`, `unity`, `pipeline`, `package`. Nothing is sent anywhere. |
+| `field-report/` | `Tools~/cliext-field-report.ps1` | `field-report.md` and `field-report.json` (see [Field notes and the field report](#field-notes-and-the-field-report)). |
 | `watchdog-status.json` | Watchdog, every check | The last snapshot (see above). |
 | `watchdog-policy.json` | Editor | The rules the watchdog applies. |
 | `compile.json` | Editor, when an assembly finishes compiling | Each assembly's errors and warnings from its last compile. |
