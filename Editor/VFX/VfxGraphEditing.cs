@@ -113,6 +113,10 @@ namespace UnityCLIExtensions.VFX
             }
         }
 
+        /// <summary>Every model's id, kind and class name, for callers outside VFX Graph's internals (tests).</summary>
+        public IEnumerable<(string id, string kind, string type)> ListModels() =>
+            AllModels().Select(m => (IdOf(m), KindOf(m), m.GetType().Name));
+
         public VFXModel Find(string id)
         {
             if (string.IsNullOrWhiteSpace(id)) throw new ArgumentException("No model id given.");
@@ -197,6 +201,13 @@ namespace UnityCLIExtensions.VFX
             return string.Join(" ", parts);
         }
 
+        /// <summary>The kinds <see cref="Library"/> takes; empty means all.</summary>
+        public static bool IsKind(string kind, bool allowAll = false)
+        {
+            string k = (kind ?? "").Trim().ToLowerInvariant();
+            return (allowAll && k == "") || k == "context" || k == "block" || k == "operator" || k == "parameter";
+        }
+
         public static IEnumerable<LibraryEntry> Library(string kind)
         {
             IEnumerable<LibraryEntry> Flatten(string k, IEnumerable<IVFXModelDescriptor> descriptors)
@@ -235,7 +246,9 @@ namespace UnityCLIExtensions.VFX
             if (matches.Count > 1)
                 throw new ArgumentException($"'{type}' matches {matches.Count} {kind}s: {string.Join(", ", matches.Take(12).Select(m => m.Key))}. Pass the full category/name.");
             var close = all.Where(e => e.Key.IndexOf(t, StringComparison.OrdinalIgnoreCase) >= 0).Take(12).Select(e => e.Key).ToList();
-            throw new ArgumentException($"No {kind} called '{type}'." + (close.Count > 0 ? " Did you mean: " + string.Join(", ", close) : " See cliext.vfx types."));
+            throw new ArgumentException($"No {kind} called '{type}'." + (close.Count > 0
+                ? " Did you mean: " + string.Join(", ", close)
+                : $" Find the key with cliext.vfx types --kind {kind} --filter <part of the name>."));
         }
 
         // ---------------------------------------------------------------------------------------------------------
@@ -281,13 +294,32 @@ namespace UnityCLIExtensions.VFX
         public static object Parse(string text, Type type, object current = null)
         {
             if (type == null) throw new ArgumentException("Unknown value type.");
+            try { return ParseValue(text, type, current); }
+            catch (Exception e) when (e is FormatException || e is OverflowException)
+            {
+                string form = type == typeof(bool) ? "true or false"
+                    : type.IsPrimitive ? "a number such as 1 or 0.5"
+                    : type == typeof(AnimationCurve) ? "a curve [[t,v],...]"
+                    : type == typeof(Gradient) ? "a gradient [[t,r,g,b],...]"
+                    : type == typeof(Color) ? "a colour [r,g,b], [r,g,b,a] or #RRGGBB"
+                    : "a vector such as [x,y,z]";
+                throw new ArgumentException($"'{text}' isn't a {type.Name} value: give {form}.");
+            }
+        }
+
+        private static object ParseValue(string text, Type type, object current)
+        {
             string s = (text ?? "").Trim();
             if (type == typeof(string)) return text ?? "";
             if (type == typeof(bool)) return s == "1" || bool.Parse(s);
             if (type.IsEnum)
             {
                 if (int.TryParse(s, out int asInt)) return Enum.ToObject(type, asInt);
-                var names = s.Split(new[] { '|', ',' }, StringSplitOptions.RemoveEmptyEntries).Select(n => n.Trim());
+                var names = s.Split(new[] { '|', ',' }, StringSplitOptions.RemoveEmptyEntries).Select(n => n.Trim()).ToList();
+                foreach (string n in names)
+                    if (!Enum.GetNames(type).Any(e => string.Equals(e, n, StringComparison.OrdinalIgnoreCase)))
+                        throw new ArgumentException($"'{n}' isn't a {type.Name}. Use one of: {string.Join(", ", Enum.GetNames(type))}.");
+                if (names.Count == 0) throw new ArgumentException($"No {type.Name} given. Use one of: {string.Join(", ", Enum.GetNames(type))}.");
                 return Enum.Parse(type, string.Join(", ", names), true);
             }
             if (type == typeof(float)) return float.Parse(s, CultureInfo.InvariantCulture);

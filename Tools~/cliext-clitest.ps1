@@ -239,7 +239,7 @@ Add-Check 'test.run-own-result' 'cliext.test' 'an EditMode run returns its own c
 
 # --- cliext.dialogs, cliext.watchdog ----------------------------------------------------------------------------------
 
-Add-Check 'dialogs.log-and-scan' 'cliext.dialogs, cliext.watchdog' 'the dialog journal and the blocking-call scan answer' {
+Add-Check 'dialogs.log-and-scan' 'cliext.dialogs, cliext.watchdog, cliext.failures' 'the dialog journal and the blocking-call scan answer' {
     $a = Invoke-Cli @('cliext.dialogs', 'log', '--tail', '5', '--format', 'json')
     $b = Invoke-Cli @('cliext.dialogs', 'scan', '--format', 'json')
     Expect ($a.exit -eq 0) "log: exit $($a.exit): $(Short $a.stderr)"
@@ -247,7 +247,7 @@ Add-Check 'dialogs.log-and-scan' 'cliext.dialogs, cliext.watchdog' 'the dialog j
     "journal entries: $(@($a.json).Count); blocking calls found: $(@($b.json).Count)"
 }
 
-Add-Check 'dialogs.watchdog-roundtrip' 'cliext.dialogs, cliext.watchdog' 'the watchdog starts, reports the Editor ready, and stops (and is left as it was)' {
+Add-Check 'dialogs.watchdog-roundtrip' 'cliext.dialogs, cliext.watchdog, cliext.failures' 'the watchdog starts, reports the Editor ready, and stops (and is left as it was)' {
     $before = (Invoke-Cli @('cliext', 'status', '--format', 'json')).json.watchdog.running -eq $true
     $s = Invoke-Cli @('cliext.watchdog', 'start', '--format', 'json')
     Expect ($s.exit -eq 0) "start: exit $($s.exit): $(Short ($s.stdout + $s.stderr))"
@@ -367,7 +367,7 @@ Add-Check 'test.result-latest' 'cliext.test' 'cliext.test result returns the lat
     "latest = $($run.json.runId); wait answered in $($w.ms) ms; unknown id exit 13"
 }
 
-Add-Check 'dialogs.clear-log' 'cliext.dialogs, cliext.watchdog' 'cliext.dialogs clear_log empties the journal (restored afterwards)' {
+Add-Check 'dialogs.clear-log' 'cliext.dialogs, cliext.watchdog, cliext.failures' 'cliext.dialogs clear_log empties the journal (restored afterwards)' {
     $st = (Invoke-Cli @('cliext', 'status', '--format', 'json')).json
     $journal = Join-Path $st.stateDirectory 'dialogs.jsonl'
     $backup = Join-Path $work 'dialogs.jsonl.bak'
@@ -383,7 +383,23 @@ Add-Check 'dialogs.clear-log' 'cliext.dialogs, cliext.watchdog' 'cliext.dialogs 
     "cleared; journal $(if ($had) { 'restored' } else { 'had no entries' })"
 }
 
-Add-Check 'dialogs.real-blocking-dialog' 'cliext.dialogs, cliext.watchdog' 'a real modal dialog: a main-thread command reports it, the watchdog names it and presses Cancel, and the Editor answers again' {
+Add-Check 'dialogs.failure-log' 'cliext.dialogs, cliext.watchdog, cliext.failures' 'a failed cliext command lands in the failure log with its command and parameter names (no values), and summary groups it' {
+    $since = [DateTime]::UtcNow.AddSeconds(-1).ToString('o')
+    $marker = 'Assets/NoSuchScene_' + [Guid]::NewGuid().ToString('N') + '.unity'
+    [void](Invoke-Cli @('cliext.scene', 'save_open', '--scene', $marker, '--format', 'json'))
+    $l = Invoke-Cli @('cliext.failures', 'log', '--since', $since, '--format', 'json')
+    $s = Invoke-Cli @('cliext.failures', 'summary', '--since', $since, '--format', 'json')
+    $b = Invoke-Cli @('cliext.failures', 'log', '--since', 'not-a-date', '--format', 'json')
+    $entry = @($l.json) | Where-Object { "$($_.message)" -like "*$marker*" } | Select-Object -Last 1
+    Expect ($l.exit -eq 0 -and $entry) "no entry for the failed save_open: $(Short $l.stdout)"
+    Expect ($entry.command -eq 'cliext.scene save_open') "command '$($entry.command)'"
+    Expect (@($entry.parameters) -contains 'scene' -and -not ("$($entry.parameters)" -match 'NoSuchScene')) "parameters $(@($entry.parameters) -join ',')"
+    Expect ($s.exit -eq 0 -and (@($s.json) | Where-Object { $_.command -eq 'cliext.scene save_open' })) "summary has no save_open group: $(Short $s.stdout)"
+    Expect ($b.exit -eq 2) "a bad --since: exit $($b.exit), expected 2"
+    "logged as $($entry.command) [$(@($entry.parameters) -join ',')]; summary groups it; bad --since exit 2"
+}
+
+Add-Check 'dialogs.real-blocking-dialog' 'cliext.dialogs, cliext.watchdog, cliext.failures' 'a real modal dialog: a main-thread command reports it, the watchdog names it and presses Cancel, and the Editor answers again' {
     $title = 'CliTest blocking dialog'
     $f = Write-WorkFile 'dialog.cs' "UnityEditor.EditorApplication.delayCall += () => UnityEditor.EditorUtility.DisplayDialog(`"$title`", `"Scheduled by cliext-clitest.ps1.`", `"OK`", `"Cancel`"); return `"scheduled`";"
     $s = Invoke-Cli @('script', 'eval', '--file', $f, '--format', 'json')
@@ -439,6 +455,248 @@ Add-Check 'compile.edits-end-without-begin' 'cliext.compile, cliext.edits, cliex
     Expect ($r.exit -eq 0) "exit $($r.exit): $(Short ($r.stdout + $r.stderr))"
     Expect ("$($r.stderr) $($r.stdout)" -match 'No edit batch was open') "no warning about the missing batch: $(Short ($r.stdout + $r.stderr))"
     'warned, compiled'
+}
+
+# --- cliext.vfx -------------------------------------------------------------------------------------------------------
+
+# One scratch graph built by vfx.edit-template; later checks edit it by the ids that edit returned.
+$script:vfxPath = "$scratchRel/CliTestFx.vfx"
+$script:vfxIds = @{}
+$vfxTexture = 'Assets/ThirdParty/VFXTexturePack/Tx_Burst_directional_01.png'
+
+function Get-VfxHash { (Get-FileHash (Join-Path $projectPath ($script:vfxPath -replace '/', '\'))).Hash }
+function Get-VfxGraph { $r = Invoke-Cli @('cliext.vfx', 'inspect', '--path', $script:vfxPath, '--format', 'json'); Expect ($r.exit -eq 0) "inspect: exit $($r.exit): $(Short $r.stderr)"; $r.json }
+function Get-VfxModel([string]$id) { $r = Invoke-Cli @('cliext.vfx', 'inspect', '--path', $script:vfxPath, '--id', $id, '--format', 'json'); if ($r.exit -eq 0) { $r.json } else { $null } }
+function Get-VfxSlot($model, [string]$slot) { "$((@($model.inputs) | Where-Object { $_.name -eq $slot -or $_.name -eq "_$slot" } | Select-Object -First 1).value)" }
+function Need-VfxIds { Expect ($script:vfxIds.Count -gt 0) 'no scratch graph: vfx.edit-template did not run or failed' }
+function Expect-VfxFailure($r, [string]$hint, [string]$before, [string]$what) {
+    Expect ($r.exit -ne 0) "${what}: exit 0"
+    Expect ($r.exit -ne 124) "${what}: timed out"
+    Expect ("$($r.stderr)" -match $hint) "${what}: the error doesn't say '$hint': $(Short $r.stderr)"
+    if ($before) { Expect ((Get-VfxHash) -eq $before) "${what}: the .vfx on disk changed" }
+}
+
+Add-Check 'vfx.types' 'cliext.vfx' 'cliext.vfx types finds a block key by filter, and an unknown --kind is invalid usage' {
+    $r = Invoke-Cli @('cliext.vfx', 'types', '--kind', 'block', '--filter', 'Single Burst', '--format', 'json')
+    Expect ($r.exit -eq 0) "exit $($r.exit): $(Short $r.stderr)"
+    $keys = @(@($r.json) | ForEach-Object { $_.key })
+    Expect ($keys -contains 'Spawn/Single Burst') "no Spawn/Single Burst in: $($keys -join ', ')"
+    Expect (@(@($r.json) | Where-Object { $_.kind -ne 'block' }).Count -eq 0) 'records of another kind'
+    $bad = Invoke-Cli @('cliext.vfx', 'types', '--kind', 'blocks', '--format', 'json')
+    Expect ($bad.exit -eq 2) "unknown --kind: exit $($bad.exit), expected 2: $(Short ($bad.stdout + $bad.stderr))"
+    Expect ("$($bad.stderr)" -match 'context, block, operator or parameter') "unknown --kind doesn't list the kinds: $(Short $bad.stderr)"
+    "$($keys.Count) match(es); unknown --kind exit 2"
+}
+
+Add-Check 'vfx.create' 'cliext.vfx' 'cliext.vfx create makes an empty graph; an existing path and a path outside Assets fail and say what to pass' {
+    $r = Invoke-Cli @('cliext.vfx', 'create', '--path', $script:vfxPath, '--format', 'json')
+    Expect ($r.exit -eq 0 -and $r.json.created -eq $true) "exit $($r.exit): $(Short ($r.stdout + $r.stderr))"
+    Expect (Test-Path (Join-Path $projectPath ($script:vfxPath -replace '/', '\'))) 'no .vfx on disk'
+    $g = Get-VfxGraph
+    Expect (@($g.contexts).Count -eq 0) "not empty: $(@($g.contexts).Count) context(s)"
+    $before = Get-VfxHash
+    $again = Invoke-Cli @('cliext.vfx', 'create', '--path', $script:vfxPath, '--format', 'json')
+    Expect-VfxFailure $again 'already exists.*cliext\.vfx edit' $before 'existing path'
+    Expect ($again.exit -eq 6) "existing path: exit $($again.exit), expected 6"
+    $out = Invoke-Cli @('cliext.vfx', 'create', '--path', 'NotAssets/CliTest.vfx', '--format', 'json')
+    Expect-VfxFailure $out "isn't under Assets/" '' 'path outside Assets'
+    Expect ($out.exit -eq 2) "path outside Assets: exit $($out.exit), expected 2"
+    Expect (-not (Test-Path (Join-Path $projectPath 'NotAssets'))) 'a NotAssets folder was made'
+    "created; existing path exit 6, outside Assets exit 2"
+}
+
+Add-Check 'vfx.edit-template' 'cliext.vfx' 'cliext.vfx edit applies the skill burst template (with a pack texture) in one call, and inspect and check confirm it' {
+    $template = Join-Path $packageRoot 'Skills~\unity-cliext-vfx\ops\burst.json'
+    Expect (Test-Path $template) "no template at $template"
+    Expect (Test-Path (Join-Path $projectPath ($vfxTexture -replace '/', '\'))) "no texture at $vfxTexture"
+    $ops = (Get-Content $template -Raw).Replace('Assets/REPLACE/WithYourTexture.png', $vfxTexture)
+    $parsed = $ops | ConvertFrom-Json # Windows PowerShell 5.1 emits the array as one object
+    $total = $parsed.Count
+    $f = Write-WorkFile 'vfx-burst.json' $ops
+    $r = Invoke-Cli @('cliext.vfx', 'edit', '--path', $script:vfxPath, '--ops-file', $f, '--format', 'json') 300
+    Expect ($r.exit -eq 0) "exit $($r.exit): $(Short ($r.stdout + $r.stderr))"
+    Expect ($r.json.applied -eq $total -and $r.json.total -eq $total) "applied $($r.json.applied) of $($r.json.total), expected $total"
+    Expect (@($r.json.warnings | Where-Object { $_.severity -ne 'info' }).Count -eq 0) "warnings: $(Short ($r.json.warnings | ConvertTo-Json -Compress))"
+    foreach ($a in @($r.json.results | Where-Object { $_.alias })) { $script:vfxIds[$a.alias] = "$($a.id)" }
+    foreach ($k in 'ev', 'burstSpawn', 'burstCount', 'burstInit', 'burstUpdate', 'burstOut', 'burstLife', 'burstFade') { Expect ($script:vfxIds.ContainsKey($k)) "no id for `$$k in the results" }
+    $g = Get-VfxGraph
+    Expect (@($g.contexts).Count -eq 5) "$(@($g.contexts).Count) contexts, expected 5"
+    $out = @($g.contexts) | Where-Object { $_.id -eq $script:vfxIds.burstOut }
+    Expect ((Get-VfxSlot $out 'mainTexture') -eq $vfxTexture) "mainTexture is '$(Get-VfxSlot $out 'mainTexture')'"
+    Expect (@($g.eventAttributes | Where-Object { $_.event -eq 'OnPlay' }).Count -eq 1) "no OnPlay event attributes: $(Short ($g.eventAttributes | ConvertTo-Json -Compress))"
+    $c = Invoke-Cli @('cliext.vfx', 'check', '--path', $script:vfxPath, '--strict', 'true', '--format', 'json')
+    Expect ($c.exit -eq 0) "check --strict: exit $($c.exit): $(Short ($c.stdout + $c.stderr))"
+    "$total ops applied in one call; 5 contexts; texture set; check --strict clean"
+}
+
+Add-Check 'vfx.add' 'cliext.vfx' 'cliext.vfx add puts a block in a context; an unknown block key or a missing --context fails, names the fix and saves nothing' {
+    Need-VfxIds
+    $r = Invoke-Cli @('cliext.vfx', 'add', '--path', $script:vfxPath, '--kind', 'block', '--type', 'Force/Linear Drag', '--context', $script:vfxIds.burstUpdate, '--format', 'json')
+    Expect ($r.exit -eq 0) "exit $($r.exit): $(Short ($r.stdout + $r.stderr))"
+    $id = "$(@($r.json.results)[0].id)"
+    Expect ($id -match '^\d+$') "no file id for the new block: $(Short $r.stdout)"
+    $script:vfxIds['drag'] = $id
+    $up = Get-VfxModel $script:vfxIds.burstUpdate
+    Expect (@($up.blocks | ForEach-Object { "$($_.id)" }) -contains $id) "the Update context doesn't hold block $id"
+    $before = Get-VfxHash
+    $bad = Invoke-Cli @('cliext.vfx', 'add', '--path', $script:vfxPath, '--kind', 'block', '--type', 'Force/No Such Force', '--context', $script:vfxIds.burstUpdate, '--format', 'json')
+    Expect-VfxFailure $bad 'cliext\.vfx types|Did you mean' $before 'unknown block key'
+    $noCtx = Invoke-Cli @('cliext.vfx', 'add', '--path', $script:vfxPath, '--kind', 'block', '--type', 'Force/Linear Drag', '--format', 'json')
+    Expect-VfxFailure $noCtx '--context' $before 'block without --context'
+    $kind = Invoke-Cli @('cliext.vfx', 'add', '--path', $script:vfxPath, '--kind', 'blok', '--type', 'Force/Linear Drag', '--format', 'json')
+    Expect-VfxFailure $kind 'context, block, operator or parameter' $before 'unknown --kind'
+    "added block $id; unknown key exit $($bad.exit), no --context exit $($noCtx.exit), bad kind exit $($kind.exit); file unchanged"
+}
+
+Add-Check 'vfx.set' 'cliext.vfx' 'cliext.vfx set changes a slot and a setting; a bad value, an unknown slot or setting, or no value fails, names the fix and saves nothing' {
+    Need-VfxIds
+    $r = Invoke-Cli @('cliext.vfx', 'set', '--path', $script:vfxPath, '--id', $script:vfxIds.burstCount, '--slot', 'Count', '--value', '3', '--format', 'json')
+    Expect ($r.exit -eq 0) "slot: exit $($r.exit): $(Short ($r.stdout + $r.stderr))"
+    $s = Invoke-Cli @('cliext.vfx', 'set', '--path', $script:vfxPath, '--id', $script:vfxIds.burstOut, '--setting', 'blendMode', '--value', 'Alpha', '--format', 'json')
+    Expect ($s.exit -eq 0) "setting: exit $($s.exit): $(Short ($s.stdout + $s.stderr))"
+    Expect ((Get-VfxSlot (Get-VfxModel $script:vfxIds.burstCount) 'Count') -eq '3') "Count is '$(Get-VfxSlot (Get-VfxModel $script:vfxIds.burstCount) 'Count')'"
+    $blend = "$((@((Get-VfxModel $script:vfxIds.burstOut).settings) | Where-Object { $_.name -eq 'blendMode' }).value)"
+    Expect ($blend -eq 'Alpha') "blendMode is '$blend'"
+    $before = Get-VfxHash
+    $cases = @(
+        @(@('--id', $script:vfxIds.burstCount, '--slot', 'Count', '--value', 'abc'), 'a number', 'non-numeric Count'),
+        @(@('--id', $script:vfxIds.burstOut, '--setting', 'blendMode', '--value', 'Glowy'), 'Use one of:.*Additive', 'unknown enum name'),
+        @(@('--id', $script:vfxIds.burstCount, '--slot', 'Countt', '--value', '1'), 'It has: Count', 'unknown slot'),
+        @(@('--id', $script:vfxIds.burstOut, '--setting', 'blendMood', '--value', 'Alpha'), 'It has:.*blendMode', 'unknown setting'),
+        @(@('--id', $script:vfxIds.burstCount, '--slot', 'Count'), 'needs a value', 'no --value'),
+        @(@('--id', $script:vfxIds.burstOut, '--slot', 'mainTexture', '--value', 'Assets/NoSuchTexture.png'), 'No Texture2D at', 'missing texture'),
+        @(@('--id', '999', '--slot', 'Count', '--value', '1'), 'cliext\.vfx inspect', 'unknown id')
+    )
+    $seen = @()
+    foreach ($c in $cases) {
+        $f = Invoke-Cli (@('cliext.vfx', 'set', '--path', $script:vfxPath) + $c[0] + @('--format', 'json'))
+        Expect-VfxFailure $f $c[1] $before $c[2]
+        Expect ("$($f.stderr)" -notmatch '   at ') "$($c[2]): a stack trace instead of a message: $(Short $f.stderr)"
+        $seen += "$($c[2]) $($f.exit)"
+    }
+    Expect ((Get-VfxSlot (Get-VfxModel $script:vfxIds.burstCount) 'Count') -eq '3') 'Count changed after the failed sets'
+    "Count 3, blendMode Alpha; failures: $($seen -join ', ')"
+}
+
+Add-Check 'vfx.link-unlink' 'cliext.vfx' 'cliext.vfx unlink and link a flow link; unlinking a link that is not there, or a link contexts refuse, fails and saves nothing' {
+    Need-VfxIds
+    $up = $script:vfxIds.burstUpdate; $out = $script:vfxIds.burstOut
+    $u = Invoke-Cli @('cliext.vfx', 'unlink', '--path', $script:vfxPath, '--from', $up, '--to', $out, '--format', 'json')
+    Expect ($u.exit -eq 0) "unlink: exit $($u.exit): $(Short ($u.stdout + $u.stderr))"
+    Expect (@((Get-VfxModel $up).flowTo | ForEach-Object { "$($_.id)" }) -notcontains $out) 'Update still flows into the output after unlink'
+    $before = Get-VfxHash
+    $again = Invoke-Cli @('cliext.vfx', 'unlink', '--path', $script:vfxPath, '--from', $up, '--to', $out, '--format', 'json')
+    Expect-VfxFailure $again 'no flow link.*inspect' $before 'unlink of a missing link'
+    $l = Invoke-Cli @('cliext.vfx', 'link', '--path', $script:vfxPath, '--from', $up, '--to', $out, '--format', 'json')
+    Expect ($l.exit -eq 0) "link: exit $($l.exit): $(Short ($l.stdout + $l.stderr))"
+    Expect (@((Get-VfxModel $up).flowTo | ForEach-Object { "$($_.id)" }) -contains $out) 'Update does not flow into the output after link'
+    $before = Get-VfxHash
+    $bad = Invoke-Cli @('cliext.vfx', 'link', '--path', $script:vfxPath, '--from', $out, '--to', $script:vfxIds.ev, '--format', 'json')
+    Expect-VfxFailure $bad "can't flow into" $before 'output into event'
+    $slot = Invoke-Cli @('cliext.vfx', 'link', '--path', $script:vfxPath, '--from', "$($script:vfxIds.ev):nope", '--to', "$($script:vfxIds.burstLife):A", '--format', 'json')
+    Expect-VfxFailure $slot 'has no (output|input) slot|has no slots' $before 'unknown data slot'
+    "unlinked and relinked; missing link exit $($again.exit), refused link exit $($bad.exit), unknown slot exit $($slot.exit)"
+}
+
+Add-Check 'vfx.remove' 'cliext.vfx' 'cliext.vfx remove takes a block out; an unknown id fails, points at inspect and saves nothing' {
+    Need-VfxIds
+    Expect ($script:vfxIds.ContainsKey('drag')) 'no block from vfx.add to remove'
+    $r = Invoke-Cli @('cliext.vfx', 'remove', '--path', $script:vfxPath, '--id', $script:vfxIds.drag, '--format', 'json')
+    Expect ($r.exit -eq 0) "exit $($r.exit): $(Short ($r.stdout + $r.stderr))"
+    Expect ($null -eq (Get-VfxModel $script:vfxIds.drag)) 'the block is still there'
+    Expect (@((Get-VfxModel $script:vfxIds.burstUpdate).blocks).Count -eq 0) 'the Update context still has blocks'
+    $before = Get-VfxHash
+    $bad = Invoke-Cli @('cliext.vfx', 'remove', '--path', $script:vfxPath, '--id', $script:vfxIds.drag, '--format', 'json')
+    Expect-VfxFailure $bad 'cliext\.vfx inspect' $before 'unknown id'
+    "removed $($script:vfxIds.drag); again: exit $($bad.exit)"
+}
+
+Add-Check 'vfx.batch-rollback' 'cliext.vfx' 'an edit batch with one bad op saves nothing, on disk or in memory, and the next good edit saves only its own change' {
+    Need-VfxIds
+    $before = Get-VfxHash
+    $g0 = Get-VfxGraph
+    $ops = @(
+        @{ op = 'add'; kind = 'context'; type = 'Spawn'; as = 'extra' },
+        @{ op = 'set'; id = $script:vfxIds.burstCount; slot = 'Count'; value = '9' },
+        @{ op = 'remove'; id = $script:vfxIds.burstFade },
+        @{ op = 'set'; id = $script:vfxIds.burstInit; setting = 'capacity'; value = '7' },
+        @{ op = 'add'; kind = 'block'; type = 'Spawn/No Such Block'; context = '$extra' }
+    ) | ConvertTo-Json -Compress
+    $f = Write-WorkFile 'vfx-bad-batch.json' $ops
+    $r = Invoke-Cli @('cliext.vfx', 'edit', '--path', $script:vfxPath, '--ops-file', $f, '--format', 'json')
+    Expect-VfxFailure $r 'Op 4 \(add\) failed.*Nothing was saved' $before 'bad batch'
+    Expect ($r.json.saved -eq $false -and $r.json.failedAt -eq 4 -and $r.json.applied -eq 0) "reply: $(Short $r.stdout)"
+    $g1 = Get-VfxGraph
+    Expect (@($g1.contexts).Count -eq @($g0.contexts).Count) "contexts in memory: $(@($g0.contexts).Count) -> $(@($g1.contexts).Count)"
+    $good = Write-WorkFile 'vfx-good.json' ('[' + (@{ op = 'set'; id = $script:vfxIds.burstLife; slot = 'B'; value = '0.25' } | ConvertTo-Json -Compress) + ']')
+    $ok = Invoke-Cli @('cliext.vfx', 'edit', '--path', $script:vfxPath, '--ops-file', $good, '--format', 'json')
+    Expect ($ok.exit -eq 0) "good edit: exit $($ok.exit): $(Short ($ok.stdout + $ok.stderr))"
+    $g2 = Get-VfxGraph
+    Expect (@($g2.contexts).Count -eq @($g0.contexts).Count) "the failed batch's context was saved: $(@($g2.contexts).Count) contexts"
+    Expect ($null -ne (Get-VfxModel $script:vfxIds.burstFade)) "the failed batch's remove was saved: block $($script:vfxIds.burstFade) is gone"
+    Expect ((Get-VfxSlot (Get-VfxModel $script:vfxIds.burstCount) 'Count') -eq '3') "the failed batch's Count was saved: $(Get-VfxSlot (Get-VfxModel $script:vfxIds.burstCount) 'Count')"
+    $cap = "$((@((Get-VfxModel $script:vfxIds.burstInit).settings) | Where-Object { $_.name -eq 'capacity' }).value)"
+    Expect ($cap -eq '64') "the failed batch's capacity was saved: $cap"
+    Expect ((Get-VfxSlot (Get-VfxModel $script:vfxIds.burstLife) 'B') -eq '0.25') "the good edit's value isn't there"
+    'failed at op 4, file unchanged; next edit saved only its own change'
+}
+
+Add-Check 'vfx.check' 'cliext.vfx' 'cliext.vfx check passes a good graph and fails (exit 6) on a burst that spawns nothing, naming it' {
+    Need-VfxIds
+    $ok = Invoke-Cli @('cliext.vfx', 'check', '--path', $script:vfxPath, '--format', 'json')
+    Expect ($ok.exit -eq 0) "good graph: exit $($ok.exit): $(Short ($ok.stdout + $ok.stderr))"
+    $z = Invoke-Cli @('cliext.vfx', 'set', '--path', $script:vfxPath, '--id', $script:vfxIds.burstCount, '--slot', 'Count', '--value', '0', '--format', 'json')
+    Expect ($z.exit -eq 0) "set Count 0: exit $($z.exit)"
+    Expect (@($z.json.warnings).Count -gt 0) 'the edit result has no warning for Count 0'
+    $warn = Invoke-Cli @('cliext.vfx', 'check', '--path', $script:vfxPath, '--format', 'json')
+    $bad = Invoke-Cli @('cliext.vfx', 'check', '--path', $script:vfxPath, '--strict', 'true', '--format', 'json')
+    [void](Invoke-Cli @('cliext.vfx', 'set', '--path', $script:vfxPath, '--id', $script:vfxIds.burstCount, '--slot', 'Count', '--value', '3', '--format', 'json'))
+    # Count 0 is a warning: exit 0 by default, exit 6 with --strict (as the help says).
+    Expect ($warn.exit -eq 0) "Count 0 without --strict: exit $($warn.exit), expected 0"
+    $w = @($warn.json.warnings | Where-Object { $_.severity -eq 'warning' -and "$($_.id)" -eq $script:vfxIds.burstCount })
+    Expect ($w.Count -eq 1 -and "$($w[0].problem)" -match 'Count') "no warning on the burst block naming Count: $(Short $warn.stdout)"
+    Expect ($bad.exit -eq 6) "Count 0 with --strict: exit $($bad.exit), expected 6"
+    Expect ("$($bad.stderr)" -match 'warning') "the --strict failure doesn't count the warnings: $(Short $bad.stderr)"
+    "good graph exit 0; Count 0 warns (exit 0), --strict exit 6: $(Short $w[0].problem 80)"
+}
+
+Add-Check 'vfx.missing-asset' 'cliext.vfx' 'every cliext.vfx command given a .vfx that does not exist exits 13 at once, pointing at cliext.vfx create' {
+    $none = 'Assets/_CliextTests/CliTest/NoSuch.vfx'
+    $cmds = @(
+        @('inspect'), @('check'), @('add', '--kind', 'context', '--type', 'Spawn'), @('remove', '--id', '1'),
+        @('set', '--id', '1', '--slot', 'Count', '--value', '1'), @('link', '--from', '1', '--to', '2'), @('unlink', '--from', '1', '--to', '2')
+    )
+    $f = Write-WorkFile 'vfx-one.json' '[{"op":"add","kind":"context","type":"Spawn"}]'
+    $bad = @()
+    foreach ($c in $cmds + , @('edit', '--ops-file', $f)) {
+        $r = Invoke-Cli (@('cliext.vfx', $c[0], '--path', $none) + @($c | Select-Object -Skip 1) + @('--format', 'json')) 60
+        if ($r.exit -ne 13 -or "$($r.stderr)" -notmatch 'cliext\.vfx create' -or $r.ms -gt 30000) { $bad += "$($c[0]): exit $($r.exit) in $($r.ms) ms ($(Short $r.stderr 60))" }
+    }
+    Expect ($bad.Count -eq 0) ($bad -join '; ')
+    Expect (-not (Test-Path (Join-Path $projectPath ($none -replace '/', '\')))) 'a .vfx was made at the missing path'
+    "all $($cmds.Count + 1) exit 13 naming cliext.vfx create"
+}
+
+Add-Check 'vfx.play-mode' 'cliext.vfx' 'in Play mode an edit applies and stays after Play mode ends (graphs are assets), and a bad op still saves nothing' {
+    Need-VfxIds
+    $start = Invoke-Cli @('editor.playmode', 'start', '--format', 'json')
+    try {
+        Expect ((Wait-Editor 120) -eq 0) "Play mode didn't start: $(Short ($start.stdout + $start.stderr))"
+        $ok = Invoke-Cli @('cliext.vfx', 'set', '--path', $script:vfxPath, '--id', $script:vfxIds.burstLife, '--slot', 'A', '--value', '0.07', '--format', 'json')
+        Expect ($ok.exit -eq 0) "set in Play mode: exit $($ok.exit): $(Short ($ok.stdout + $ok.stderr))"
+        $before = Get-VfxHash
+        $bad = Invoke-Cli @('cliext.vfx', 'set', '--path', $script:vfxPath, '--id', $script:vfxIds.burstLife, '--slot', 'A', '--value', 'x', '--format', 'json')
+        Expect-VfxFailure $bad 'a number' $before 'bad value in Play mode'
+    }
+    finally {
+        [void](Invoke-Cli @('editor.playmode', 'stop', '--format', 'json'))
+        [void](Wait-Editor 120)
+    }
+    $mode = Write-WorkFile 'vfx-mode.cs' 'return UnityEditor.EditorApplication.isPlaying ? "playing" : "edit";'
+    $m = Invoke-Cli @('script', 'eval', '--file', $mode, '--format', 'json')
+    Expect ("$($m.stdout)" -match 'edit') "still in Play mode: $(Short $m.stdout)"
+    Expect ((Get-VfxSlot (Get-VfxModel $script:vfxIds.burstLife) 'A') -eq '0.07') "the Play mode edit didn't stay: A is '$(Get-VfxSlot (Get-VfxModel $script:vfxIds.burstLife) 'A')'"
+    'edit applied in Play mode and kept after it; bad value saved nothing; back in Edit mode'
 }
 
 # --- Cross-cutting ----------------------------------------------------------------------------------------------------
@@ -613,13 +871,17 @@ $coverage = @()
 if (-not $T3Ready) {
     $rows = [ordered]@{
         'cliext, cliext.setup' = '^cliext( |$)|^cliext\.setup '; 'cliext.compile, cliext.edits, cliext.wait' = '^cliext\.(compile|edits|wait) '
-        'cliext.test' = '^cliext\.test '; 'cliext.dialogs, cliext.watchdog' = '^cliext\.(dialogs|watchdog) '
+        'cliext.test' = '^cliext\.test '; 'cliext.dialogs, cliext.watchdog, cliext.failures' = '^cliext\.(dialogs|watchdog|failures) '
         'cliext.eval, cliext.playmode' = '^cliext\.(eval|playmode) '; 'cliext.scene' = '^cliext\.scene '
+        # P2 authoring rows
+        'cliext.vfx' = '^cliext\.vfx '; 'cliext.shadergraph' = '^cliext\.shadergraph '
+        'cliext.animator, cliext.anim' = '^cliext\.(animator|anim) '; 'cliext.timeline' = '^cliext\.timeline '
+        'cliext.input' = '^cliext\.input '; 'cliext.uitk' = '^cliext\.uitk '
     }
     $q = Invoke-Cli @('--query', 'cliext', '--format', 'json') 60
     $all = @()
     if ($q.json -ne $null) { $all = @($q.json.data.commands | ForEach-Object { $_.command }) }
-    Write-Output 'T1 coverage (P1 rows; commands called at least once):'
+    Write-Output 'T1 coverage (P1 and P2 rows; commands called at least once):'
     foreach ($row in $rows.Keys) {
         $cmds = @($all | Where-Object { $_ -match $rows[$row] } | Sort-Object)
         $hit = @($cmds | Where-Object { $invoked.Contains($_) })

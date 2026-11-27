@@ -26,6 +26,11 @@ namespace UnityCLIExtensions.VFX
             [CliArg("kind", "context, block, operator or parameter (default: all)")] string kind = "",
             [CliArg("filter", "Only entries whose category/name contains this")] string filter = "")
         {
+            if (!VfxGraphDocument.IsKind(kind, allowAll: true))
+            {
+                cmd.Fail($"Unknown --kind '{kind}': use context, block, operator or parameter, or leave it out for all.");
+                return ExitCode.InvalidUsage;
+            }
             foreach (var e in VfxGraphDocument.Library(kind).Where(e => string.IsNullOrEmpty(filter) || e.Key.IndexOf(filter, StringComparison.OrdinalIgnoreCase) >= 0))
                 cmd.Result.WriteRecord(new { e.kind, key = e.Key, name = e.DisplayName, category = e.DisplayCategory, modelType = e.modelType?.Name });
             return ExitCode.Success;
@@ -92,9 +97,21 @@ namespace UnityCLIExtensions.VFX
             CommandContext cmd,
             [CliArg("path", "Where to create it, such as Assets/VFX/Spark.vfx", Required = true)] string path)
         {
+            string normalized = (path ?? "").Trim().Replace('\\', '/');
+            if (!normalized.StartsWith("Assets/", StringComparison.Ordinal) && !normalized.StartsWith("Packages/", StringComparison.Ordinal))
+            {
+                cmd.Fail($"'{path}' isn't under Assets/: pass a project path such as Assets/VFX/Spark.vfx.");
+                return ExitCode.InvalidUsage;
+            }
+            if (!normalized.EndsWith(".vfx", StringComparison.OrdinalIgnoreCase)) normalized += ".vfx";
+            if (File.Exists(normalized) || UnityEditor.AssetDatabase.LoadMainAssetAtPath(normalized) != null)
+            {
+                cmd.Fail($"'{normalized}' already exists. Edit it with cliext.vfx edit, or pass another --path.");
+                return ExitCode.Failed;
+            }
             return Guard(cmd, () =>
             {
-                var doc = VfxGraphDocument.Create(path);
+                var doc = VfxGraphDocument.Create(normalized);
                 cmd.Result.Write(new { path = doc.path, created = true });
                 return ExitCode.Success;
             });
@@ -159,7 +176,8 @@ namespace UnityCLIExtensions.VFX
 
         [CliGroupCommand(Group, "Apply many edits in order, then save and compile once. --ops (or --ops-file) is a JSON array of ops: " +
                                 "{\"op\":\"add\",\"kind\":\"context\",\"type\":\"Spawn\",\"as\":\"spawn\"}, then refer to it as \"$spawn\". " +
-                                "Ops: add, remove, set, link, unlink, move, rename, expose, with the fields of the single commands (from-index is fromIndex). " +
+                                "Ops: add, remove, set, link, unlink, move, rename, expose, with the fields of the single commands (from-index is fromIndex); " +
+                                "move takes id, x, y; rename takes id and name (a context's label or a parameter's name); expose takes id and value true/false. " +
                                 "An op that fails saves nothing: the graph is left as it was.",
             Tags = new[] { "cliext", "vfx" }, Effect = CommandEffect.Destructive)]
         internal static ExitCode Edit(
@@ -188,21 +206,13 @@ namespace UnityCLIExtensions.VFX
             try { doc = VfxGraphDocument.Open(path); }
             catch (ArgumentException e) { cmd.Fail(e.Message); return ExitCode.NotFound; }
 
-            using var rollback = AssetRollback.Begin(new[] { doc.path });
-            var aliases = new Dictionary<string, VFXModel>();
             var results = new List<object>();
-            for (int i = 0; i < ops.Count; i++)
+            if (!VfxGraphOps.TryApplyAll(doc, ops, results, out int failedAt, out string failure))
             {
-                try { results.Add(VfxGraphOps.Apply(doc, ops[i], aliases)); }
-                catch (Exception e)
-                {
-                    // All or nothing: put the graph back as it was, in memory and on disk.
-                    string failure = e is ArgumentException ? e.Message : e.ToString();
-                    rollback.Rollback();
-                    cmd.Result.Write(new { path = doc.path, applied = 0, total = ops.Count, failedAt = i, error = failure, saved = false });
-                    cmd.Fail($"Op {i} ({ops[i].op}) failed: {failure} Nothing was saved.");
-                    return ExitCode.Failed;
-                }
+                // All or nothing: the graph is back as it was, in memory and on disk.
+                cmd.Result.Write(new { path = doc.path, applied = 0, total = ops.Count, failedAt, error = failure, saved = false });
+                cmd.Fail($"Op {failedAt} ({ops[failedAt].op}) failed: {failure} Nothing was saved.");
+                return ExitCode.Failed;
             }
 
             List<string> compileMessages = results.Count > 0 ? doc.Save() : new List<string>();

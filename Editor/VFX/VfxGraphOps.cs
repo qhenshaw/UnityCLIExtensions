@@ -71,6 +71,36 @@ namespace UnityCLIExtensions.VFX
                 Apply(doc, op, aliases);
         }
 
+        /// <summary>
+        /// Applies ops in order, all or nothing, without saving. On the first op that fails the graph is put back as it
+        /// was, in memory and on disk, and <paramref name="failedAt"/> and <paramref name="error"/> say which op and why.
+        /// </summary>
+        public static bool TryApplyAll(VfxGraphDocument doc, IReadOnlyList<VfxOp> ops, List<object> results, out int failedAt, out string error)
+        {
+            failedAt = -1;
+            error = null;
+            using var rollback = AssetRollback.Begin(new[] { doc.path });
+            var aliases = new Dictionary<string, VFXModel>();
+            for (int i = 0; i < ops.Count; i++)
+            {
+                try { results.Add(Apply(doc, ops[i], aliases)); }
+                catch (Exception e)
+                {
+                    failedAt = i;
+                    error = e is ArgumentException ? e.Message : e.ToString();
+                    results.Clear();
+                    rollback.Rollback();
+                    // A structure change (remove, or a setting that rebuilds slots) re-registers the graph's sub-assets
+                    // in memory at once, so a removed model stops being part of the asset and unloading can't bring it
+                    // back: the next save would drop it. Forget the in-memory resource, as the VFX Graph window's
+                    // Discard Changes does, so the next access loads the graph from the file the rollback restored.
+                    VisualEffectResource.ForgetAtPath(doc.path);
+                    return false;
+                }
+            }
+            return true;
+        }
+
         public static object Apply(VfxGraphDocument doc, VfxOp op, Dictionary<string, VFXModel> aliases)
         {
             VFXModel Resolve(string id)
@@ -98,11 +128,14 @@ namespace UnityCLIExtensions.VFX
                 case "add":
                 {
                     if (string.IsNullOrWhiteSpace(op.kind)) throw new ArgumentException("add needs a kind: context, block, operator or parameter.");
+                    if (!VfxGraphDocument.IsKind(op.kind)) throw new ArgumentException($"Unknown kind '{op.kind}': use context, block, operator or parameter.");
                     if (string.IsNullOrWhiteSpace(op.type)) throw new ArgumentException("add needs a type (see cliext.vfx types).");
                     var entry = VfxGraphDocument.FindInLibrary(op.kind, op.type);
                     VFXModel model = entry.descriptor.CreateInstance();
                     if (model is VFXBlock block)
                     {
+                        if (string.IsNullOrWhiteSpace(op.context))
+                            throw new ArgumentException($"{entry.Key} is a block, and a block goes in a context: pass the context's id (--context, or \"context\" in an op; see cliext.vfx inspect).");
                         if (!(Resolve(op.context) is VFXContext context)) throw new ArgumentException("A block goes in a context: pass its id as context.");
                         if (!context.AcceptChild(block, op.index))
                             throw new ArgumentException($"{entry.Key} can't go in a {context.contextType} context (it fits {block.compatibleContexts}).");
@@ -141,6 +174,7 @@ namespace UnityCLIExtensions.VFX
                                                             string.Join(", ", model.GetSettings(false, VFXSettingAttribute.VisibleFlags.InInspector).Select(s => s.name)));
                             setting = alt;
                         }
+                        if (op.value == null) throw new ArgumentException($"set of setting '{setting.name}' needs a value (--value, or \"value\" in an op).");
                         object parsed = VfxGraphDocument.Parse(op.value, setting.field.FieldType, setting.value);
                         model.SetSettingValue(setting.name, parsed);
                         return new { op = "set", id = op.id, setting = setting.name, value = VfxGraphDocument.Format(model.GetSetting(setting.name).value) };
@@ -155,6 +189,8 @@ namespace UnityCLIExtensions.VFX
                     if (!string.IsNullOrEmpty(op.slot))
                     {
                         VFXSlot slot = VfxGraphDocument.FindSlot(model, op.slot, output: false);
+                        if (op.value == null && string.IsNullOrEmpty(op.space))
+                            throw new ArgumentException($"set of slot '{slot.path}' needs a value (--value, or \"value\" in an op), or a space (--space Local|World).");
                         if (!string.IsNullOrEmpty(op.space))
                         {
                             if (!slot.spaceable) throw new ArgumentException($"Slot '{slot.name}' has no space.");
@@ -186,7 +222,15 @@ namespace UnityCLIExtensions.VFX
                                 throw new ArgumentException($"A {from.contextType} context can't flow into a {to.contextType} context there (slots {op.fromIndex} -> {op.toIndex}).");
                             from.LinkTo(to, op.fromIndex, op.toIndex);
                         }
-                        else from.UnlinkTo(to, op.fromIndex, op.toIndex);
+                        else
+                        {
+                            bool linked = op.fromIndex >= 0 && op.fromIndex < from.outputFlowSlot.Length &&
+                                          from.outputFlowSlot[op.fromIndex].link.Any(l => l.context == to && l.slotIndex == op.toIndex);
+                            if (!linked)
+                                throw new ArgumentException($"There's no flow link from {op.from} (output {op.fromIndex}) to {op.to} (input {op.toIndex}). " +
+                                                            $"See flowTo in cliext.vfx inspect --id {op.from}.");
+                            from.UnlinkTo(to, op.fromIndex, op.toIndex);
+                        }
                         return new { op = op.op, flow = true, from = op.from, to = op.to };
                     }
                     VFXSlot output = ResolveSlot(op.from, true, out _);
@@ -197,7 +241,12 @@ namespace UnityCLIExtensions.VFX
                             throw new ArgumentException($"Can't link {output.property.type.Name} '{output.path}' to {input.property.type.Name} '{input.path}'.");
                         if (!output.Link(input)) throw new ArgumentException($"VFX Graph refused to link '{output.path}' to '{input.path}'.");
                     }
-                    else output.Unlink(input);
+                    else
+                    {
+                        if (!input.LinkedSlots.Contains(output))
+                            throw new ArgumentException($"'{op.from}' isn't linked to '{op.to}'. See the input's links in cliext.vfx inspect.");
+                        output.Unlink(input);
+                    }
                     return new { op = op.op, flow = false, from = op.from, to = op.to };
                 }
                 case "move":
