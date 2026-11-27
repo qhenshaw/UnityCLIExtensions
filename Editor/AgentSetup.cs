@@ -31,6 +31,23 @@ namespace UnityCLIExtensions
         public static readonly IReadOnlyDictionary<string, string> SkillRequirements = new Dictionary<string, string>
         {
             { VfxSkillName, "com.unity.visualeffectgraph" },
+            { "unity-cliext-shadergraph", "com.unity.shadergraph" },
+            { "unity-cliext-animation", "com.unity.modules.animation" },
+            { "unity-cliext-input", "com.unity.inputsystem" },
+            { "unity-cliext-uitk", "com.unity.modules.uielements" },
+            { "unity-cliext-addressables", "com.unity.addressables" },
+        };
+
+        /// <summary>What each area skill is for, as the CLAUDE.md block names it ("Before ..., also load ...").</summary>
+        public static readonly IReadOnlyDictionary<string, string> SkillPurposes = new Dictionary<string, string>
+        {
+            { VfxSkillName, "creating or editing a VFX Graph" },
+            { "unity-cliext-shadergraph", "creating or editing a Shader Graph" },
+            { "unity-cliext-animation", "editing Animator controllers, animation clips, avatar masks or Timelines" },
+            { "unity-cliext-input", "editing Input Actions or testing input in Play mode" },
+            { "unity-cliext-uitk", "editing UXML or USS or driving the live UI" },
+            { "unity-cliext-import", "changing import settings or presets, or importing a .unitypackage" },
+            { "unity-cliext-addressables", "changing Addressables groups or building them" },
         };
 
         static AgentSetup()
@@ -111,8 +128,9 @@ namespace UnityCLIExtensions
                 "This project's Unity Editor is driven from the command line with Unity CLI Extensions (`unity command cliext.*`, on top of the Pipeline package). " +
                 $"Before any work that touches the running Editor (scripts and compiles, tests, Play mode, scenes, assets, graphs, settings), load the `{SkillName}` skill " +
                 $"(`.claude/skills/{SkillName}/SKILL.md`) and start with `unity command cliext status`.";
-            if (skills.Contains(VfxSkillName))
-                text += $" Before creating or editing a VFX Graph, also load the `{VfxSkillName}` skill (`.claude/skills/{VfxSkillName}/SKILL.md`).";
+            foreach (string skill in skills)
+                if (SkillPurposes.TryGetValue(skill, out string purpose))
+                    text += $" Before {purpose}, also load the `{skill}` skill (`.claude/skills/{skill}/SKILL.md`).";
             return text + "\n" + BlockEnd;
         }
 

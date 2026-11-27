@@ -41,6 +41,10 @@ scripts named below are in `{{cliext-tools}}` (`cliext-wait.ps1`, `cliext-run.ps
   follows from it (pending imports, what the next refresh will do) as the project's state.
 - In your report, state as fact only what a command or file showed you, and mark anything else as a guess. Don't
   restate facts about the project from your context (whether it is a git repository, what changed) without checking.
+  Compare a result only with a number you computed, not one you expect. Don't predict what a change you didn't try
+  would do. Say what the project needs ("the Player needs a handler for this event") rather than what it lacks,
+  unless a search showed it. Attribute a console error to your own commands or to earlier state by its timestamp
+  or order against your first call, not by its text.
 - Save or discard scene changes before tests, scene switches or builds: an unsaved scene stops them at a save prompt.
   To keep them, save the one scene by name (`cliext.scene save_open --scene <path>`; `--dry-run` lists what would be
   saved).
@@ -55,11 +59,19 @@ scripts named below are in `{{cliext-tools}}` (`cliext-wait.ps1`, `cliext-run.ps
   quotes, `script eval --code 'return "a b";'` arrives as two arguments, and so does a quoted `git commit -m`
   message. Put anything with quotes in a file: `--ops-file`, `script eval --file` or `cliext.eval run --file`,
   `git commit -F`.
+- Prefer PowerShell for `unity command`. Git Bash rewrites an argument that starts with `/` into a Windows path
+  (`--target /Player` arrives as `C:/Program Files/Git/Player`): there, set `MSYS_NO_PATHCONV=1` first.
 - Give `script eval` and `cliext.eval run` a `--timeout` when the work may take over 30 seconds. On Unity 6.6 and later,
-  `GetInstanceID` and `EditorUtility.InstanceIDToObject` are compile errors in snippets: use `GetEntityId` and
-  `EditorUtility.EntityIdToObject`.
-- Before creating or editing a VFX Graph, load the `unity-cliext-vfx` skill (installed when the project has VFX Graph):
-  block keys, slot names, defaults that spawn nothing, and ops templates.
+  `GetInstanceID`, `EditorUtility.InstanceIDToObject` and `SerializedProperty.objectReferenceInstanceIDValue` are
+  compile errors in snippets: use `GetEntityId`, `EditorUtility.EntityIdToObject` and `objectReferenceEntityIdValue`.
+- An area with its own skill: load it before the first command in that area. Each is installed when the project has
+  its package: `unity-cliext-vfx` (VFX Graph), `unity-cliext-shadergraph` (Shader Graph), `unity-cliext-animation`
+  (Animator, clips, avatar masks, Timeline), `unity-cliext-input` (Input Actions and testing input in Play mode),
+  `unity-cliext-uitk` (UXML, USS, the live UI), `unity-cliext-import` (import settings, presets, .unitypackage files),
+  `unity-cliext-addressables` (groups, entries, analyze, build).
+- Import a `.unitypackage` only with `cliext.package import` (`--dry-run true` first). `AssetDatabase.ImportPackage` opens
+  a blocking "Missing signature" dialog for an unsigned package even with `interactive` false, and unpacking the
+  archive by hand skips Unity's import.
 - After every `cliext.vfx` edit, read `warnings` (a burst left at Count 0 spawns nothing) and `eventAttributes`: from
   script, send exactly those attribute names (`scaleX`/`scaleY`/`scaleZ`, never `scale`). `cliext.vfx check` runs the
   same checks on any graph.
@@ -88,6 +100,7 @@ scripts named below are in `{{cliext-tools}}` (`cliext-wait.ps1`, `cliext-run.ps
 | `cliext.splines` | `list`, `inspect`, `create`, `edit` knots, `sample` |
 | `cliext.addressables` | `status`, `init`, `entries`, `edit`, `build`, `analyze` |
 | `cliext.import`, `cliext.presets` | import settings across folders; default presets per folder and an `audit` |
+| `cliext.package` | `import` a .unitypackage with no dialogs: `--dry-run true` lists what it would write; then all or nothing |
 | `cliext.physics`, `cliext.navmesh`, `cliext.quality` | collision matrix, materials, raycasts; NavMesh areas, agents, paths, bakes; quality levels, graphics APIs |
 
 Scripts: `cliext-play-capture.ps1` compiles, enters Play mode, optionally slows time (`-TimeScale`), waits for a state,

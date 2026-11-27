@@ -22,6 +22,23 @@ namespace UnityCLIExtensions.Tests
         }
 
         [Test]
+        public void EveryPackagedSkill_HasAPurposeForTheClaudeMdBlock_AndAreaSkillsFollowTheirPackage()
+        {
+            string root = System.IO.Path.Combine(CliExtPaths.PackageRoot, "Skills~");
+            foreach (string dir in System.IO.Directory.GetDirectories(root))
+            {
+                string skill = System.IO.Path.GetFileName(dir);
+                if (skill == AgentSetup.SkillName) continue;
+                Assert.IsTrue(AgentSetup.SkillPurposes.ContainsKey(skill), $"{skill} has no SkillPurposes entry");
+            }
+            var areas = new[] { "unity-cliext-shadergraph", "unity-cliext-input", "unity-cliext-addressables" };
+            List<string> without = AgentSetup.ApplicableSkills(areas, new HashSet<string> { "com.unity.inputsystem" });
+            CollectionAssert.AreEqual(new[] { "unity-cliext-input" }, without);
+            List<string> always = AgentSetup.ApplicableSkills(new[] { "unity-cliext-import" }, new HashSet<string>());
+            CollectionAssert.AreEqual(new[] { "unity-cliext-import" }, always);
+        }
+
+        [Test]
         public void StampedVersion_ReadsTheStampOfAnySkill()
         {
             string text = "# Skill\n\n" + AgentSetup.Stamp(AgentSetup.VfxSkillName, "0.23.0") + "\n";
