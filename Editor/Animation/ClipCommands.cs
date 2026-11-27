@@ -73,8 +73,8 @@ namespace UnityCLIExtensions.Animation
                 string s = json.Trim();
                 list = JsonUtility.FromJson<ClipOpList>(s.StartsWith("[") ? "{\"ops\":" + s + "}" : s);
             }
-            catch (Exception e) { cmd.Log.Error($"The ops aren't valid JSON: {e.Message}"); failure = ExitCode.InvalidUsage; return false; }
-            if (list?.ops == null || list.ops.Length == 0) { cmd.Log.Error("No ops given."); failure = ExitCode.InvalidUsage; return false; }
+            catch (Exception e) { cmd.Fail($"The ops aren't valid JSON: {e.Message}"); failure = ExitCode.InvalidUsage; return false; }
+            if (list?.ops == null || list.ops.Length == 0) { cmd.Fail("No ops given."); failure = ExitCode.InvalidUsage; return false; }
             return true;
         }
 
@@ -123,7 +123,7 @@ namespace UnityCLIExtensions.Animation
                 });
                 return ExitCode.Success;
             }
-            catch (ArgumentException e) { cmd.Log.Error(e.Message); return ExitCode.NotFound; }
+            catch (ArgumentException e) { cmd.Fail(e.Message); return ExitCode.NotFound; }
         }
 
         [CliGroupCommand(Group, "Edit the clips a model imports, then reimport: add_clip (name, take, first, last frames), set_clip (name, set=\"loopTime=true;loopPose=true;lockRootRotation=true;keepOriginalOrientation=true;lockRootHeightY=true;lockRootPositionXZ=true;mirror=false\"; first, last), " +
@@ -207,7 +207,7 @@ namespace UnityCLIExtensions.Animation
                 cmd.Result.Write(new { path, applied = results.Count, results });
                 return ExitCode.Success;
             }
-            catch (Exception e) when (e is ArgumentException || e is FormatException || e is IOException) { cmd.Log.Error((e is ArgumentNullException ? e.ToString() : e.Message) + " Nothing was saved."); return ExitCode.Failed; }
+            catch (Exception e) when (e is ArgumentException || e is FormatException || e is IOException) { cmd.Fail((e is ArgumentNullException ? e.ToString() : e.Message) + " Nothing was saved."); return ExitCode.Failed; }
         }
 
         private static IEnumerable<AnimationEvent> ParseEvents(string events)
@@ -277,7 +277,7 @@ namespace UnityCLIExtensions.Animation
                 });
                 return ExitCode.Success;
             }
-            catch (ArgumentException e) { cmd.Log.Error(e.Message); return ExitCode.NotFound; }
+            catch (ArgumentException e) { cmd.Fail(e.Message); return ExitCode.NotFound; }
         }
 
         [CliGroupCommand(Group, "Edit an .anim clip key by key: set_key (path, type, property, time, value, tangent auto|linear|constant|free; adds or replaces the key at that time), remove_key (path, type, property, time), " +
@@ -372,7 +372,7 @@ namespace UnityCLIExtensions.Animation
             catch (Exception e) when (e is ArgumentException || e is FormatException || e is IOException)
             {
                 rollback?.Rollback();
-                cmd.Log.Error(e.Message + (rollback != null ? " Nothing was saved." : ""));
+                cmd.Fail(e.Message + (rollback != null ? " Nothing was saved." : ""));
                 return ExitCode.Failed;
             }
             finally { rollback?.Dispose(); }
@@ -452,7 +452,7 @@ namespace UnityCLIExtensions.Animation
                 });
                 return ExitCode.Success;
             }
-            catch (Exception e) when (e is ArgumentException || e is FormatException) { cmd.Log.Error(e.Message); return ExitCode.Failed; }
+            catch (Exception e) when (e is ArgumentException || e is FormatException) { cmd.Fail(e.Message); return ExitCode.Failed; }
         }
 
         [CliGroupCommand(Group, "Check that clips fit a model: a humanoid clip on a generic or avatar-less model (or the reverse), an invalid or non-human avatar, and for generic clips the animated paths the model has no transform for. " +
@@ -464,7 +464,7 @@ namespace UnityCLIExtensions.Animation
             [CliArg("clips", "Controller, clips or models, separated by ';'", Required = true)] string clips)
         {
             var go = AssetDatabase.LoadAssetAtPath<GameObject>(model);
-            if (go == null) { cmd.Log.Error($"No model or prefab at '{model}'."); return ExitCode.NotFound; }
+            if (go == null) { cmd.Fail($"No model or prefab at '{model}'."); return ExitCode.NotFound; }
             var animator = go.GetComponentInChildren<Animator>(true);
             var avatar = animator != null && animator.avatar != null ? animator.avatar : AssetDatabase.LoadAllAssetsAtPath(model).OfType<Avatar>().FirstOrDefault();
             var root = animator != null ? animator.transform : go.transform;

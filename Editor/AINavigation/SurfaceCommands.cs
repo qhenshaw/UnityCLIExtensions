@@ -42,10 +42,10 @@ namespace UnityCLIExtensions.AINavigation
             [CliArg("surface", "The surface's GameObject, or all")] string surface = "all",
             [CliArg("timeout", "Seconds to wait")] double timeoutInSeconds = 300)
         {
-            if (EditorApplication.isPlayingOrWillChangePlaymode) { cmd.Log.Error("Stop Play mode first."); return ExitCode.Failed; }
+            if (EditorApplication.isPlayingOrWillChangePlaymode) { cmd.Fail("Stop Play mode first."); return ExitCode.Failed; }
             var all = UnityEngine.Object.FindObjectsByType<NavMeshSurface>(FindObjectsInactive.Exclude);
             var surfaces = surface == "all" ? all : all.Where(s => string.Equals(s.name, surface, StringComparison.OrdinalIgnoreCase)).ToArray();
-            if (surfaces.Length == 0) { cmd.Log.Error($"No active NavMeshSurface '{surface}'. Surfaces: {string.Join(", ", all.Select(s => s.name))}"); return ExitCode.NotFound; }
+            if (surfaces.Length == 0) { cmd.Fail($"No active NavMeshSurface '{surface}'. Surfaces: {string.Join(", ", all.Select(s => s.name))}"); return ExitCode.NotFound; }
             var clock = Stopwatch.StartNew();
             // Started on a surface whose data asset is still referenced, the bake writes a second asset
             // ("NavMesh-Room 1.asset") and leaves the old one behind. Clear first, as Clear then Bake does.
@@ -60,7 +60,7 @@ namespace UnityCLIExtensions.AINavigation
             NavMeshAssetManager.instance.StartBakingSurfaces(surfaces.Cast<UnityEngine.Object>().ToArray());
             while (surfaces.Any(s => NavMeshAssetManager.instance.IsSurfaceBaking(s)))
             {
-                if (clock.Elapsed.TotalSeconds > timeoutInSeconds - 1) { cmd.Log.Error($"Still baking after {clock.Elapsed.TotalSeconds:0} s."); return ExitCode.TimedOut; }
+                if (clock.Elapsed.TotalSeconds > timeoutInSeconds - 1) { cmd.Fail($"Still baking after {clock.Elapsed.TotalSeconds:0} s."); return ExitCode.TimedOut; }
                 EditorApplication.QueuePlayerLoopUpdate();
                 await Task.Delay(100);
             }

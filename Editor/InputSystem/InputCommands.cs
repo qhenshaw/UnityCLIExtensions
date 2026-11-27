@@ -86,7 +86,7 @@ namespace UnityCLIExtensions.InputSystem
                 UnityEngine.Object.DestroyImmediate(asset);
                 return ExitCode.Success;
             }
-            catch (ArgumentException e) { cmd.Log.Error(e.Message); return ExitCode.NotFound; }
+            catch (ArgumentException e) { cmd.Fail(e.Message); return ExitCode.NotFound; }
         }
 
         [CliGroupCommand(Group, "Edit an .inputactions asset with a JSON list of ops, saved once: add_map, remove_map, rename_map, add_action, remove_action, rename_action, set_action, " +
@@ -102,13 +102,13 @@ namespace UnityCLIExtensions.InputSystem
             if (!OpsInput.TryRead(cmd, ops, opsFile, out string json, out ExitCode usage)) return usage;
             InputOpList list;
             try { string t = json.Trim(); list = JsonUtility.FromJson<InputOpList>(t.StartsWith("[") ? "{\"ops\":" + t + "}" : t); }
-            catch (Exception e) { cmd.Log.Error($"The ops aren't valid JSON: {e.Message}"); return ExitCode.InvalidUsage; }
-            if (list?.ops == null || list.ops.Length == 0) { cmd.Log.Error("No ops given."); return ExitCode.InvalidUsage; }
+            catch (Exception e) { cmd.Fail($"The ops aren't valid JSON: {e.Message}"); return ExitCode.InvalidUsage; }
+            if (list?.ops == null || list.ops.Length == 0) { cmd.Fail("No ops given."); return ExitCode.InvalidUsage; }
 
             InputActionAsset asset;
             string resolved;
             try { asset = InputActionsEditing.Load(path, out resolved); }
-            catch (ArgumentException e) { cmd.Log.Error(e.Message); return ExitCode.NotFound; }
+            catch (ArgumentException e) { cmd.Fail(e.Message); return ExitCode.NotFound; }
             try
             {
                 var warnings = new List<string>();
@@ -120,7 +120,7 @@ namespace UnityCLIExtensions.InputSystem
                     {
                         string message = e is ArgumentException ? e.Message : e.ToString();
                         cmd.Result.Write(new { path = resolved, applied = 0, failedAt = i, error = message, saved = false });
-                        cmd.Log.Error($"Op {i} ({list.ops[i].op}) failed: {message} Nothing was saved.");
+                        cmd.Fail($"Op {i} ({list.ops[i].op}) failed: {message} Nothing was saved.");
                         return ExitCode.Failed;
                     }
                 }
@@ -160,7 +160,7 @@ namespace UnityCLIExtensions.InputSystem
                 cmd.Result.Write(new { id = device.deviceId, name = device.name, layout = device.layout, path = device.path });
                 return ExitCode.Success;
             }
-            catch (Exception e) { cmd.Log.Error($"Couldn't add a {layout}: {e.Message}"); return ExitCode.Failed; }
+            catch (Exception e) { cmd.Fail($"Couldn't add a {layout}: {e.Message}"); return ExitCode.Failed; }
         }
 
         [CliGroupCommand(Group, "Remove a device by id or name (the virtual ones this package added, by default all of them).",
@@ -196,8 +196,8 @@ namespace UnityCLIExtensions.InputSystem
                 cmd.Result.Write(new { device = c.device.name, control = c.path, value = ValueText.Format(parsed), hold = hold > 0 ? hold : (double?)null });
                 return ExitCode.Success;
             }
-            catch (TargetInvocationException e) { cmd.Log.Error((e.InnerException ?? e).Message); return ExitCode.Failed; }
-            catch (Exception e) when (e is ArgumentException || e is InvalidOperationException || e is FormatException) { cmd.Log.Error(e.Message); return ExitCode.Failed; }
+            catch (TargetInvocationException e) { cmd.Fail((e.InnerException ?? e).Message); return ExitCode.Failed; }
+            catch (Exception e) when (e is ArgumentException || e is InvalidOperationException || e is FormatException) { cmd.Fail(e.Message); return ExitCode.Failed; }
         }
 
         [CliGroupCommand(Group, "Press a button (or key) and release it after --hold seconds (default 0.1). Use in Play mode.",
@@ -255,7 +255,7 @@ namespace UnityCLIExtensions.InputSystem
             Name = "record_stop", Tags = new[] { "cliext", "input" }, Effect = CommandEffect.Destructive)]
         internal static ExitCode RecordStop(CommandContext cmd, [CliArg("out", "Where to save the trace", Required = true)] string outPath)
         {
-            if (s_Recording == null) { cmd.Log.Error("Not recording (record_start first)."); return ExitCode.Failed; }
+            if (s_Recording == null) { cmd.Fail("Not recording (record_start first)."); return ExitCode.Failed; }
             s_Recording.Disable();
             string full = Path.GetFullPath(Path.IsPathRooted(outPath) ? outPath : Path.Combine(CliExtPaths.ProjectRoot, outPath));
             Directory.CreateDirectory(Path.GetDirectoryName(full));
@@ -275,7 +275,7 @@ namespace UnityCLIExtensions.InputSystem
             [CliArg("timing", "Keep the recorded timing")] bool timing = true)
         {
             string full = Path.IsPathRooted(file) ? file : Path.Combine(CliExtPaths.ProjectRoot, file);
-            if (!File.Exists(full)) { cmd.Log.Error($"No trace at '{full}'."); return ExitCode.NotFound; }
+            if (!File.Exists(full)) { cmd.Fail($"No trace at '{full}'."); return ExitCode.NotFound; }
             StopReplay();
             s_Replaying = InputEventTrace.LoadFrom(full);
             s_Replay = s_Replaying.Replay().WithAllDevicesMappedToNewInstances();

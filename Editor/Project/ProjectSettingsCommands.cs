@@ -72,7 +72,7 @@ namespace UnityCLIExtensions.Project
                 cmd.Result.Write(new { a = LayerMask.LayerToName(la), b = LayerMask.LayerToName(lb), collide, matrix = twoD ? "2D" : "3D" });
                 return ExitCode.Success;
             }
-            catch (ArgumentException e) { cmd.Log.Error(e.Message); return ExitCode.Failed; }
+            catch (ArgumentException e) { cmd.Fail(e.Message); return ExitCode.Failed; }
         }
 
         [CliGroupCommand("cliext.physics", "Create or change a physics material (--path .physicMaterial, or .physicsMaterial2D with --2d true): --set \"dynamicFriction=0.2;staticFriction=0.3;bounciness=0.5;frictionCombine=Minimum;bounceCombine=Maximum\" (2D: friction, bounciness).",
@@ -103,7 +103,7 @@ namespace UnityCLIExtensions.Project
                 cmd.Result.Write(describe);
                 return ExitCode.Success;
             }
-            catch (Exception e) when (e is ArgumentException || e is FormatException) { cmd.Log.Error(e.Message); return ExitCode.Failed; }
+            catch (Exception e) when (e is ArgumentException || e is FormatException) { cmd.Fail(e.Message); return ExitCode.Failed; }
         }
 
         [CliGroupCommand("cliext.physics", "Cast a ray in the open scenes (Edit or Play mode): --from [x,y,z] --direction [x,y,z] (or --to [x,y,z]), --distance, --layers (names separated by ';'), --all true for every hit. " +
@@ -133,7 +133,7 @@ namespace UnityCLIExtensions.Project
                 if (hits.Length == 0) cmd.Log.Info("No hit.");
                 return ExitCode.Success;
             }
-            catch (Exception e) when (e is ArgumentException || e is FormatException) { cmd.Log.Error(e.Message); return ExitCode.Failed; }
+            catch (Exception e) when (e is ArgumentException || e is FormatException) { cmd.Fail(e.Message); return ExitCode.Failed; }
         }
 
         // ---------------------------------------------------------------------------------------------------------
@@ -201,7 +201,7 @@ namespace UnityCLIExtensions.Project
                 cmd.Result.Write(new { changes });
                 return ExitCode.Success;
             }
-            catch (Exception e) when (e is ArgumentException || e is FormatException) { cmd.Log.Error(e.Message); return ExitCode.Failed; }
+            catch (Exception e) when (e is ArgumentException || e is FormatException) { cmd.Fail(e.Message); return ExitCode.Failed; }
         }
 
         [CliGroupCommand("cliext.navmesh", "Query the baked NavMesh in the open scenes: a path from --from to --to (status, corners, length), or with --sample [x,y,z] the nearest NavMesh point within --distance. " +
@@ -241,7 +241,7 @@ namespace UnityCLIExtensions.Project
                 cmd.Result.Write(new { status = path.status.ToString(), length = Math.Round(length, 3), corners = path.corners.Select(c => ValueText.Format(c)).ToArray(), from = ValueText.Format(ha.position), to = ValueText.Format(hb.position) });
                 return path.status == NavMeshPathStatus.PathComplete ? ExitCode.Success : ExitCode.Failed;
             }
-            catch (Exception e) when (e is ArgumentException || e is FormatException) { cmd.Log.Error(e.Message); return ExitCode.Failed; }
+            catch (Exception e) when (e is ArgumentException || e is FormatException) { cmd.Fail(e.Message); return ExitCode.Failed; }
         }
 
         private static int AgentId(string agent)
@@ -352,7 +352,7 @@ namespace UnityCLIExtensions.Project
                 cmd.Result.Write(new { changes });
                 return ExitCode.Success;
             }
-            catch (Exception e) when (e is ArgumentException || e is FormatException) { cmd.Log.Error(e.Message); return ExitCode.Failed; }
+            catch (Exception e) when (e is ArgumentException || e is FormatException) { cmd.Fail(e.Message); return ExitCode.Failed; }
         }
 
         [CliGroupCommand("cliext.quality", "The graphics APIs a platform builds with (--platform StandaloneWindows64, Android, iOS, WebGL, ...), and with --set \"Vulkan;OpenGLES3\" the list to use (--auto true goes back to Unity's choice). " +
@@ -385,7 +385,7 @@ namespace UnityCLIExtensions.Project
                 });
                 return ExitCode.Success;
             }
-            catch (Exception e) when (e is ArgumentException || e is FormatException) { cmd.Log.Error(e.Message); return ExitCode.Failed; }
+            catch (Exception e) when (e is ArgumentException || e is FormatException) { cmd.Fail(e.Message); return ExitCode.Failed; }
         }
     }
 }

@@ -18,13 +18,13 @@ namespace UnityCLIExtensions
             bool hasFile = !string.IsNullOrWhiteSpace(opsFile);
             if (hasOps && hasFile)
             {
-                cmd.Log.Error("Pass --ops or --ops-file, not both.");
+                cmd.Fail("Pass --ops or --ops-file, not both.");
                 failure = ExitCode.InvalidUsage;
                 return false;
             }
             if (!hasOps && !hasFile)
             {
-                cmd.Log.Error("Pass --ops (a JSON array of ops) or --ops-file (a file holding it; use it on Windows PowerShell 5.1, which drops the quotes inside inline JSON).");
+                cmd.Fail("Pass --ops (a JSON array of ops) or --ops-file (a file holding it; use it on Windows PowerShell 5.1, which drops the quotes inside inline JSON).");
                 failure = ExitCode.InvalidUsage;
                 return false;
             }
@@ -33,13 +33,13 @@ namespace UnityCLIExtensions
                 try { json = File.ReadAllText(opsFile); }
                 catch (Exception e) when (e is IOException || e is UnauthorizedAccessException || e is ArgumentException || e is NotSupportedException)
                 {
-                    cmd.Log.Error($"Can't read --ops-file: {e.Message}");
+                    cmd.Fail($"Can't read --ops-file: {e.Message}");
                     failure = ExitCode.NotFound;
                     return false;
                 }
                 if (string.IsNullOrWhiteSpace(json))
                 {
-                    cmd.Log.Error($"--ops-file '{opsFile}' is empty.");
+                    cmd.Fail($"--ops-file '{opsFile}' is empty.");
                     failure = ExitCode.InvalidUsage;
                     return false;
                 }

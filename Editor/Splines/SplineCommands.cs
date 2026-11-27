@@ -99,7 +99,7 @@ namespace UnityCLIExtensions.Splines
                 cmd.Result.Write(new { name = c.name, splines = Enumerable.Range(0, c.Splines.Count).Select(i => DescribeSpline(c, i, true)).ToArray() });
                 return ExitCode.Success;
             }
-            catch (ArgumentException e) { cmd.Log.Error(e.Message); return ExitCode.NotFound; }
+            catch (ArgumentException e) { cmd.Fail(e.Message); return ExitCode.NotFound; }
         }
 
         [CliGroupCommand(Group, "Create a GameObject with a SplineContainer and one spline through --knots \"[x,y,z];[x,y,z];...\" (local to --position), with --mode for the tangents and --closed.",
@@ -123,7 +123,7 @@ namespace UnityCLIExtensions.Splines
                 cmd.Result.Write(DescribeSpline(c, 0, true));
                 return ExitCode.Success;
             }
-            catch (Exception e) when (e is ArgumentException || e is FormatException) { cmd.Log.Error(e.Message); return ExitCode.Failed; }
+            catch (Exception e) when (e is ArgumentException || e is FormatException) { cmd.Fail(e.Message); return ExitCode.Failed; }
         }
 
         private static Spline BuildSpline(string knots, string mode, bool closed)
@@ -149,11 +149,11 @@ namespace UnityCLIExtensions.Splines
             if (!OpsInput.TryRead(cmd, ops, opsFile, out string json, out ExitCode usage)) return usage;
             SplineOpList list;
             try { string s = json.Trim(); list = JsonUtility.FromJson<SplineOpList>(s.StartsWith("[") ? "{\"ops\":" + s + "}" : s); }
-            catch (Exception e) { cmd.Log.Error($"The ops aren't valid JSON: {e.Message}"); return ExitCode.InvalidUsage; }
-            if (list?.ops == null || list.ops.Length == 0) { cmd.Log.Error("No ops given."); return ExitCode.InvalidUsage; }
+            catch (Exception e) { cmd.Fail($"The ops aren't valid JSON: {e.Message}"); return ExitCode.InvalidUsage; }
+            if (list?.ops == null || list.ops.Length == 0) { cmd.Fail("No ops given."); return ExitCode.InvalidUsage; }
 
             SplineContainer c;
-            try { c = Find(obj); } catch (ArgumentException e) { cmd.Log.Error(e.Message); return ExitCode.NotFound; }
+            try { c = Find(obj); } catch (ArgumentException e) { cmd.Fail(e.Message); return ExitCode.NotFound; }
             Undo.IncrementCurrentGroup();
             int undoGroup = Undo.GetCurrentGroup();
             Undo.RecordObject(c, "cliext.splines edit");
@@ -166,7 +166,7 @@ namespace UnityCLIExtensions.Splines
                     // All or nothing: undo the ops before this one.
                     Undo.RevertAllDownToGroup(undoGroup);
                     cmd.Result.Write(new { obj, applied = 0, failedAt = i, error = e.Message, saved = false });
-                    cmd.Log.Error($"Op {i} ({list.ops[i].op}) failed: {e.Message} Nothing was saved.");
+                    cmd.Fail($"Op {i} ({list.ops[i].op}) failed: {e.Message} Nothing was saved.");
                     return ExitCode.Failed;
                 }
             }
@@ -295,7 +295,7 @@ namespace UnityCLIExtensions.Splines
                 for (int i = 0; i < n; i++) cmd.Result.WriteRecord(At(i / (float)(n - 1)));
                 return ExitCode.Success;
             }
-            catch (Exception e) when (e is ArgumentException || e is FormatException) { cmd.Log.Error(e.Message); return ExitCode.Failed; }
+            catch (Exception e) when (e is ArgumentException || e is FormatException) { cmd.Fail(e.Message); return ExitCode.Failed; }
         }
     }
 }

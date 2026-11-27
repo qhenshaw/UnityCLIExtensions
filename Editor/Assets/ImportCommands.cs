@@ -105,7 +105,7 @@ namespace UnityCLIExtensions.Assets
                 cmd.Log.Info($"{(dryRun ? "Would change" : "Changed")} {changed} of {paths.Count} asset(s); {skipped} skipped.");
                 return ExitCode.Success;
             }
-            catch (ArgumentException e) { cmd.Log.Error(e.Message); return ExitCode.Failed; }
+            catch (ArgumentException e) { cmd.Fail(e.Message); return ExitCode.Failed; }
         }
 
         // ---------------------------------------------------------------------------------------------------------
@@ -130,7 +130,7 @@ namespace UnityCLIExtensions.Assets
         {
             UnityEngine.Object source = AssetImporter.GetAtPath(from);
             if (source == null || source.GetType() == typeof(AssetImporter)) source = AssetDatabase.LoadMainAssetAtPath(from);
-            if (source == null) { cmd.Log.Error($"No asset at '{from}'."); return ExitCode.NotFound; }
+            if (source == null) { cmd.Fail($"No asset at '{from}'."); return ExitCode.NotFound; }
             var preset = new Preset(source);
             if (!outPath.EndsWith(".preset")) outPath += ".preset";
             AssetDatabase.CreateAsset(preset, outPath);
@@ -148,13 +148,13 @@ namespace UnityCLIExtensions.Assets
             [CliArg("remove", "Remove it from the defaults instead")] bool remove = false)
         {
             var preset = AssetDatabase.LoadAssetAtPath<Preset>(presetPath);
-            if (preset == null) { cmd.Log.Error($"No preset at '{presetPath}'."); return ExitCode.NotFound; }
+            if (preset == null) { cmd.Fail($"No preset at '{presetPath}'."); return ExitCode.NotFound; }
             var type = preset.GetPresetType();
             var list = Preset.GetDefaultPresetsForType(type).Where(d => d.preset != preset).ToList();
             string f = (filter ?? "").Trim();
             if (f.Length > 0 && !f.Contains(":") && AssetDatabase.IsValidFolder(f.TrimEnd('/'))) f = $"glob:\"{f.TrimEnd('/')}/**\"";
             if (!remove) list.Insert(0, new DefaultPreset(f, preset, true));
-            if (!Preset.SetDefaultPresetsForType(type, list.ToArray())) { cmd.Log.Error("Unity refused the default presets."); return ExitCode.Failed; }
+            if (!Preset.SetDefaultPresetsForType(type, list.ToArray())) { cmd.Fail("Unity refused the default presets."); return ExitCode.Failed; }
             cmd.Result.Write(new { type = type.GetManagedTypeName(), defaults = list.Select(d => new { preset = AssetDatabase.GetAssetPath(d.preset), d.filter, d.enabled }).ToArray() });
             return ExitCode.Success;
         }
@@ -169,7 +169,7 @@ namespace UnityCLIExtensions.Assets
             [CliArg("dry-run", "List changes only")] bool dryRun = false)
         {
             var preset = AssetDatabase.LoadAssetAtPath<Preset>(presetPath);
-            if (preset == null) { cmd.Log.Error($"No preset at '{presetPath}'."); return ExitCode.NotFound; }
+            if (preset == null) { cmd.Fail($"No preset at '{presetPath}'."); return ExitCode.NotFound; }
             try
             {
                 int changed = 0;
@@ -186,7 +186,7 @@ namespace UnityCLIExtensions.Assets
                 cmd.Log.Info($"{(dryRun ? "Would change" : "Changed")} {changed} asset(s).");
                 return ExitCode.Success;
             }
-            catch (ArgumentException e) { cmd.Log.Error(e.Message); return ExitCode.Failed; }
+            catch (ArgumentException e) { cmd.Fail(e.Message); return ExitCode.Failed; }
         }
 
         [CliGroupCommand("cliext.presets", "Audit: for every asset under --folder whose type has default presets, the settings where its importer breaks the preset that applies to it (by the presets' folder filters). Nothing is changed. Exit 6 when any asset breaks a preset.",
@@ -215,7 +215,7 @@ namespace UnityCLIExtensions.Assets
                 cmd.Log.Info($"{breaking} of {checkedCount} asset(s) with default presets break them.");
                 return breaking > 0 ? ExitCode.Failed : ExitCode.Success;
             }
-            catch (ArgumentException e) { cmd.Log.Error(e.Message); return ExitCode.Failed; }
+            catch (ArgumentException e) { cmd.Fail(e.Message); return ExitCode.Failed; }
         }
 
         /// <summary>Properties where <paramref name="target"/> differs from <paramref name="preset"/>, as "path: is X, preset Y".</summary>

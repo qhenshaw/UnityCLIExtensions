@@ -35,22 +35,22 @@ namespace UnityCLIExtensions.TestRunner
             {
                 case "edit": case "editmode": case "editor": testMode = TestMode.EditMode; break;
                 case "play": case "playmode": testMode = TestMode.PlayMode; break;
-                default: cmd.Log.Error($"Unknown mode '{mode}': use edit or play."); return ExitCode.InvalidUsage;
+                default: cmd.Fail($"Unknown mode '{mode}': use edit or play."); return ExitCode.InvalidUsage;
             }
-            if (EditorApplication.isPlayingOrWillChangePlaymode) { cmd.Log.Error("Stop Play mode first (editor.playmode stop)."); return ExitCode.Failed; }
-            if (EditorApplication.isCompiling) { cmd.Log.Error("The Editor is compiling; wait for it (cliext.wait idle)."); return ExitCode.Failed; }
+            if (EditorApplication.isPlayingOrWillChangePlaymode) { cmd.Fail("Stop Play mode first (editor.playmode stop)."); return ExitCode.Failed; }
+            if (EditorApplication.isCompiling) { cmd.Fail("The Editor is compiling; wait for it (cliext.wait idle)."); return ExitCode.Failed; }
             var dirty = TestRuns.DirtyScenes();
             if (dirty.Count > 0)
             {
                 var saves = dirty.Where(d => d != "Untitled").Select(d => $"unity command cliext.scene save_open --scene {d}").ToList();
                 string keep = saves.Count > 0 ? $"To keep the changes, run: {string.Join("; ", saves)}." : "";
                 if (dirty.Contains("Untitled")) keep += " An Untitled scene must be saved under a path first.";
-                cmd.Log.Error($"Open scene(s) have unsaved changes: {string.Join(", ", dirty)}. The Test Runner would stop at a save prompt. {keep.Trim()} Or discard the changes. Then run again.");
+                cmd.Fail($"Open scene(s) have unsaved changes: {string.Join(", ", dirty)}. The Test Runner would stop at a save prompt. {keep.Trim()} Or discard the changes. Then run again.");
                 return ExitCode.Failed;
             }
 
             ITestAdaptor root = await RetrieveTests(testMode);
-            if (root == null) { cmd.Log.Error("The Test Runner didn't return the test list."); return ExitCode.Failed; }
+            if (root == null) { cmd.Fail("The Test Runner didn't return the test list."); return ExitCode.Failed; }
 
             var matched = TestRuns.Match(root, filter, filterType);
             if (matched.Count == 0)
@@ -59,7 +59,7 @@ namespace UnityCLIExtensions.TestRunner
                 var assemblies = all.Select(TestRuns.AssemblyOf).Where(a => a != null).Distinct().OrderBy(a => a).ToList();
                 var close = Closest(all.Select(t => t.FullName), filter ?? "");
                 cmd.Result.Write(new { matched = 0, mode = testMode.ToString(), assemblies, close });
-                cmd.Log.Error($"No {testMode} test matches '{filter}' ({filterType}). {all.Count} {testMode} tests exist, in {assemblies.Count} assemblies.");
+                cmd.Fail($"No {testMode} test matches '{filter}' ({filterType}). {all.Count} {testMode} tests exist, in {assemblies.Count} assemblies.");
                 return ExitCode.NotFound;
             }
 
@@ -82,10 +82,10 @@ namespace UnityCLIExtensions.TestRunner
             [CliArg("timeout", "Seconds to wait")] double timeoutInSeconds = 600)
         {
             if (string.IsNullOrWhiteSpace(runId)) runId = TestRuns.LatestRunId;
-            if (string.IsNullOrWhiteSpace(runId)) { cmd.Log.Error("No run has been started with cliext.test run."); return ExitCode.NotFound; }
+            if (string.IsNullOrWhiteSpace(runId)) { cmd.Fail("No run has been started with cliext.test run."); return ExitCode.NotFound; }
             if (wait) return await WaitFor(cmd, runId, timeoutInSeconds);
             var record = TestRuns.Load(runId);
-            if (record == null) { cmd.Log.Error($"No run '{runId}'."); return ExitCode.NotFound; }
+            if (record == null) { cmd.Fail($"No run '{runId}'."); return ExitCode.NotFound; }
             return Report(cmd, record);
         }
 
@@ -96,12 +96,12 @@ namespace UnityCLIExtensions.TestRunner
             while (true)
             {
                 var record = TestRuns.Load(runId);
-                if (record == null) { cmd.Log.Error($"No run '{runId}'."); return ExitCode.NotFound; }
+                if (record == null) { cmd.Fail($"No run '{runId}'."); return ExitCode.NotFound; }
                 if (record.status == "completed" || record.status == "failed" || record.status == "error") return Report(cmd, record);
                 if (clock.Elapsed.TotalSeconds >= budget)
                 {
                     cmd.Result.Write(record);
-                    cmd.Log.Error($"Run {runId} was still {record.status} after {clock.Elapsed.TotalSeconds:0} s.");
+                    cmd.Fail($"Run {runId} was still {record.status} after {clock.Elapsed.TotalSeconds:0} s.");
                     return ExitCode.TimedOut;
                 }
                 cmd.CancellationToken.ThrowIfCancellationRequested();
@@ -116,10 +116,10 @@ namespace UnityCLIExtensions.TestRunner
             if (record.status == "completed") return ExitCode.Success;
             if (record.status == "failed")
             {
-                foreach (var f in record.failures.Take(5)) cmd.Log.Error($"{f.result}: {f.fullName}: {f.message}");
+                foreach (var f in record.failures.Take(5)) cmd.Fail($"{f.result}: {f.fullName}: {f.message}");
                 return ExitCode.Failed;
             }
-            if (record.status == "error") { cmd.Log.Error("The run itself failed; see the console."); return ExitCode.Failed; }
+            if (record.status == "error") { cmd.Fail("The run itself failed; see the console."); return ExitCode.Failed; }
             return ExitCode.Success;
         }
 

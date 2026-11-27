@@ -112,7 +112,7 @@ namespace UnityCLIExtensions.Cinemachine
                 cmd.Result.Write(new { created = Describe(cam), brainAdded = brain });
                 return ExitCode.Success;
             }
-            catch (ArgumentException e) { cmd.Log.Error(e.Message); return ExitCode.Failed; }
+            catch (ArgumentException e) { cmd.Fail(e.Message); return ExitCode.Failed; }
         }
 
         [CliGroupCommand(Group, "Change a CinemachineCamera: priority, follow and look-at targets (empty string to clear with \"none\"), field of view, enabled. In Play mode a priority change re-picks the live camera.",
@@ -143,7 +143,7 @@ namespace UnityCLIExtensions.Cinemachine
                 cmd.Result.Write(Describe(cam));
                 return ExitCode.Success;
             }
-            catch (Exception e) when (e is ArgumentException || e is FormatException) { cmd.Log.Error(e.Message); return ExitCode.Failed; }
+            catch (Exception e) when (e is ArgumentException || e is FormatException) { cmd.Fail(e.Message); return ExitCode.Failed; }
         }
 
         [CliGroupCommand(Group, "Set the brain's default blend (--style Cut, EaseInOut, EaseIn, EaseOut, HardIn, HardOut, Linear --time seconds), or with --from and --to a custom blend " +
@@ -158,10 +158,10 @@ namespace UnityCLIExtensions.Cinemachine
             [CliArg("asset", "Where to create a Custom Blends asset if the brain has none")] string asset = "")
         {
             var brain = UnityEngine.Object.FindObjectsByType<CinemachineBrain>(FindObjectsInactive.Include).FirstOrDefault();
-            if (brain == null) { cmd.Log.Error("No CinemachineBrain in the open scenes."); return ExitCode.NotFound; }
+            if (brain == null) { cmd.Fail("No CinemachineBrain in the open scenes."); return ExitCode.NotFound; }
             CinemachineBlendDefinition.Styles s;
             try { s = (CinemachineBlendDefinition.Styles)Enum.Parse(typeof(CinemachineBlendDefinition.Styles), style, true); }
-            catch { cmd.Log.Error($"Unknown style '{style}': {string.Join(", ", Enum.GetNames(typeof(CinemachineBlendDefinition.Styles)))}"); return ExitCode.InvalidUsage; }
+            catch { cmd.Fail($"Unknown style '{style}': {string.Join(", ", Enum.GetNames(typeof(CinemachineBlendDefinition.Styles)))}"); return ExitCode.InvalidUsage; }
             var def = new CinemachineBlendDefinition(s, time);
             if (string.IsNullOrWhiteSpace(from) && string.IsNullOrWhiteSpace(to))
             {
@@ -174,7 +174,7 @@ namespace UnityCLIExtensions.Cinemachine
             var settings = brain.CustomBlends;
             if (settings == null)
             {
-                if (string.IsNullOrWhiteSpace(asset)) { cmd.Log.Error("The brain has no Custom Blends asset: pass --asset Assets/.../Blends.asset to create one."); return ExitCode.Failed; }
+                if (string.IsNullOrWhiteSpace(asset)) { cmd.Fail("The brain has no Custom Blends asset: pass --asset Assets/.../Blends.asset to create one."); return ExitCode.Failed; }
                 settings = ScriptableObject.CreateInstance<CinemachineBlenderSettings>();
                 AssetDatabase.CreateAsset(settings, asset);
                 Undo.RecordObject(brain, "cliext.cinemachine blend");

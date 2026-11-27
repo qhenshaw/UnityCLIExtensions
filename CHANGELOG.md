@@ -1,6 +1,12 @@
 # Changelog
 All notable changes to Unity CLI Extensions. Versions are git tags: install one with `https://github.com/qhenshaw/UnityCLIExtensions.git#<version>`.
 
+## 0.27.0
+- Local failure log: every cliext command that reports an error (or throws) appends a line to `Library/CLIExtensions/failures.jsonl` with the command, the parameter names it was given (no values), the error, the package's own stack frames, and the Unity, Pipeline and package versions, OS and agent mode. Nothing leaves the machine. Read it with `cliext.failures log` and `cliext.failures summary` (grouped by command, exception and top frame); delete it with `cliext.failures clear`. Commands report errors through one extension, `cmd.Fail(...)`, which finds the failing command from the stack (async commands and lambdas included); a package test forbids `cmd.Log.Error` elsewhere.
+- `cliext.setup check` and `apply` with an unknown `--ids` value exit 2 (invalid usage) and list the known ids, instead of failing with an uncaught exception.
+- The installed skills name the package's `Tools~` folder by its absolute path (the installer fills `{{cliext-tools}}`), so an agent can reach `Watchdog/cliext-watchdog.ps1` when a dialog blocks every command, `cliext status` included. In 3 of 3 agent runs on 0.26.0 that took 3 to 5 calls of searching.
+- `cliext-clitest.ps1` covers every P1 command (26 of 26) and their failure modes: `set_agent_mode`, `setup apply` (idempotent) and unknown ids, `test result` (latest, wait, unknown id), `dialogs clear_log`, a real blocking modal dialog (a main-thread command reports it, the watchdog names it and presses Cancel, the Editor answers again), `set_fast` (settings put back), `wait_until` (exact `ready`, and the near-ready timeout hint), a snippet compile error, `edits end` without a batch, and `test run` refusing an unsaved scene with the exact `save_open --scene` command. 35 checks.
+
 ## 0.26.0
 - `cliext.scene save_open` takes `--scene <path>` to save one open scene and `--dry-run true` to list what it would save without saving. It now returns the saved scene paths (`saved`, or `wouldSave` on a dry run) instead of a count, and `untitledSkipped`. An unknown `--scene` is exit 13 with the open scenes listed. Its Effect is now Destructive (it overwrites scene files with in-memory changes).
 - `cliext.test run` and `cliext-test.ps1`, refusing an unsaved scene, name the exact command that keeps the changes (`cliext.scene save_open --scene <path>`).

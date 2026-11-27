@@ -307,6 +307,140 @@ Add-Check 'scene.save-open-dry' 'cliext.scene' 'save_open --dry-run lists, and a
     "dry run lists $(@($r.json.wouldSave).Count); unknown scene exit 13"
 }
 
+Add-Check 'scene.test-run-names-save' 'cliext.scene' 'an unsaved scene stops cliext.test run with the exact save_open --scene command, and nothing else changes' {
+    $f = Write-WorkFile 'dirty.cs' 'var go = new UnityEngine.GameObject("CliTestDirty"); UnityEditor.SceneManagement.EditorSceneManager.MarkSceneDirty(go.scene); return go.scene.path;'
+    $d = Invoke-Cli @('script', 'eval', '--file', $f, '--format', 'json')
+    $scenePath = (("$($d.stdout)" -replace '"', '').Trim())
+    $r = Invoke-Cli @('cliext.test', 'run', '--filter', 'UnityCLIExtensions.Tests.CommandSchemaTests', '--format', 'json')
+    $dry = Invoke-Cli @('cliext.scene', 'save_open', '--dry-run', 'true', '--format', 'json')
+    # Discard the probe: reopen the scene from disk.
+    $re = Write-WorkFile 'reopen.cs' "UnityEditor.SceneManagement.EditorSceneManager.OpenScene(`"$scenePath`", UnityEditor.SceneManagement.OpenSceneMode.Single); return UnityEngine.SceneManagement.SceneManager.GetActiveScene().isDirty;"
+    $back = Invoke-Cli @('script', 'eval', '--file', $re, '--format', 'json')
+    Expect ($r.exit -eq 6) "test run: exit $($r.exit), expected 6"
+    Expect ("$($r.stderr)" -match [regex]::Escape("cliext.scene save_open --scene $scenePath")) "refusal doesn't name the save command: $(Short $r.stderr)"
+    Expect (@($dry.json.wouldSave) -contains $scenePath) "dry run doesn't list $scenePath`: $(Short $dry.stdout)"
+    Expect ("$($back.stdout)" -match 'false') "the scene is still dirty after reopening: $(Short ($back.stdout + $back.stderr))"
+    "refused (exit 6) naming save_open --scene $scenePath; dry run listed it; probe discarded"
+}
+
+# --- P1 commands the checks above don't call, and P1 failure modes (T2) -----------------------------------------------
+
+Add-Check 'setup.agent-mode-toggle' 'cliext, cliext.setup' 'cliext set_agent_mode echoes its setting and is left on' {
+    $off = Invoke-Cli @('cliext', 'set_agent_mode', '--enabled', 'false', '--format', 'json')
+    $on = Invoke-Cli @('cliext', 'set_agent_mode', '--enabled', 'true', '--format', 'json')
+    $again = Invoke-Cli @('cliext', 'set_agent_mode', '--enabled', 'true', '--format', 'json')
+    Expect ($off.exit -eq 0 -and $on.exit -eq 0 -and $again.exit -eq 0) "exits $($off.exit), $($on.exit), $($again.exit): $(Short ($off.stderr + $on.stderr))"
+    Expect ($off.json.setting -eq $false -and $on.json.setting -eq $true) "setting not echoed: $(Short ($off.stdout + ' ' + $on.stdout))"
+    Expect ($on.json.agentMode -eq $true -and $again.json.agentMode -eq $true) "agent mode not on after --enabled true: $(Short $again.stdout)"
+    "off: agentMode $($off.json.agentMode) ($($off.json.reason)); on: $($on.json.agentMode)"
+}
+
+Add-Check 'setup.apply-idempotent' 'cliext, cliext.setup' 'cliext.setup apply leaves nothing fixable, and a second apply changes nothing' {
+    $a = Invoke-Cli @('cliext.setup', 'apply', '--format', 'json')
+    $b = Invoke-Cli @('cliext.setup', 'apply', '--format', 'json')
+    Expect ($a.exit -eq 0 -and $b.exit -eq 0) "exits $($a.exit), $($b.exit): $(Short ($a.stderr + $b.stderr))"
+    $fixable = @(@($b.json) | Where-Object { $_.status -eq 'fix-available' -and -not $_.optional })
+    Expect ($fixable.Count -eq 0) "still fixable after apply: $(($fixable | ForEach-Object { $_.id }) -join ', ')"
+    $sig = { param($r) (@($r.json) | ForEach-Object { "$($_.id)=$($_.status)" }) -join ',' }
+    Expect ((& $sig $a) -eq (& $sig $b)) "second apply changed statuses: $(& $sig $a) -> $(& $sig $b)"
+    "$(@($b.json).Count) checks; nothing left to fix"
+}
+
+Add-Check 'setup.unknown-id' 'cliext, cliext.setup' 'an unknown setup check id is invalid usage, with the known ids listed' {
+    $r = Invoke-Cli @('cliext.setup', 'check', '--ids', 'no-such-check', '--format', 'json')
+    $a = Invoke-Cli @('cliext.setup', 'apply', '--ids', 'no-such-check', '--format', 'json')
+    Expect ($r.exit -eq 2) "check: exit $($r.exit), expected 2: $(Short ($r.stdout + $r.stderr))"
+    Expect ($a.exit -eq 2) "apply: exit $($a.exit), expected 2: $(Short ($a.stdout + $a.stderr))"
+    Expect ("$($r.stderr)" -match 'Known:') "doesn't list the known ids: $(Short $r.stderr)"
+    'exit 2 with the known ids'
+}
+
+Add-Check 'test.result-latest' 'cliext.test' 'cliext.test result returns the latest run, waits on a finished one at once, and an unknown run id is NotFound' {
+    $run = Invoke-Cli @('cliext.test', 'run', '--filter', 'UnityCLIExtensions.Tests.CommandSchemaTests', '--format', 'json') 300
+    Expect ($run.exit -eq 0) "run: exit $($run.exit): $(Short ($run.stdout + $run.stderr))"
+    $r = Invoke-Cli @('cliext.test', 'result', '--format', 'json')
+    $w = Invoke-Cli @('cliext.test', 'result', '--run-id', "$($run.json.runId)", '--wait', 'true', '--timeout', '30', '--format', 'json')
+    $n = Invoke-Cli @('cliext.test', 'result', '--run-id', 'no-such-run', '--format', 'json')
+    Expect ($r.exit -eq 0 -and "$($r.json.runId)" -eq "$($run.json.runId)") "latest isn't the run just made: $(Short $r.stdout)"
+    Expect ($w.exit -eq 0 -and $w.ms -lt 15000) "wait on a finished run: exit $($w.exit) after $($w.ms) ms"
+    Expect ($n.exit -eq 13) "unknown run id: exit $($n.exit), expected 13"
+    "latest = $($run.json.runId); wait answered in $($w.ms) ms; unknown id exit 13"
+}
+
+Add-Check 'dialogs.clear-log' 'cliext.dialogs, cliext.watchdog' 'cliext.dialogs clear_log empties the journal (restored afterwards)' {
+    $st = (Invoke-Cli @('cliext', 'status', '--format', 'json')).json
+    $journal = Join-Path $st.stateDirectory 'dialogs.jsonl'
+    $backup = Join-Path $work 'dialogs.jsonl.bak'
+    $had = Test-Path $journal
+    if ($had) { Copy-Item $journal $backup -Force }
+    try {
+        $c = Invoke-Cli @('cliext.dialogs', 'clear_log', '--format', 'json')
+        $l = Invoke-Cli @('cliext.dialogs', 'log', '--format', 'json')
+        Expect ($c.exit -eq 0) "clear_log: exit $($c.exit): $(Short $c.stderr)"
+        Expect ($l.exit -eq 0 -and "$($l.stdout)".Trim() -eq '') "journal not empty after clear_log: $(Short $l.stdout)"
+    }
+    finally { if ($had) { Copy-Item $backup $journal -Force } }
+    "cleared; journal $(if ($had) { 'restored' } else { 'had no entries' })"
+}
+
+Add-Check 'dialogs.real-blocking-dialog' 'cliext.dialogs, cliext.watchdog' 'a real modal dialog: a main-thread command reports it, the watchdog names it and presses Cancel, and the Editor answers again' {
+    $title = 'CliTest blocking dialog'
+    $f = Write-WorkFile 'dialog.cs' "UnityEditor.EditorApplication.delayCall += () => UnityEditor.EditorUtility.DisplayDialog(`"$title`", `"Scheduled by cliext-clitest.ps1.`", `"OK`", `"Cancel`"); return `"scheduled`";"
+    $s = Invoke-Cli @('script', 'eval', '--file', $f, '--format', 'json')
+    Expect ($s.exit -eq 0) "scheduling: exit $($s.exit): $(Short $s.stderr)"
+    Start-Sleep -Seconds 2
+    $blocked = Invoke-Cli @('cliext.wait', 'idle', '--timeout', '10', '--format', 'json') 60
+    $wd = Join-Path $tools 'Watchdog\cliext-watchdog.ps1'
+    $status = & powershell -NoProfile -ExecutionPolicy Bypass -File $wd -Project $projectPath -Status 2>&1 | Out-String
+    $click = & powershell -NoProfile -ExecutionPolicy Bypass -File $wd -Project $projectPath -Click 'Cancel' 2>&1 | Out-String
+    [void](Wait-Editor 60)
+    $after = Invoke-Cli @('cliext', 'status', '--format', 'json') 30
+    Expect ($blocked.exit -ne 0) 'a main-thread command answered while the dialog was up'
+    Expect ("$($blocked.stdout) $($blocked.stderr)" -match 'DIALOG|dialog') "the blocked command doesn't mention a dialog: $(Short ($blocked.stdout + $blocked.stderr))"
+    Expect ($status -match [regex]::Escape($title)) "watchdog -Status doesn't name the dialog: $(Short $status)"
+    Expect ($status -match 'Cancel') "watchdog -Status doesn't list its buttons: $(Short $status)"
+    Expect ($after.exit -eq 0) "the Editor doesn't answer after Cancel: exit $($after.exit): $(Short ($after.stdout + $after.stderr))"
+    "blocked command: exit $($blocked.exit); watchdog named it; Cancel pressed; Editor answers"
+}
+
+Add-Check 'eval.set-fast-roundtrip' 'cliext.eval, cliext.playmode' 'cliext.playmode set_fast turns fast Play mode on, then puts the project settings back' {
+    $read = Write-WorkFile 'epmo.cs' 'return UnityEditor.EditorSettings.enterPlayModeOptionsEnabled + "/" + UnityEditor.EditorSettings.enterPlayModeOptions;'
+    $before = (Invoke-Cli @('script', 'eval', '--file', $read, '--format', 'json')).stdout.Trim()
+    $on = Invoke-Cli @('cliext.playmode', 'set_fast', '--enabled', 'true', '--format', 'json')
+    $off = Invoke-Cli @('cliext.playmode', 'set_fast', '--enabled', 'false', '--format', 'json')
+    $after = (Invoke-Cli @('script', 'eval', '--file', $read, '--format', 'json')).stdout.Trim()
+    Expect ($on.exit -eq 0 -and $on.json.fastPlayMode -eq $true) "on: exit $($on.exit): $(Short ($on.stdout + $on.stderr))"
+    Expect ($off.exit -eq 0 -and $off.json.fastPlayMode -eq $false) "off: exit $($off.exit): $(Short ($off.stdout + $off.stderr))"
+    Expect ($before -eq $after) "settings not put back: $before -> $after"
+    "on, then off; settings back to $before"
+}
+
+Add-Check 'eval.wait-until' 'cliext.eval, cliext.playmode' 'cliext.playmode wait_until stops on an exact ready, and its timeout says why a near-ready value did not count' {
+    $ok = Write-WorkFile 'ready.cs' 'return "ready";'
+    $near = Write-WorkFile 'near.cs' 'return "ready t=1";'
+    $a = Invoke-Cli @('cliext.playmode', 'wait_until', '--file', $ok, '--timeout', '10', '--format', 'json') 40
+    $b = Invoke-Cli @('cliext.playmode', 'wait_until', '--file', $near, '--timeout', '3', '--interval', '0.5', '--format', 'json') 40
+    Expect ($a.exit -eq 0 -and $a.json.ready -eq $true) "exact ready: exit $($a.exit): $(Short ($a.stdout + $a.stderr))"
+    Expect ($b.exit -eq 14) "near-ready: exit $($b.exit), expected 14 (timed out)"
+    Expect ("$($b.stderr)" -match 'exact value') "the timeout doesn't explain: $(Short $b.stderr)"
+    "ready after $($a.json.runs) run(s); near-ready timed out with the hint"
+}
+
+Add-Check 'eval.snippet-error' 'cliext.eval, cliext.playmode' 'a snippet that does not compile fails with its compiler error, not a hang or exit 0' {
+    $bad = Write-WorkFile 'bad.cs' 'return UnityEngine.Object.FindObjectOfType<NoSuchTypeAnywhere>();'
+    $r = Invoke-Cli @('cliext.eval', 'run', '--file', $bad, '--format', 'json') 60
+    Expect ($r.exit -ne 0) 'exit 0 for a snippet that does not compile'
+    Expect ("$($r.stdout) $($r.stderr)" -match 'CS\d{4}|NoSuchTypeAnywhere') "no compiler error in the reply: $(Short ($r.stdout + $r.stderr))"
+    "exit $($r.exit): $(Short $r.stderr 100)"
+}
+
+Add-Check 'compile.edits-end-without-begin' 'cliext.compile, cliext.edits, cliext.wait' 'cliext.edits end without a batch warns and still compiles' {
+    $r = Invoke-Cli @('cliext.edits', 'end', '--format', 'json') 300
+    Expect ($r.exit -eq 0) "exit $($r.exit): $(Short ($r.stdout + $r.stderr))"
+    Expect ("$($r.stderr) $($r.stdout)" -match 'No edit batch was open') "no warning about the missing batch: $(Short ($r.stdout + $r.stderr))"
+    'warned, compiled'
+}
+
 # --- Cross-cutting ----------------------------------------------------------------------------------------------------
 
 $batchEdits = @(
@@ -399,7 +533,9 @@ Add-Check 'xcut.skill-freshness' 'Cross-cutting: skill freshness' 'the installed
             $other = Join-Path $installed $rel
             $norm = { param($p) ((Get-Content $p -Raw) -replace "`r", '' -split "`n" | Where-Object { $_ -notmatch '^<!-- unity-cliext[\w-]* \d' }) -join "`n" }
             if (-not (Test-Path $other)) { $stale += "$($skill.Name)$rel missing"; continue }
-            if ((& $norm $file.FullName).Trim() -ne (& $norm $other).Trim()) { $stale += "$($skill.Name)$rel differs" }
+            # The installer fills {{cliext-tools}} with this package's Tools~ path.
+            $want = (& $norm $file.FullName).Replace('{{cliext-tools}}', ($tools -replace '\\', '/'))
+            if ($want.Trim() -ne (& $norm $other).Trim()) { $stale += "$($skill.Name)$rel differs" }
         }
     }
     Expect ($stale.Count -eq 0) ($stale -join '; ')

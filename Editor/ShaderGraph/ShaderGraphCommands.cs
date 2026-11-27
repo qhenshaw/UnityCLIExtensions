@@ -46,8 +46,8 @@ namespace UnityCLIExtensions.ShaderGraph
             [CliArg("details", "Include slots (false: just the structure)")] bool details = true)
         {
             try { return InspectBody(cmd, path, id, details); }
-            catch (ArgumentException e) { cmd.Log.Error(e.Message); return ExitCode.NotFound; }
-            catch (Exception e) { cmd.Log.Error(e.ToString()); return ExitCode.Failed; }
+            catch (ArgumentException e) { cmd.Fail(e.Message); return ExitCode.NotFound; }
+            catch (Exception e) { cmd.Fail(e.ToString()); return ExitCode.Failed; }
         }
 
         private static ExitCode InspectBody(CommandContext cmd, string path, string id, bool details)
@@ -57,7 +57,7 @@ namespace UnityCLIExtensions.ShaderGraph
             if (!string.IsNullOrWhiteSpace(id))
             {
                 try { cmd.Result.Write(ShaderGraphOps.DescribeNode(graph, doc.FindNode(id), details)); }
-                catch (ArgumentException e) { cmd.Log.Error(e.Message); return ExitCode.NotFound; }
+                catch (ArgumentException e) { cmd.Fail(e.Message); return ExitCode.NotFound; }
                 return ExitCode.Success;
             }
             var blocks = new HashSet<string>(graph.vertexContext.blocks.Concat(graph.fragmentContext.blocks).Select(b => b.value.objectId));
@@ -98,7 +98,7 @@ namespace UnityCLIExtensions.ShaderGraph
                 });
                 return ExitCode.Success;
             }
-            catch (ArgumentException e) { cmd.Log.Error(e.Message); return ExitCode.Failed; }
+            catch (ArgumentException e) { cmd.Fail(e.Message); return ExitCode.Failed; }
         }
 
         [CliGroupCommand(Group, "Add a node (--type, see types), then save, compile and return its id and the compile errors.",
@@ -178,8 +178,8 @@ namespace UnityCLIExtensions.ShaderGraph
                 string trimmed = json.Trim();
                 list = JsonUtility.FromJson<ShaderGraphOpList>(trimmed.StartsWith("[") ? "{\"ops\":" + trimmed + "}" : trimmed);
             }
-            catch (Exception e) { cmd.Log.Error($"The ops aren't valid JSON: {e.Message}"); return ExitCode.InvalidUsage; }
-            if (list?.ops == null || list.ops.Length == 0) { cmd.Log.Error("No ops given."); return ExitCode.InvalidUsage; }
+            catch (Exception e) { cmd.Fail($"The ops aren't valid JSON: {e.Message}"); return ExitCode.InvalidUsage; }
+            if (list?.ops == null || list.ops.Length == 0) { cmd.Fail("No ops given."); return ExitCode.InvalidUsage; }
             return RunOps(cmd, path, list.ops, force);
         }
 
@@ -189,10 +189,10 @@ namespace UnityCLIExtensions.ShaderGraph
         {
             ShaderGraphDocument doc;
             try { doc = ShaderGraphDocument.Open(path); }
-            catch (ArgumentException e) { cmd.Log.Error(e.Message); return ExitCode.NotFound; }
+            catch (ArgumentException e) { cmd.Fail(e.Message); return ExitCode.NotFound; }
             if (!force && ShaderGraphDocument.IsOpenInWindow(doc.path))
             {
-                cmd.Log.Error($"{doc.path} is open in a Shader Graph window, whose own copy would overwrite this edit (and may prompt about the file changing). Close it, or pass --force true.");
+                cmd.Fail($"{doc.path} is open in a Shader Graph window, whose own copy would overwrite this edit (and may prompt about the file changing). Close it, or pass --force true.");
                 return ExitCode.Failed;
             }
 
@@ -206,7 +206,7 @@ namespace UnityCLIExtensions.ShaderGraph
                 {
                     string message = e is ArgumentException ? e.Message : e.ToString();
                     cmd.Result.Write(new { path = doc.path, applied = 0, total = ops.Count, failedAt = i, error = message, saved = false });
-                    cmd.Log.Error($"Op {i} ({ops[i].op}) failed: {message} Nothing was saved.");
+                    cmd.Fail($"Op {i} ({ops[i].op}) failed: {message} Nothing was saved.");
                     return ExitCode.Failed;
                 }
             }

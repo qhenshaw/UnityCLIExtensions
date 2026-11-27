@@ -11,10 +11,11 @@ basics; the `cliext.*` groups add what they leave out. `unity command <group>` l
 `unity command <group> <command> --help` its parameters. Never guess a command name: list the group first, then read
 the command's help before its first use.
 
-Start with `unity command cliext status`: agent mode, the setup checks still open, the package `version`, and
-`tools`, the folder holding the scripts named below (`cliext-wait.ps1`, `cliext-run.ps1`, `cliext-test.ps1`,
+Start with `unity command cliext status`: agent mode, the setup checks still open and the package `version`. The
+scripts named below are in `{{cliext-tools}}` (`cliext-wait.ps1`, `cliext-run.ps1`, `cliext-test.ps1`,
 `cliext-play-capture.ps1`, `Watchdog/cliext-watchdog.ps1`). Run them with
-`powershell -NoProfile -ExecutionPolicy Bypass -File <tools>/<script> -Project <project> ...`.
+`powershell -NoProfile -ExecutionPolicy Bypass -File {{cliext-tools}}/<script> -Project <project> ...`. When even
+`cliext status` hangs, a dialog is blocking the Editor: go straight to `{{cliext-tools}}/Watchdog/cliext-watchdog.ps1`.
 
 ## The loop for code changes
 
@@ -74,7 +75,7 @@ Start with `unity command cliext status`: agent mode, the setup checks still ope
 | `cliext.wait`, `cliext.compile`, `cliext.edits` | idle waits, compiles with errors as data, edit batches |
 | `cliext.test` | `affected`, `run`, `result`: runs whose result is their own; an empty filter fails |
 | `cliext.eval`, `cliext.playmode` | snippets with `{{placeholders}}`; `wait_until` a game state; `time_scale`; fast Play mode, `check_statics` |
-| `cliext.dialogs`, `cliext.watchdog` | the dialog journal, a scan for blocking dialog calls, the out-of-process watchdog |
+| `cliext.dialogs`, `cliext.watchdog`, `cliext.failures` | the dialog journal, a scan for blocking dialog calls, the out-of-process watchdog; the local log of failed cliext commands |
 | `cliext.asset`, `cliext.diff` | `uses` / `used_by` dependencies; snapshot and compare scenes and prefabs |
 | `cliext.vfx` | VFX Graph: `types`, `inspect`, `create`, `edit` (contexts, blocks, operators, parameters, links), `check` |
 | `cliext.shadergraph` | Shader Graph: `types`, `inspect`, `create`, `edit`; every edit returns HLSL and node errors |

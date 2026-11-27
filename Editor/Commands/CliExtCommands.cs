@@ -70,7 +70,10 @@ namespace UnityCLIExtensions
         [CliGroupCommand(SetupGroup, "Check the one-time project setup that prevents startup and first-use dialogs. Changes nothing.", Tags = new[] { "editor", "cliext", "settings" }, Effect = CommandEffect.ReadOnly)]
         internal static ExitCode Check(CommandContext cmd, [CliArg("ids", "Check ids separated by ';' (default: all)")] string ids = "")
         {
-            foreach (var result in SetupChecks.RunAll(SplitIds(ids)))
+            System.Collections.Generic.List<SetupCheckResult> results;
+            try { results = SetupChecks.RunAll(SplitIds(ids)); }
+            catch (ArgumentException e) { cmd.Fail(e.Message); return ExitCode.InvalidUsage; }
+            foreach (var result in results)
                 cmd.Result.WriteRecord(result);
             return ExitCode.Success;
         }
@@ -78,7 +81,10 @@ namespace UnityCLIExtensions
         [CliGroupCommand(SetupGroup, "Fix what the setup checks can fix. Without --ids it applies every check except the optional ones (enter-play-mode-options), which run only when named.", Tags = new[] { "editor", "cliext", "settings" }, Effect = CommandEffect.Idempotent)]
         internal static ExitCode Apply(CommandContext cmd, [CliArg("ids", "Check ids separated by ';' (default: all non-optional)")] string ids = "")
         {
-            foreach (var result in SetupChecks.Apply(SplitIds(ids)))
+            System.Collections.Generic.List<SetupCheckResult> results;
+            try { results = SetupChecks.Apply(SplitIds(ids)); }
+            catch (ArgumentException e) { cmd.Fail(e.Message); return ExitCode.InvalidUsage; }
+            foreach (var result in results)
                 cmd.Result.WriteRecord(result);
             return ExitCode.Success;
         }
@@ -97,7 +103,7 @@ namespace UnityCLIExtensions
             {
                 if (!DateTime.TryParse(since, null, System.Globalization.DateTimeStyles.AdjustToUniversal | System.Globalization.DateTimeStyles.AssumeUniversal, out DateTime parsed))
                 {
-                    cmd.Log.Error($"'{since}' is not a date and time. Use ISO 8601, e.g. 2026-11-24T16:00:00Z.");
+                    cmd.Fail($"'{since}' is not a date and time. Use ISO 8601, e.g. 2026-11-24T16:00:00Z.");
                     return ExitCode.InvalidUsage;
                 }
                 sinceUtc = parsed;
@@ -131,7 +137,7 @@ namespace UnityCLIExtensions
         {
             if (!Watchdog.IsSupported)
             {
-                cmd.Log.Error("The watchdog only runs on Windows so far.");
+                cmd.Fail("The watchdog only runs on Windows so far.");
                 return ExitCode.Failed;
             }
             cmd.Result.Write(new { message = Watchdog.Start(), policy = CliExtPaths.WatchdogPolicyFile });
@@ -151,7 +157,7 @@ namespace UnityCLIExtensions
             string json = Watchdog.ReadStatusJson(out double age);
             if (json == null)
             {
-                cmd.Log.Error("The watchdog has not written a report for this project. Start it with: unity command cliext.watchdog start");
+                cmd.Fail("The watchdog has not written a report for this project. Start it with: unity command cliext.watchdog start");
                 return ExitCode.NotFound;
             }
             cmd.Result.Write(new
@@ -172,7 +178,7 @@ namespace UnityCLIExtensions
             string full = Path.GetFullPath(path);
             if (!File.Exists(full))
             {
-                cmd.Log.Error($"No file at '{full}'.");
+                cmd.Fail($"No file at '{full}'.");
                 return ExitCode.NotFound;
             }
             AssetDatabase.ImportPackage(full, false);
@@ -193,7 +199,7 @@ namespace UnityCLIExtensions
             if (only != null && !open.Any(p => DialogPrevention.SamePath(p, only)))
             {
                 cmd.Result.Write(new { saved = new string[0], dryRun, open });
-                cmd.Log.Error($"'{only}' is not an open scene. Open scenes: {string.Join(", ", open)}.");
+                cmd.Fail($"'{only}' is not an open scene. Open scenes: {string.Join(", ", open)}.");
                 return ExitCode.NotFound;
             }
             var paths = DialogPrevention.SaveOpenScenes(only, dryRun, out int untitled);

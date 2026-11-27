@@ -123,7 +123,7 @@ namespace UnityCLIExtensions.Addressables
                     }
                 return ExitCode.Success;
             }
-            catch (ArgumentException e) { cmd.Log.Error(e.Message); return ExitCode.NotFound; }
+            catch (ArgumentException e) { cmd.Fail(e.Message); return ExitCode.NotFound; }
         }
 
         [CliGroupCommand(Group, "Edit Addressables with a JSON list of ops, saved once: add_group (name, set), remove_group, rename_group (group, name), set_group (group, set=\"bundleMode=PackSeparately;compression=LZ4;includeInBuild=true\"), " +
@@ -137,11 +137,11 @@ namespace UnityCLIExtensions.Addressables
             if (!OpsInput.TryRead(cmd, ops, opsFile, out string json, out ExitCode usage)) return usage;
             AddressablesOpList list;
             try { string t = json.Trim(); list = JsonUtility.FromJson<AddressablesOpList>(t.StartsWith("[") ? "{\"ops\":" + t + "}" : t); }
-            catch (Exception e) { cmd.Log.Error($"The ops aren't valid JSON: {e.Message}"); return ExitCode.InvalidUsage; }
-            if (list?.ops == null || list.ops.Length == 0) { cmd.Log.Error("No ops given."); return ExitCode.InvalidUsage; }
+            catch (Exception e) { cmd.Fail($"The ops aren't valid JSON: {e.Message}"); return ExitCode.InvalidUsage; }
+            if (list?.ops == null || list.ops.Length == 0) { cmd.Fail("No ops given."); return ExitCode.InvalidUsage; }
 
             AddressableAssetSettings s;
-            try { s = Settings(); } catch (ArgumentException e) { cmd.Log.Error(e.Message); return ExitCode.NotFound; }
+            try { s = Settings(); } catch (ArgumentException e) { cmd.Fail(e.Message); return ExitCode.NotFound; }
             // The settings, its groups and their schemas live in the settings folder; groups kept elsewhere are watched too.
             string settingsPath = AssetDatabase.GetAssetPath(s);
             var watched = new List<string> { settingsPath };
@@ -159,7 +159,7 @@ namespace UnityCLIExtensions.Addressables
                 {
                     rollback.Rollback();
                     cmd.Result.Write(new { applied = 0, failedAt = i, error = e.Message, saved = false });
-                    cmd.Log.Error($"Op {i} ({list.ops[i].op}) failed: {e.Message} Nothing was saved.");
+                    cmd.Fail($"Op {i} ({list.ops[i].op}) failed: {e.Message} Nothing was saved.");
                     return ExitCode.Failed;
                 }
             }
@@ -267,8 +267,8 @@ namespace UnityCLIExtensions.Addressables
             Name = "build", Tags = new[] { "cliext", "addressables" }, Effect = CommandEffect.Destructive)]
         internal static ExitCode Build(CommandContext cmd, [CliArg("clean", "Clear the previous build first")] bool clean = false)
         {
-            try { Settings(); } catch (ArgumentException e) { cmd.Log.Error(e.Message); return ExitCode.NotFound; }
-            if (EditorApplication.isPlayingOrWillChangePlaymode) { cmd.Log.Error("Stop Play mode first."); return ExitCode.Failed; }
+            try { Settings(); } catch (ArgumentException e) { cmd.Fail(e.Message); return ExitCode.NotFound; }
+            if (EditorApplication.isPlayingOrWillChangePlaymode) { cmd.Fail("Stop Play mode first."); return ExitCode.Failed; }
             if (clean) AddressableAssetSettings.CleanPlayerContent();
             // The first build asks, in a modal dialog, whether to turn on the build report; answer it as seen (no
             // change to the setting) so the build doesn't wait on it.
@@ -286,7 +286,7 @@ namespace UnityCLIExtensions.Addressables
                 bundles = result.AssetBundleBuildResults?.Count,
                 target = EditorUserBuildSettings.activeBuildTarget.ToString()
             });
-            if (!ok) { cmd.Log.Error(result.Error); return ExitCode.Failed; }
+            if (!ok) { cmd.Fail(result.Error); return ExitCode.Failed; }
             return ExitCode.Success;
         }
 
@@ -296,7 +296,7 @@ namespace UnityCLIExtensions.Addressables
         internal static ExitCode Analyze(CommandContext cmd, [CliArg("rule", "Only rules whose name contains this")] string rule = "", [CliArg("limit", "Results per rule")] int limit = 100)
         {
             AddressableAssetSettings s;
-            try { s = Settings(); } catch (ArgumentException e) { cmd.Log.Error(e.Message); return ExitCode.NotFound; }
+            try { s = Settings(); } catch (ArgumentException e) { cmd.Fail(e.Message); return ExitCode.NotFound; }
             int errors = 0;
             foreach (var type in TypeCache.GetTypesDerivedFrom<AnalyzeRule>().Where(t => !t.IsAbstract && t.GetConstructor(Type.EmptyTypes) != null))
             {
@@ -315,7 +315,7 @@ namespace UnityCLIExtensions.Addressables
                     results = real.Take(limit).Select(x => new { severity = x.severity.ToString(), name = x.resultName.Replace(AnalyzeRule.kDelimiter.ToString(), " > ") }).ToArray()
                 });
             }
-            if (errors > 0) { cmd.Log.Error($"{errors} error result(s)."); return ExitCode.Failed; }
+            if (errors > 0) { cmd.Fail($"{errors} error result(s)."); return ExitCode.Failed; }
             return ExitCode.Success;
         }
     }

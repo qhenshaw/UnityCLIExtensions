@@ -870,6 +870,9 @@ All under `unity command --project-path <project>`:
 | `cliext.dialogs log [--tail 20] [--since <UTC ISO time>]` | The journal: dialogs answered in agent mode, and what the watchdog saw, pressed or escalated. |
 | `cliext.dialogs scan [--local-packages true]` | Finds blocking dialog calls in the project's scripts. |
 | `cliext.dialogs clear_log` | Deletes the journal. |
+| `cliext.failures log [--tail 20] [--since <UTC ISO time>]` | The local failure log: every cliext command that reported an error, with its parameter names (no values), the error, the package's stack frames and the versions. |
+| `cliext.failures summary [--since <UTC ISO time>]` | The failure log grouped by command, exception type and top frame, most frequent first. |
+| `cliext.failures clear` | Deletes the failure log. |
 | `cliext.watchdog start` / `stop` | Starts or stops the watchdog. |
 | `cliext.watchdog report` | The watchdog's last report. |
 | `cliext.package import --path <file.unitypackage>` | Imports a .unitypackage without the Import dialog. |
@@ -934,6 +937,7 @@ Everything the package writes at runtime is under `Library/CLIExtensions/` (git-
 |---|---|---|
 | `heartbeat.json` | Editor, about once a second from `EditorApplication.update` | pid, Play mode, compiling, agent mode, `quitting` on a normal quit. A stale file means the main thread is blocked. |
 | `dialogs.jsonl` | Editor and watchdog | One JSON object per line: `time`, `source`, `kind` (`answered`, `clicked`, `escalated`, `shown`, `progress`, `crashed`, `exited`, `restarted`, `killed`), `title`, `message`, `buttons`, `answer`, `detail`. |
+| `failures.jsonl` | Editor, whenever a cliext command reports an error or throws | One JSON object per line: `time`, `command`, `parameters` (names only), `message`, `exception`, `frames` (the package's own), `unity`, `pipeline`, `package`, `os`, `agentMode`. Nothing is sent anywhere. |
 | `watchdog-status.json` | Watchdog, every check | The last snapshot (see above). |
 | `watchdog-policy.json` | Editor | The rules the watchdog applies. |
 | `compile.json` | Editor, when an assembly finishes compiling | Each assembly's errors and warnings from its last compile. |

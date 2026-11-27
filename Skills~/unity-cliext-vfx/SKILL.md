@@ -84,10 +84,10 @@ Confirm a texture's flipbook grid before using it as one; a wrong grid shows hal
 
 A muzzle flash lasts a tenth of a second, so capture it in slow motion, triggered by the project's own command:
 ```
-powershell -NoProfile -ExecutionPolicy Bypass -File <tools>/cliext-play-capture.ps1 -Project <project> `
+powershell -NoProfile -ExecutionPolicy Bypass -File {{cliext-tools}}/cliext-play-capture.ps1 -Project <project> `
   -Scene <scene> -TimeScale 0.005 -Run "<command that plays the effect>" -Sheet Temp/shots/fx.png a@0 b@1.5 c@3
 ```
-`<tools>` is the folder `unity command cliext status` reports. Make the effect fire side-on to the camera when judging
+Make the effect fire side-on to the camera when judging
 streaks: anything flying straight away from the camera foreshortens to a dot.
 
 ## Ownership

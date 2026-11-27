@@ -44,7 +44,7 @@ namespace UnityCLIExtensions
                 if (clock.Elapsed.TotalSeconds >= budget)
                 {
                     cmd.Result.Write(IdleResult(false, clock, frames));
-                    cmd.Log.Error($"The Editor was still busy after {clock.Elapsed.TotalSeconds:0} s (compiling: {EditorApplication.isCompiling}, importing: {EditorApplication.isUpdating}).");
+                    cmd.Fail($"The Editor was still busy after {clock.Elapsed.TotalSeconds:0} s (compiling: {EditorApplication.isCompiling}, importing: {EditorApplication.isUpdating}).");
                     return ExitCode.TimedOut;
                 }
                 frames++;
@@ -98,7 +98,7 @@ namespace UnityCLIExtensions
             var clock = Stopwatch.StartNew();
             while (EditorApplication.isPlayingOrWillChangePlaymode)
             {
-                if (clock.Elapsed.TotalSeconds > 60) { cmd.Log.Error("Play mode didn't stop within 60 s."); return ExitCode.TimedOut; }
+                if (clock.Elapsed.TotalSeconds > 60) { cmd.Fail("Play mode didn't stop within 60 s."); return ExitCode.TimedOut; }
                 EditorApplication.QueuePlayerLoopUpdate();
                 await Task.Yield();
             }
@@ -123,7 +123,7 @@ namespace UnityCLIExtensions
         {
             string code;
             try { code = TemplatedEval.Load(file, TemplatedEval.ParseVars(vars)); }
-            catch (ArgumentException e) { cmd.Log.Error(e.Message); return ExitCode.InvalidUsage; }
+            catch (ArgumentException e) { cmd.Fail(e.Message); return ExitCode.InvalidUsage; }
             if (print)
             {
                 cmd.Result.Write(new { code });
@@ -133,7 +133,7 @@ namespace UnityCLIExtensions
             foreach (var d in result.diagnostics) (d.Contains(": error ") ? (Action<string>)cmd.Log.Error : cmd.Log.Warning)(d);
             if (!result.success)
             {
-                cmd.Log.Error($"{result.errorCode}: {result.error}");
+                cmd.Fail($"{result.errorCode}: {result.error}");
                 return ExitCode.Failed;
             }
             cmd.Result.Write(result.value);
@@ -181,12 +181,12 @@ namespace UnityCLIExtensions
         {
             if (EditBatch.IsActive)
             {
-                cmd.Log.Error("An edit batch is open, so nothing compiles. End it with cliext.edits end, which also compiles.");
+                cmd.Fail("An edit batch is open, so nothing compiles. End it with cliext.edits end, which also compiles.");
                 return ExitCode.Failed;
             }
             if (EditorApplication.isPlayingOrWillChangePlaymode)
             {
-                cmd.Log.Error("The Editor is in Play mode, where it doesn't compile scripts. Stop Play mode first (editor.playmode stop).");
+                cmd.Fail("The Editor is in Play mode, where it doesn't compile scripts. Stop Play mode first (editor.playmode stop).");
                 return ExitCode.Failed;
             }
 
@@ -224,7 +224,7 @@ namespace UnityCLIExtensions
                 cmd.CancellationToken.ThrowIfCancellationRequested();
                 if (clock.Elapsed.TotalSeconds >= budget)
                 {
-                    cmd.Log.Error($"The compile was still running after {clock.Elapsed.TotalSeconds:0} s. Read the result later with cliext.compile diagnostics.");
+                    cmd.Fail($"The compile was still running after {clock.Elapsed.TotalSeconds:0} s. Read the result later with cliext.compile diagnostics.");
                     return ExitCode.TimedOut;
                 }
                 compiled = true;
@@ -257,7 +257,7 @@ namespace UnityCLIExtensions
             });
             if (errors.Length > 0)
             {
-                cmd.Log.Error($"{errors.Length} compile error(s). First: {errors[0].file}({errors[0].line},{errors[0].column}): {errors[0].code}: {errors[0].message}");
+                cmd.Fail($"{errors.Length} compile error(s). First: {errors[0].file}({errors[0].line},{errors[0].column}): {errors[0].code}: {errors[0].message}");
                 return ExitCode.Failed;
             }
             return ExitCode.Success;
@@ -287,7 +287,7 @@ namespace UnityCLIExtensions
         {
             if (EditorApplication.isPlayingOrWillChangePlaymode)
             {
-                cmd.Log.Error("Stop Play mode first: the setting applies on the next entry.");
+                cmd.Fail("Stop Play mode first: the setting applies on the next entry.");
                 return ExitCode.Failed;
             }
             bool restored = FastPlayMode.SetEnabled(enabled);
@@ -320,7 +320,7 @@ namespace UnityCLIExtensions
         {
             string code;
             try { code = TemplatedEval.Load(file, TemplatedEval.ParseVars(vars)); }
-            catch (ArgumentException e) { cmd.Log.Error(e.Message); return ExitCode.InvalidUsage; }
+            catch (ArgumentException e) { cmd.Fail(e.Message); return ExitCode.InvalidUsage; }
 
             var clock = Stopwatch.StartNew();
             int runs = 0;
@@ -332,9 +332,9 @@ namespace UnityCLIExtensions
                 runs++;
                 if (!result.success)
                 {
-                    foreach (var d in result.diagnostics) cmd.Log.Error(d);
+                    foreach (var d in result.diagnostics) cmd.Fail(d);
                     cmd.Result.Write(new { ready = false, runs, waitedMs = clock.ElapsedMilliseconds, last, result.errorCode, result.error });
-                    cmd.Log.Error($"The snippet failed: {result.errorCode}: {result.error}");
+                    cmd.Fail($"The snippet failed: {result.errorCode}: {result.error}");
                     return ExitCode.Failed;
                 }
                 last = TemplatedEval.AsText(result.value);
@@ -349,7 +349,7 @@ namespace UnityCLIExtensions
                     string hint = last.Trim().StartsWith("ready", StringComparison.OrdinalIgnoreCase)
                         ? " Only the exact value \"ready\" ends the wait: return just \"ready\", and read any details with cliext.eval run afterwards."
                         : "";
-                    cmd.Log.Error($"Not ready after {clock.Elapsed.TotalSeconds:0} s; the snippet last returned '{last}'.{hint}");
+                    cmd.Fail($"Not ready after {clock.Elapsed.TotalSeconds:0} s; the snippet last returned '{last}'.{hint}");
                     return ExitCode.TimedOut;
                 }
                 var pause = Stopwatch.StartNew();
@@ -370,7 +370,7 @@ namespace UnityCLIExtensions
         {
             if (!PlayModeTime.IsValid(value))
             {
-                cmd.Log.Error($"--value must be 0 or more (and at most {PlayModeTime.MaxTimeScale}); got {value}.");
+                cmd.Fail($"--value must be 0 or more (and at most {PlayModeTime.MaxTimeScale}); got {value}.");
                 return ExitCode.InvalidUsage;
             }
             float previous = PlayModeTime.Set(value);

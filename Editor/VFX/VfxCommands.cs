@@ -79,7 +79,7 @@ namespace UnityCLIExtensions.VFX
                 cmd.Result.Write(new { path = doc.path, warnings = check.warnings.ToArray(), eventAttributes = check.eventAttributes.ToArray() });
                 if (check.HasErrors || (strict && check.HasWarnings))
                 {
-                    cmd.Log.Error($"{doc.path}: {check.warnings.Count(w => w.severity == VfxGraphCheck.Error)} error(s), {check.warnings.Count(w => w.severity == VfxGraphCheck.Warning)} warning(s).");
+                    cmd.Fail($"{doc.path}: {check.warnings.Count(w => w.severity == VfxGraphCheck.Error)} error(s), {check.warnings.Count(w => w.severity == VfxGraphCheck.Warning)} warning(s).");
                     return ExitCode.Failed;
                 }
                 return ExitCode.Success;
@@ -175,8 +175,8 @@ namespace UnityCLIExtensions.VFX
                 string trimmed = json.Trim();
                 list = JsonUtility.FromJson<VfxOpList>(trimmed.StartsWith("[") ? "{\"ops\":" + trimmed + "}" : trimmed);
             }
-            catch (Exception e) { cmd.Log.Error($"The ops aren't valid JSON: {e.Message}"); return ExitCode.InvalidUsage; }
-            if (list?.ops == null || list.ops.Length == 0) { cmd.Log.Error("No ops given."); return ExitCode.InvalidUsage; }
+            catch (Exception e) { cmd.Fail($"The ops aren't valid JSON: {e.Message}"); return ExitCode.InvalidUsage; }
+            if (list?.ops == null || list.ops.Length == 0) { cmd.Fail("No ops given."); return ExitCode.InvalidUsage; }
             return RunOps(cmd, path, list.ops);
         }
 
@@ -186,7 +186,7 @@ namespace UnityCLIExtensions.VFX
         {
             VfxGraphDocument doc;
             try { doc = VfxGraphDocument.Open(path); }
-            catch (ArgumentException e) { cmd.Log.Error(e.Message); return ExitCode.NotFound; }
+            catch (ArgumentException e) { cmd.Fail(e.Message); return ExitCode.NotFound; }
 
             using var rollback = AssetRollback.Begin(new[] { doc.path });
             var aliases = new Dictionary<string, VFXModel>();
@@ -200,7 +200,7 @@ namespace UnityCLIExtensions.VFX
                     string failure = e is ArgumentException ? e.Message : e.ToString();
                     rollback.Rollback();
                     cmd.Result.Write(new { path = doc.path, applied = 0, total = ops.Count, failedAt = i, error = failure, saved = false });
-                    cmd.Log.Error($"Op {i} ({ops[i].op}) failed: {failure} Nothing was saved.");
+                    cmd.Fail($"Op {i} ({ops[i].op}) failed: {failure} Nothing was saved.");
                     return ExitCode.Failed;
                 }
             }
@@ -230,7 +230,7 @@ namespace UnityCLIExtensions.VFX
         private static ExitCode Guard(CommandContext cmd, Func<ExitCode> body)
         {
             try { return body(); }
-            catch (ArgumentException e) { cmd.Log.Error(e.Message); return ExitCode.NotFound; }
+            catch (ArgumentException e) { cmd.Fail(e.Message); return ExitCode.NotFound; }
         }
     }
 }

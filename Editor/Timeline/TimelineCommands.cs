@@ -131,7 +131,7 @@ namespace UnityCLIExtensions.Timeline
                 });
                 return ExitCode.Success;
             }
-            catch (ArgumentException e) { cmd.Log.Error(e.Message); return ExitCode.NotFound; }
+            catch (ArgumentException e) { cmd.Fail(e.Message); return ExitCode.NotFound; }
         }
 
         private static object DescribeMarker(IMarker m) => new
@@ -156,11 +156,11 @@ namespace UnityCLIExtensions.Timeline
             if (!OpsInput.TryRead(cmd, ops, opsFile, out string json, out ExitCode usage)) return usage;
             TimelineOpList list;
             try { string s = json.Trim(); list = JsonUtility.FromJson<TimelineOpList>(s.StartsWith("[") ? "{\"ops\":" + s + "}" : s); }
-            catch (Exception e) { cmd.Log.Error($"The ops aren't valid JSON: {e.Message}"); return ExitCode.InvalidUsage; }
-            if (list?.ops == null || list.ops.Length == 0) { cmd.Log.Error("No ops given."); return ExitCode.InvalidUsage; }
+            catch (Exception e) { cmd.Fail($"The ops aren't valid JSON: {e.Message}"); return ExitCode.InvalidUsage; }
+            if (list?.ops == null || list.ops.Length == 0) { cmd.Fail("No ops given."); return ExitCode.InvalidUsage; }
 
             TimelineAsset t;
-            try { t = Load(path); } catch (ArgumentException e) { cmd.Log.Error(e.Message); return ExitCode.NotFound; }
+            try { t = Load(path); } catch (ArgumentException e) { cmd.Fail(e.Message); return ExitCode.NotFound; }
             using var rollback = AssetRollback.Begin(new[] { AssetDatabase.GetAssetPath(t) });
             var results = new List<object>();
             for (int i = 0; i < list.ops.Length; i++)
@@ -171,7 +171,7 @@ namespace UnityCLIExtensions.Timeline
                     string message = e is ArgumentException || e is FormatException ? e.Message : e.ToString();
                     rollback.Rollback();
                     cmd.Result.Write(new { path, applied = 0, failedAt = i, error = message, saved = false });
-                    cmd.Log.Error($"Op {i} ({list.ops[i].op}) failed: {message} Nothing was saved.");
+                    cmd.Fail($"Op {i} ({list.ops[i].op}) failed: {message} Nothing was saved.");
                     return ExitCode.Failed;
                 }
             }
@@ -334,7 +334,7 @@ namespace UnityCLIExtensions.Timeline
                 cmd.Result.Write(new { director = d.name, track = tr.name, boundTo = Describe(binding) });
                 return ExitCode.Success;
             }
-            catch (ArgumentException e) { cmd.Log.Error(e.Message); return ExitCode.Failed; }
+            catch (ArgumentException e) { cmd.Fail(e.Message); return ExitCode.Failed; }
         }
 
         [CliGroupCommand(Group, "Control a PlayableDirector: --time seconds scrubs to that time and evaluates (in Edit mode the scene shows that frame), --action play|pause|resume|stop. " +
@@ -376,7 +376,7 @@ namespace UnityCLIExtensions.Timeline
                 });
                 return ExitCode.Success;
             }
-            catch (ArgumentException e) { cmd.Log.Error(e.Message); return ExitCode.Failed; }
+            catch (ArgumentException e) { cmd.Fail(e.Message); return ExitCode.Failed; }
         }
 
         private static PlayableDirector FindDirector(string name)

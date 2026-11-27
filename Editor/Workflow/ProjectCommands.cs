@@ -42,7 +42,7 @@ namespace UnityCLIExtensions
                     try { changed = AffectedTests.ChangedFilesFromGit(since).ToArray(); }
                     catch (Exception e)
                     {
-                        cmd.Log.Error($"Could not read the changes from git ({e.Message}). Pass --files, or --all true.");
+                        cmd.Fail($"Could not read the changes from git ({e.Message}). Pass --files, or --all true.");
                         return ExitCode.Failed;
                     }
                 }
@@ -82,7 +82,7 @@ namespace UnityCLIExtensions
             [CliArg("include-editor-scripts", "Also list Editor-only scripts, such as the version-tracking script HDRP adds to every material")] bool includeEditorScripts = false)
         {
             string resolved = AssetDependencies.Resolve(path);
-            if (resolved == null) { cmd.Log.Error($"No asset at '{path}'."); return ExitCode.NotFound; }
+            if (resolved == null) { cmd.Fail($"No asset at '{path}'."); return ExitCode.NotFound; }
             foreach (var asset in AssetDependencies.Uses(resolved, recursive, includeEditorScripts)) cmd.Result.WriteRecord(asset);
             return ExitCode.Success;
         }
@@ -97,7 +97,7 @@ namespace UnityCLIExtensions
             [CliArg("include-packages", "Also search the assets inside packages")] bool includePackages = false)
         {
             string resolved = AssetDependencies.Resolve(path);
-            if (resolved == null) { cmd.Log.Error($"No asset at '{path}'."); return ExitCode.NotFound; }
+            if (resolved == null) { cmd.Fail($"No asset at '{path}'."); return ExitCode.NotFound; }
             foreach (var asset in AssetDependencies.UsedBy(resolved, recursive, includePackages)) cmd.Result.WriteRecord(asset);
             return ExitCode.Success;
         }
@@ -131,7 +131,7 @@ namespace UnityCLIExtensions
         {
             HierarchySnapshot.Snapshot before, after;
             try { foreach (var change in HierarchySnapshot.CompareWithCurrent(name, out before, out after)) cmd.Result.WriteRecord(change); }
-            catch (ArgumentException e) { cmd.Log.Error(e.Message); return ExitCode.NotFound; }
+            catch (ArgumentException e) { cmd.Fail(e.Message); return ExitCode.NotFound; }
             if (update) HierarchySnapshot.Take(before.assetPath, before.name);
             return ExitCode.Success;
         }
@@ -148,8 +148,8 @@ namespace UnityCLIExtensions
                 cmd.Result.Write(new { deleted = HierarchySnapshot.DeleteAll() });
                 return ExitCode.Success;
             }
-            if (string.IsNullOrWhiteSpace(name)) { cmd.Log.Error("Pass --name, or --all true."); return ExitCode.Failed; }
-            if (!HierarchySnapshot.Delete(name)) { cmd.Log.Error($"No snapshot named '{name}'. See cliext.diff list."); return ExitCode.NotFound; }
+            if (string.IsNullOrWhiteSpace(name)) { cmd.Fail("Pass --name, or --all true."); return ExitCode.Failed; }
+            if (!HierarchySnapshot.Delete(name)) { cmd.Fail($"No snapshot named '{name}'. See cliext.diff list."); return ExitCode.NotFound; }
             cmd.Result.Write(new { deleted = 1, name });
             return ExitCode.Success;
         }

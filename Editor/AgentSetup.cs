@@ -69,6 +69,19 @@ namespace UnityCLIExtensions
             $"<!-- {skill} {version}: installed by Unity CLI Extensions. It is replaced when the package updates; " +
             "to keep your own edits, turn off Project Settings > CLI Extensions > Keep Skill and CLAUDE.md Current. -->";
 
+        /// <summary>The placeholder in a skill's source that the installer replaces with the absolute Tools~ path.</summary>
+        public const string ToolsPlaceholder = "{{cliext-tools}}";
+
+        /// <summary>
+        /// A skill file's text as installed: <see cref="ToolsPlaceholder"/> becomes this package's Tools~ folder, so an
+        /// agent can reach the watchdog script even when a dialog blocks every command (and with it <c>cliext status</c>).
+        /// </summary>
+        public static string Fill(string skillText)
+        {
+            string tools = CliExtPaths.PackageRoot == null ? "<package>/Tools~" : Path.Combine(CliExtPaths.PackageRoot, "Tools~").Replace('\\', '/');
+            return (skillText ?? "").Replace(ToolsPlaceholder, tools);
+        }
+
         /// <summary>The package version recorded in an installed skill file's stamp, or null when it has none.</summary>
         public static string StampedVersion(string fileText)
         {
@@ -154,7 +167,7 @@ namespace UnityCLIExtensions
                 string relative = file.Substring(source.Length + 1);
                 string target = Path.Combine(targetRoot, relative);
                 string want = File.ReadAllText(file).Replace("\r\n", "\n");
-                if (relative.Equals("SKILL.md", StringComparison.OrdinalIgnoreCase)) want = want.TrimEnd('\n') + "\n\n" + Stamp(skill, version) + "\n";
+                if (relative.Equals("SKILL.md", StringComparison.OrdinalIgnoreCase)) want = Fill(want).TrimEnd('\n') + "\n\n" + Stamp(skill, version) + "\n";
                 string label = $"{skill}/{relative.Replace('\\', '/')}";
                 if (File.Exists(target))
                 {
@@ -215,7 +228,7 @@ namespace UnityCLIExtensions
                 cmd.Result.Write(new { r.version, r.skill, r.claudeMd, changes = r.changes, kept = r.kept, current = r.changes.Count == 0 && r.kept.Count == 0 });
                 return ExitCode.Success;
             }
-            catch (Exception e) when (e is InvalidOperationException || e is IOException || e is UnauthorizedAccessException) { cmd.Log.Error(e.Message); return ExitCode.Failed; }
+            catch (Exception e) when (e is InvalidOperationException || e is IOException || e is UnauthorizedAccessException) { cmd.Fail(e.Message); return ExitCode.Failed; }
         }
     }
 }

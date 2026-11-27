@@ -24,7 +24,7 @@ namespace UnityCLIExtensions.Animation
         internal static ExitCode Inspect(CommandContext cmd, [CliArg("path", "The .controller asset path or GUID", Required = true)] string path)
         {
             try { cmd.Result.Write(AnimatorEditing.Describe(AnimatorEditing.Load(path))); return ExitCode.Success; }
-            catch (ArgumentException e) { cmd.Log.Error(e.Message); return ExitCode.NotFound; }
+            catch (ArgumentException e) { cmd.Fail(e.Message); return ExitCode.NotFound; }
         }
 
         [CliGroupCommand(Group, "Check an AnimatorController: states with no motion, unreachable states, transitions that can never fire, conditions on missing or mistyped parameters, " +
@@ -34,11 +34,11 @@ namespace UnityCLIExtensions.Animation
         {
             AnimatorController c;
             try { c = AnimatorEditing.Load(path); }
-            catch (ArgumentException e) { cmd.Log.Error(e.Message); return ExitCode.NotFound; }
+            catch (ArgumentException e) { cmd.Fail(e.Message); return ExitCode.NotFound; }
             var issues = AnimatorEditing.Validate(c);
             foreach (var i in issues) cmd.Result.WriteRecord(i);
             int errors = issues.Count(i => (string)i.GetType().GetProperty("severity").GetValue(i) == "error");
-            if (errors > 0) { cmd.Log.Error($"{errors} error(s)."); return ExitCode.Failed; }
+            if (errors > 0) { cmd.Fail($"{errors} error(s)."); return ExitCode.Failed; }
             return ExitCode.Success;
         }
 
@@ -57,12 +57,12 @@ namespace UnityCLIExtensions.Animation
             if (!OpsInput.TryRead(cmd, ops, opsFile, out string json, out ExitCode usage)) return usage;
             AnimatorOpList list;
             try { string t = json.Trim(); list = JsonUtility.FromJson<AnimatorOpList>(t.StartsWith("[") ? "{\"ops\":" + t + "}" : t); }
-            catch (Exception e) { cmd.Log.Error($"The ops aren't valid JSON: {e.Message}"); return ExitCode.InvalidUsage; }
-            if (list?.ops == null || list.ops.Length == 0) { cmd.Log.Error("No ops given."); return ExitCode.InvalidUsage; }
+            catch (Exception e) { cmd.Fail($"The ops aren't valid JSON: {e.Message}"); return ExitCode.InvalidUsage; }
+            if (list?.ops == null || list.ops.Length == 0) { cmd.Fail("No ops given."); return ExitCode.InvalidUsage; }
 
             AnimatorController c;
             try { c = AnimatorEditing.Load(path); }
-            catch (ArgumentException e) { cmd.Log.Error(e.Message); return ExitCode.NotFound; }
+            catch (ArgumentException e) { cmd.Fail(e.Message); return ExitCode.NotFound; }
             string assetPath = AssetDatabase.GetAssetPath(c);
             using var rollback = AssetRollback.Begin(new[] { assetPath });
             var results = new List<object>();
@@ -74,7 +74,7 @@ namespace UnityCLIExtensions.Animation
                     string message = e is ArgumentException ? e.Message : e.ToString();
                     rollback.Rollback();
                     cmd.Result.Write(new { path, applied = 0, failedAt = i, error = message, saved = false });
-                    cmd.Log.Error($"Op {i} ({list.ops[i].op}) failed: {message} Nothing was saved.");
+                    cmd.Fail($"Op {i} ({list.ops[i].op}) failed: {message} Nothing was saved.");
                     return ExitCode.Failed;
                 }
             }
@@ -94,7 +94,7 @@ namespace UnityCLIExtensions.Animation
         internal static ExitCode Live(CommandContext cmd, [CliArg("object", "GameObject name or hierarchy path with an Animator", Required = true)] string obj)
         {
             var animator = FindAnimator(obj, out string error);
-            if (animator == null) { cmd.Log.Error(error); return ExitCode.NotFound; }
+            if (animator == null) { cmd.Fail(error); return ExitCode.NotFound; }
             var names = StateNames(animator);
             string Name(int hash) => names.TryGetValue(hash, out var n) ? n : hash.ToString();
             cmd.Result.Write(new
@@ -143,7 +143,7 @@ namespace UnityCLIExtensions.Animation
             [CliArg("fade", "Cross-fade seconds for --state")] float fade = 0.1f)
         {
             var animator = FindAnimator(obj, out string error);
-            if (animator == null) { cmd.Log.Error(error); return ExitCode.NotFound; }
+            if (animator == null) { cmd.Fail(error); return ExitCode.NotFound; }
             if (!string.IsNullOrWhiteSpace(state))
             {
                 animator.CrossFadeInFixedTime(state, fade, layer);
@@ -151,7 +151,7 @@ namespace UnityCLIExtensions.Animation
                 return ExitCode.Success;
             }
             var p = animator.parameters.FirstOrDefault(x => x.name == parameter);
-            if (p == null) { cmd.Log.Error($"No parameter '{parameter}'. Parameters: {string.Join(", ", animator.parameters.Select(x => x.name))}"); return ExitCode.NotFound; }
+            if (p == null) { cmd.Fail($"No parameter '{parameter}'. Parameters: {string.Join(", ", animator.parameters.Select(x => x.name))}"); return ExitCode.NotFound; }
             switch (p.type)
             {
                 case AnimatorControllerParameterType.Float: animator.SetFloat(p.nameHash, (float)ValueText.Parse(value, typeof(float))); break;

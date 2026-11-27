@@ -110,7 +110,7 @@ namespace UnityCLIExtensions.UIToolkit
                 });
                 return ExitCode.Success;
             }
-            catch (Exception e) when (e is ArgumentException || e is System.Xml.XmlException) { cmd.Log.Error(e.Message); return ExitCode.Failed; }
+            catch (Exception e) when (e is ArgumentException || e is System.Xml.XmlException) { cmd.Fail(e.Message); return ExitCode.Failed; }
         }
 
         [CliGroupCommand(Group, "Edit a UXML or USS file with a JSON list of ops, saved once and checked by Unity's importer (its errors come back). " +
@@ -125,11 +125,11 @@ namespace UnityCLIExtensions.UIToolkit
         {
             if (!OpsInput.TryRead(cmd, ops, opsFile, out string json, out ExitCode usage)) return usage;
             try { path = Resolve(path); }
-            catch (Exception e) when (e is IOException || e is ArgumentException) { cmd.Log.Error(e.Message); return ExitCode.NotFound; }
+            catch (Exception e) when (e is IOException || e is ArgumentException) { cmd.Fail(e.Message); return ExitCode.NotFound; }
             UxmlOpList list;
             try { string s = json.Trim(); list = JsonUtility.FromJson<UxmlOpList>(s.StartsWith("[") ? "{\"ops\":" + s + "}" : s); }
-            catch (Exception e) { cmd.Log.Error($"The ops aren't valid JSON: {e.Message}"); return ExitCode.InvalidUsage; }
-            if (list?.ops == null || list.ops.Length == 0) { cmd.Log.Error("No ops given."); return ExitCode.InvalidUsage; }
+            catch (Exception e) { cmd.Fail($"The ops aren't valid JSON: {e.Message}"); return ExitCode.InvalidUsage; }
+            if (list?.ops == null || list.ops.Length == 0) { cmd.Fail("No ops given."); return ExitCode.InvalidUsage; }
 
             bool uss = path.EndsWith(".uss", StringComparison.OrdinalIgnoreCase);
             string full = FullPath(path);
@@ -154,7 +154,7 @@ namespace UnityCLIExtensions.UIToolkit
             catch (Exception e) when (e is ArgumentException || e is System.Xml.XmlException || e is FormatException)
             {
                 cmd.Result.Write(new { path, applied = results.Count, failedAt = results.Count, error = e.Message, saved = false });
-                cmd.Log.Error($"Op {results.Count} ({list.ops[results.Count].op}) failed: {e.Message} Nothing was saved.");
+                cmd.Fail($"Op {results.Count} ({list.ops[results.Count].op}) failed: {e.Message} Nothing was saved.");
                 return ExitCode.Failed;
             }
 
@@ -421,7 +421,7 @@ namespace UnityCLIExtensions.UIToolkit
             [CliArg("depth", "How deep to go")] int depth = 8)
         {
             var roots = Roots(document).ToList();
-            if (roots.Count == 0) { cmd.Log.Error("No active UIDocument" + (string.IsNullOrWhiteSpace(document) ? "." : $" named '{document}'.")); return ExitCode.NotFound; }
+            if (roots.Count == 0) { cmd.Fail("No active UIDocument" + (string.IsNullOrWhiteSpace(document) ? "." : $" named '{document}'.")); return ExitCode.NotFound; }
             foreach (var (name, root) in roots) cmd.Result.WriteRecord(new { document = name, tree = DescribeLive(root, depth) });
             return ExitCode.Success;
         }
@@ -439,7 +439,7 @@ namespace UnityCLIExtensions.UIToolkit
                     cmd.Result.WriteRecord(new { document = doc, path = PathOf(e), element = DescribeLive(e, 0) });
                 return ExitCode.Success;
             }
-            catch (ArgumentException e) { cmd.Log.Error(e.Message); return ExitCode.InvalidUsage; }
+            catch (ArgumentException e) { cmd.Fail(e.Message); return ExitCode.InvalidUsage; }
         }
 
         [CliGroupCommand(Group, "Click the first element matching the selector (a Button, or anything with a click handler), as a submit from navigation does. Use in Play mode.",
@@ -452,15 +452,15 @@ namespace UnityCLIExtensions.UIToolkit
             try
             {
                 var match = QueryLive(document, selector);
-                if (match.Count == 0) { cmd.Log.Error($"Nothing matches '{selector}'."); return ExitCode.NotFound; }
+                if (match.Count == 0) { cmd.Fail($"Nothing matches '{selector}'."); return ExitCode.NotFound; }
                 var e = match[0].e;
-                if (!e.enabledInHierarchy) { cmd.Log.Error($"{PathOf(e)} is disabled."); return ExitCode.Failed; }
+                if (!e.enabledInHierarchy) { cmd.Fail($"{PathOf(e)} is disabled."); return ExitCode.Failed; }
                 using (var submit = NavigationSubmitEvent.GetPooled()) { submit.target = e; e.SendEvent(submit); }
                 using (var click = ClickEvent.GetPooled()) { click.target = e; e.SendEvent(click); }
                 cmd.Result.Write(new { clicked = PathOf(e), matches = match.Count });
                 return ExitCode.Success;
             }
-            catch (ArgumentException e) { cmd.Log.Error(e.Message); return ExitCode.InvalidUsage; }
+            catch (ArgumentException e) { cmd.Fail(e.Message); return ExitCode.InvalidUsage; }
         }
 
         [CliGroupCommand(Group, "Set the value of the first matching field (TextField, Toggle, Slider, DropdownField, ... anything with a value) or a Label's text; the field sends its change event. Use in Play mode.",
@@ -474,16 +474,16 @@ namespace UnityCLIExtensions.UIToolkit
             try
             {
                 var match = QueryLive(document, selector);
-                if (match.Count == 0) { cmd.Log.Error($"Nothing matches '{selector}'."); return ExitCode.NotFound; }
+                if (match.Count == 0) { cmd.Fail($"Nothing matches '{selector}'."); return ExitCode.NotFound; }
                 var e = match[0].e;
                 var prop = e.GetType().GetProperty("value", BindingFlags.Instance | BindingFlags.Public);
                 if (prop != null && prop.CanWrite) prop.SetValue(e, ValueText.Parse(value, prop.PropertyType));
                 else if (e is TextElement t) t.text = value;
-                else { cmd.Log.Error($"{PathOf(e)} has no value to set."); return ExitCode.Failed; }
+                else { cmd.Fail($"{PathOf(e)} has no value to set."); return ExitCode.Failed; }
                 cmd.Result.Write(new { element = PathOf(e), value = TextOf(e) });
                 return ExitCode.Success;
             }
-            catch (Exception e) when (e is ArgumentException || e is FormatException) { cmd.Log.Error(e.Message); return ExitCode.Failed; }
+            catch (Exception e) when (e is ArgumentException || e is FormatException) { cmd.Fail(e.Message); return ExitCode.Failed; }
         }
     }
 }
