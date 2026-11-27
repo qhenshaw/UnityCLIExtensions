@@ -1890,6 +1890,63 @@ Add-Check 'tl.play-mode' $tlRow 'in Play mode, cliext.timeline director plays a 
     "played (time $($later.json.time)s), paused at 0.5, stopped; back in Edit mode, scene clean"
 }
 
+Add-Check 'tl.scrub-restore' $tlRow 'in a saved scratch scene with a humanoid rig, cliext.timeline director --time in Edit mode names the active clip and its local time, --read returns the scrubbed bone pose, and the rig and the scene are left as saved; --keep-pose true leaves the frame and marks the scene dirty' {
+    Need-TlAssets
+    $scenePath = "$scratchRel/CliTestScrub.unity"
+    # A rig of the TestLevel character bound to Anim, in a scene saved to disk and reopened additively, so it starts clean.
+    $setup = @'
+var scene = UnityEditor.SceneManagement.EditorSceneManager.NewScene(UnityEditor.SceneManagement.NewSceneSetup.EmptyScene, UnityEditor.SceneManagement.NewSceneMode.Additive);
+var model = UnityEditor.AssetDatabase.LoadAssetAtPath<UnityEngine.GameObject>("Assets/TestLevel/Characters/characterMedium.fbx");
+var rig = (UnityEngine.GameObject)UnityEditor.PrefabUtility.InstantiatePrefab(model, scene); rig.name = "CliTestScrubRig";
+var dgo = new UnityEngine.GameObject("CliTestScrubDirector"); UnityEngine.SceneManagement.SceneManager.MoveGameObjectToScene(dgo, scene);
+var d = dgo.AddComponent<UnityEngine.Playables.PlayableDirector>(); d.playOnAwake = false;
+var t = UnityEditor.AssetDatabase.LoadAssetAtPath<UnityEngine.Timeline.TimelineAsset>("{{path}}"); d.playableAsset = t;
+d.SetGenericBinding(t.GetRootTracks().First(x => x.name == "Anim"), rig.GetComponent<UnityEngine.Animator>());
+UnityEditor.SceneManagement.EditorSceneManager.SaveScene(scene, "{{scene}}");
+UnityEditor.SceneManagement.EditorSceneManager.CloseScene(scene, true);
+var again = UnityEditor.SceneManagement.EditorSceneManager.OpenScene("{{scene}}", UnityEditor.SceneManagement.OpenSceneMode.Additive);
+return "ok|" + again.isDirty;
+'@
+    $poseCode = @'
+var s = UnityEngine.SceneManagement.SceneManager.GetSceneByPath("{{scene}}");
+var arm = UnityEngine.GameObject.Find("CliTestScrubRig").GetComponentsInChildren<UnityEngine.Transform>().First(x => x.name == "LeftForeArm");
+var r = arm.localEulerAngles;
+return string.Format(System.Globalization.CultureInfo.InvariantCulture, "{0:0.0},{1:0.0},{2:0.0}|{3}", r.x, r.y, r.z, s.isDirty);
+'@
+    $pose = Write-WorkFile 'tl-scrub-pose.cs' $poseCode.Replace('{{scene}}', $scenePath)
+    $r = Invoke-Cli @('script', 'eval', '--file', (Write-WorkFile 'tl-scrub-setup.cs' $setup.Replace('{{path}}', $script:tlPath).Replace('{{scene}}', $scenePath)), '--format', 'json')
+    try {
+        Expect ("$($r.stdout)" -match 'ok\|False') "scratch scene: $(Short ($r.stdout + $r.stderr))"
+        $find = Invoke-Cli @('script', 'eval', '--file', (Write-WorkFile 'tl-scrub-path.cs' 'var t = UnityEngine.GameObject.Find("CliTestScrubRig").GetComponentsInChildren<UnityEngine.Transform>().First(x => x.name == "LeftForeArm"); var p = t.name; for (var q = t.parent; q != null; q = q.parent) p = q.name + "/" + p; return p;'), '--format', 'json')
+        $armPath = $find.stdout.Trim().Trim('"')
+        $p0 = (Invoke-Cli @('script', 'eval', '--file', $pose, '--format', 'json')).stdout.Trim().Trim('"')
+        $d = Invoke-Cli @('cliext.timeline', 'director', '--director', 'CliTestScrubDirector', '--time', '0.5', '--read', $armPath, '--format', 'json')
+        Expect ($d.exit -eq 0) "scrub: exit $($d.exit): $(Short ($d.stdout + $d.stderr))"
+        $anim = @($d.json.tracks | Where-Object { $_.track -eq 'Anim' })[0]
+        Expect ($anim.clips[0].clip -eq 'Idle' -and [math]::Abs($anim.clips[0].localTime - 0.5) -lt 1e-3) "tracks: $(Short ($d.json.tracks | ConvertTo-Json -Compress -Depth 5))"
+        Expect ("$($d.json.scene)" -match '^unchanged') "scene note: $($d.json.scene)"
+        $read = $d.json.read[0].localRotation
+        $readText = (@($read | ForEach-Object { [string]::Format([Globalization.CultureInfo]::InvariantCulture, '{0:0.0}', [double]$_) }) -join ',')
+        $p1 = (Invoke-Cli @('script', 'eval', '--file', $pose, '--format', 'json')).stdout.Trim().Trim('"')
+        Expect ($p1 -eq $p0) "the rig after the scrub: $p1, before: $p0"
+        Expect ($p1 -match '\|False$') "the scene is dirty after the scrub: $p1"
+        Expect (($p0 -split '\|')[0] -ne $readText) "--read gave the saved pose ($readText), not the scrubbed one"
+        $k = Invoke-Cli @('cliext.timeline', 'director', '--director', 'CliTestScrubDirector', '--time', '0.5', '--keep-pose', 'true', '--format', 'json')
+        Expect ($k.exit -eq 0 -and "$($k.json.scene)" -match '^kept') "keep-pose: exit $($k.exit): $(Short ($k.stdout + $k.stderr))"
+        $p2 = (Invoke-Cli @('script', 'eval', '--file', $pose, '--format', 'json')).stdout.Trim().Trim('"')
+        Expect ($p2 -match '\|True$' -and ($p2 -split '\|')[0] -ne ($p0 -split '\|')[0]) "after --keep-pose: $p2 (saved $p0)"
+        $usage = Invoke-Cli @('cliext.timeline', 'director', '--director', 'CliTestScrubDirector', '--read', $armPath, '--format', 'json')
+        Expect-TlFailure $usage '--read reports the pose at --time' '' '--read without --time' 2
+        $missing = Invoke-Cli @('cliext.timeline', 'director', '--director', 'CliTestScrubDirector', '--time', '0.5', '--read', 'NoSuchBone', '--format', 'json')
+        Expect-TlFailure $missing "No GameObject 'NoSuchBone'" '' 'unknown --read object' 13
+    }
+    finally {
+        $close = "var s = UnityEngine.SceneManagement.SceneManager.GetSceneByPath(`"$scenePath`"); if (s.IsValid()) UnityEditor.SceneManagement.EditorSceneManager.CloseScene(s, true); UnityEditor.AssetDatabase.DeleteAsset(`"$scenePath`"); return `"ok`";"
+        [void](Invoke-Cli @('script', 'eval', '--file', (Write-WorkFile 'tl-scrub-close.cs' $close), '--format', 'json'))
+    }
+    "Anim plays Idle at local 0.5; read $readText while sampled; rig back at $p0; keep-pose left the frame and dirtied the scene"
+}
+
 # --- cliext.input -----------------------------------------------------------------------------------------------------
 
 # Edit checks work on a scratch copy of the project's InputSystem_Actions.inputactions (AssetDatabase.CopyAsset, so it

@@ -74,6 +74,67 @@ namespace UnityCLIExtensions.Timeline.Tests
             Assert.AreEqual(rig.GetComponent<Animator>(), TimelineCommands.BindingFor(track, typeof(Animator), rig));
         }
 
+        /// <summary>A director whose Anim track moves Actor/Child's x from 0 to 10 over a 1 s clip named Slide; the child starts at x 3.</summary>
+        private (UnityEngine.Playables.PlayableDirector director, Transform child) SlideRig()
+        {
+            var t = ScriptableObject.CreateInstance<TimelineAsset>(); _made.Add(t);
+            var clip = new AnimationClip { name = "SlideClip" }; _made.Add(clip);
+            clip.SetCurve("Child", typeof(Transform), "m_LocalPosition.x", AnimationCurve.Linear(0, 0, 1, 10));
+            var track = t.CreateTrack<AnimationTrack>(null, "Anim");
+            var tc = track.CreateClip(clip); tc.displayName = "Slide"; tc.start = 0; tc.duration = 1;
+            var actor = new GameObject("TimelineTestActor"); _made.Add(actor);
+            actor.AddComponent<Animator>();
+            var child = new GameObject("Child").transform;
+            child.SetParent(actor.transform);
+            child.localPosition = new Vector3(3, 0, 0);
+            var dgo = new GameObject("TimelineTestDirector"); _made.Add(dgo);
+            var d = dgo.AddComponent<UnityEngine.Playables.PlayableDirector>();
+            d.playOnAwake = false;
+            d.playableAsset = t;
+            d.SetGenericBinding(track, actor.GetComponent<Animator>());
+            return (d, child);
+        }
+
+        [Test]
+        public void EditModeScrub_ReadsThePose_ThenPutsTheBoundObjectsBack()
+        {
+            var (d, child) = SlideRig();
+            var read = TimelineCommands.Scrub(d, 0.5, new[] { child.gameObject }, restore: true, out string scene);
+            StringAssert.Contains("unchanged", scene);
+            Assert.AreEqual(5.0, ((double[])Get(read[0], "localPosition"))[0], 1e-3, "The pose at 0.5 s is read while it is sampled.");
+            Assert.AreEqual(3f, child.localPosition.x, 1e-4, "The bound object is back at its own pose.");
+            Assert.AreEqual(0.5, d.time, 1e-6, "The director keeps the scrubbed time.");
+            Assert.IsFalse(AnimationMode.InAnimationMode(), "Animation mode is stopped again.");
+        }
+
+        [Test]
+        public void EditModeScrub_WithKeepPose_LeavesTheFrame()
+        {
+            var (d, child) = SlideRig();
+            TimelineCommands.Scrub(d, 0.25, new GameObject[0], restore: false, out string scene);
+            StringAssert.Contains("kept", scene);
+            Assert.AreEqual(2.5f, child.localPosition.x, 1e-3);
+        }
+
+        [Test]
+        public void ActiveClips_NameEachTracksClipAndItsLocalTime()
+        {
+            var (d, _) = SlideRig();
+            var t = (TimelineAsset)d.playableAsset;
+            ((AnimationTrack)t.GetRootTracks().First()).CreateClip(new AnimationClip { name = "Second" }).start = 2;
+            var tracks = TimelineCommands.ActiveClips(t, 0.4);
+            Assert.AreEqual(1, tracks.Length);
+            Assert.AreEqual("Anim", Get(tracks[0], "track"));
+            var clips = (Array)Get(tracks[0], "clips");
+            Assert.AreEqual(1, clips.Length, "Only the clip under the playhead is listed.");
+            var c = clips.GetValue(0);
+            Assert.AreEqual("Slide", Get(c, "clip"));
+            Assert.AreEqual(0.4, (double)Get(c, "localTime"), 1e-4);
+            Assert.AreEqual("SlideClip", Get(c, "animationClip"));
+        }
+
+        private static object Get(object o, string name) => o.GetType().GetProperty(name).GetValue(o);
+
         [Test]
         public void AFailedBatch_PutsRemovedTracksAndClipsBack_AndTheNextSaveKeepsThem()
         {

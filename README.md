@@ -681,8 +681,13 @@ Pipeline's `animation.timeline` commands create a timeline and add tracks and cl
   track; a track is its name, its path through groups, or its index.
 - `bind --director <GameObject> --track Moves --object Player`: binds a track to a scene object (the component the
   track needs, such as its Animator), or `none`.
-- `director --director <GameObject> [--time 1.5] [--action play|pause|resume|stop]`: scrubs (evaluating that frame,
-  in Edit mode too), plays and reads a director's time, duration and state.
+- `director --director <GameObject> [--time 1.5] [--action play|pause|resume|stop] [--read "Player/Hips;Prop"]
+  [--keep-pose true]`: scrubs (evaluating that frame, in Edit mode too), plays and reads a director's time, duration
+  and state, and `tracks`: each track's active clip (two while they blend, with weights), its local time, the
+  AnimationClip it plays and that clip's length. In Edit mode a scrub is sampled as the Timeline window previews it:
+  the bound objects are put back afterwards, so saving the scene doesn't save the scrubbed pose (`scene` says so).
+  `--read` returns the named objects' position and rotation at that time, before they are put back; `--keep-pose
+  true` leaves the frame in the scene instead and marks it unsaved.
 
 ## UI Toolkit
 `cliext.uitk` edits UXML and USS files and works with the live UI in Play mode.
@@ -924,7 +929,7 @@ All under `unity command --project-path <project>`:
 | `cliext.animator inspect` / `validate` / `edit --path <controller>` | Read, check and edit an AnimatorController. |
 | `cliext.animator live` / `drive --object <GameObject>` | An Animator's live state, and driving it (Play mode). |
 | `cliext.cinemachine list` / `create` / `set` / `blend` | Cinemachine cameras, the live camera and blends. |
-| `cliext.timeline inspect` / `edit` / `bind` / `director` | Timeline clips, tracks, markers, bindings and scrubbing. |
+| `cliext.timeline inspect` / `edit` / `bind` / `director [--read objs] [--keep-pose true]` | Timeline clips, tracks, markers, bindings and scrubbing (Edit-mode scrubs put the bound objects back; the active clip per track). |
 | `cliext.uitk inspect` / `edit --path <uxml or uss>` | Read and edit UXML and USS, checked by the importer. |
 | `cliext.uitk tree` / `query` / `click` / `set_value` | The live visual tree, clicking and setting values. |
 | `cliext.splines list` / `inspect` / `create` / `edit` / `sample` | SplineContainers, knots, and sampling. |
