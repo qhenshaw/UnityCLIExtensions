@@ -398,23 +398,122 @@ namespace UnityCLIExtensions.Assets
 
         private static string TypeName(PresetType t) => t.GetManagedTypeName() ?? t.ToString();
 
-        [CliGroupCommand("cliext.presets", "The default presets (Project Settings > Preset Manager) per type, with each one's folder filter and whether it is enabled.",
+        internal const string PresetManagerAsset = "ProjectSettings/PresetManager.asset";
+
+        /// <summary>The note a list with no default presets prints, so an empty list isn't silent.</summary>
+        internal const string NoDefaultsNote = "No default presets: the Preset Manager (ProjectSettings/PresetManager.asset) has none. cliext.presets set_default --preset <path> --filter <folder> makes one.";
+
+        [CliGroupCommand("cliext.presets", "The default presets (Project Settings > Preset Manager) per type, with each one's folder filter and whether it is enabled. " +
+                                           "With none, it prints one record { defaults: 0, note } saying so.",
             Name = "list", Tags = new[] { "cliext", "assets", "presets" }, Effect = CommandEffect.ReadOnly)]
         internal static ExitCode List(CommandContext cmd)
         {
+            int n = 0;
             foreach (var type in Preset.GetAllDefaultTypes())
                 foreach (var d in Preset.GetDefaultPresetsForType(type))
+                {
+                    n++;
                     cmd.Result.WriteRecord(new { type = TypeName(type), preset = d.preset != null ? AssetDatabase.GetAssetPath(d.preset) : null, filter = d.filter, enabled = d.enabled });
+                }
+            if (n == 0) cmd.Result.Write(new { defaults = 0, note = NoDefaultsNote });
             return ExitCode.Success;
         }
 
-        [CliGroupCommand("cliext.presets", "Make a preset from an asset's importer (or any object asset) and save it at --out (.preset). " +
-                                           "Exit 13 when --from or --out's folder is missing, 2 for a folder as --from or a path outside Assets/ or Packages/, 6 when --out already exists (pick another path, or asset delete it first).",
+        /// <summary>
+        /// Sets the default presets for a type and writes ProjectSettings/PresetManager.asset, so the defaults outlive an
+        /// Editor restart (Preset.SetDefaultPresetsForType changes only the Editor's copy). False when Unity refuses them.
+        /// </summary>
+        internal static bool SetDefaults(PresetType type, DefaultPreset[] list)
+        {
+            if (!Preset.SetDefaultPresetsForType(type, list)) return false;
+            var manager = AssetDatabase.LoadAllAssetsAtPath(PresetManagerAsset).FirstOrDefault();
+            // SaveAssetIfDirty skips project settings; SaveAssets writes them (as quality set does QualitySettings.asset).
+            if (manager != null) EditorUtility.SetDirty(manager);
+            AssetDatabase.SaveAssets();
+            return true;
+        }
+
+        /// <summary>The importer's platform settings array: a preset keeps it whole or excludes it whole.</summary>
+        internal const string PlatformBlock = "m_PlatformSettings";
+
+        private static bool Covers(string prefix, string path) =>
+            string.Equals(path, prefix, StringComparison.Ordinal) || path.StartsWith(prefix + ".", StringComparison.Ordinal);
+
+        private static string FirstSegment(string path) { int dot = path.IndexOf('.'); return dot < 0 ? path : path.Substring(0, dot); }
+
+        /// <summary>
+        /// A --only or --exclude name as the property path it names in <paramref name="paths"/>: a path or the start of one
+        /// (m_TextureSettings, m_TextureSettings.m_FilterMode), any case, with or without the m_ (maxTextureSize). A name
+        /// inside the platform settings is refused: the block is kept or excluded whole. An unknown name is invalid usage.
+        /// </summary>
+        internal static string ResolveProperty(string given, IList<string> paths, string arg)
+        {
+            string g = (given ?? "").Trim();
+            foreach (string c in g.StartsWith("m_", StringComparison.OrdinalIgnoreCase) ? new[] { g } : new[] { g, "m_" + g })
+            {
+                string hit = paths.FirstOrDefault(p => string.Equals(p, c, StringComparison.OrdinalIgnoreCase) || p.StartsWith(c + ".", StringComparison.OrdinalIgnoreCase));
+                if (hit == null) continue;
+                string resolved = hit.Substring(0, c.Length);
+                if (resolved.StartsWith(PlatformBlock + ".", StringComparison.Ordinal))
+                    throw new AnimUsageException($"{arg} '{g}' is inside the platform settings, which a preset keeps or excludes whole: name {PlatformBlock} for all of them, or set the platform values on the template first (cliext.import batch --platform).");
+                return resolved;
+            }
+            var tops = paths.Select(FirstSegment).Distinct().ToList();
+            string Strip(string t) => t.StartsWith("m_") ? t.Substring(2) : t;
+            var close = AnimationErrors.Close(Strip(g), tops.Select(Strip)).Select(c => tops.First(t => Strip(t) == c)).Distinct().ToList();
+            throw new AnimUsageException($"{arg}: the preset has no property '{g}'.{(close.Count > 0 ? $" Did you mean: {string.Join(", ", close)}?" : "")} Properties: {string.Join(", ", tops)}.");
+        }
+
+        /// <summary>
+        /// The excludedProperties for a preset of these property paths: with --only, everything but the named properties
+        /// and the platform settings (kept whole unless --exclude names m_PlatformSettings); then everything --exclude
+        /// names. Empty when both are empty. Names that don't resolve, a name in both, or nothing left are invalid usage.
+        /// </summary>
+        internal static string[] Exclusions(IList<string> paths, string only, string exclude)
+        {
+            List<string> Names(string text, string arg) =>
+                (text ?? "").Split(new[] { ';', ',' }, StringSplitOptions.RemoveEmptyEntries).Select(x => x.Trim()).Where(x => x.Length > 0)
+                    .Select(x => ResolveProperty(x, paths, arg)).Distinct().ToList();
+            var keep = Names(only, "--only");
+            var drop = Names(exclude, "--exclude");
+            var both = drop.FirstOrDefault(d => keep.Any(k => Covers(k, d) || Covers(d, k)));
+            if (both != null) throw new AnimUsageException($"--only and --exclude both name {both}: name it in one of them.");
+            var excluded = new List<string>();
+            if (keep.Count > 0)
+            {
+                if (!keep.Contains(PlatformBlock)) keep.Add(PlatformBlock);
+                foreach (string p in paths)
+                {
+                    if (keep.Any(k => Covers(k, p))) continue;
+                    string top = FirstSegment(p);
+                    // Leave out the whole top property unless a kept name is inside it (m_TextureSettings.m_FilterMode).
+                    string key = keep.Any(k => k.StartsWith(top + ".", StringComparison.Ordinal)) ? p : top;
+                    if (!excluded.Contains(key)) excluded.Add(key);
+                }
+            }
+            foreach (string d in drop)
+            {
+                excluded.RemoveAll(e => Covers(d, e));
+                excluded.Add(d);
+            }
+            if (excluded.Count > 0 && paths.All(p => excluded.Any(e => Covers(e, p))))
+                throw new AnimUsageException("--only/--exclude leave the preset with no properties: keep at least one.");
+            return excluded.ToArray();
+        }
+
+        [CliGroupCommand("cliext.presets", "Make a preset from an asset's importer (or any object asset) and save it at --out (.preset). It captures every setting; " +
+                                           "--only \"textureType;mipmapEnabled;maxTextureSize\" keeps just those (property paths such as m_TextureSettings.m_FilterMode, any case, m_ optional) and " +
+                                           "--exclude \"sRGBTexture;alphaUsage;swizzle\" leaves those out, so the assets keep their own values. Left-out properties go in the preset's excluded properties. " +
+                                           "The platform settings (m_PlatformSettings: per-platform size and compression) stay whole: --only keeps them, and they go only when --exclude names m_PlatformSettings. " +
+                                           "Exit 13 when --from or --out's folder is missing, 2 for a folder as --from, a path outside Assets/ or Packages/, or an --only/--exclude name the importer doesn't have (with the property names), " +
+                                           "6 when --out already exists (pick another path, or asset delete it first).",
             Name = "create", Tags = new[] { "cliext", "assets", "presets" }, Effect = CommandEffect.Destructive)]
         internal static ExitCode Create(
             CommandContext cmd,
             [CliArg("from", "The asset whose import settings to capture", Required = true)] string from,
-            [CliArg("out", "Where to save the .preset", Required = true)] string outPath)
+            [CliArg("out", "Where to save the .preset", Required = true)] string outPath,
+            [CliArg("only", "Keep only these properties (separated by ';'); the platform settings stay")] string only = "",
+            [CliArg("exclude", "Leave these properties out (separated by ';'); m_PlatformSettings drops the platform settings")] string exclude = "")
         {
             try
             {
@@ -434,8 +533,18 @@ namespace UnityCLIExtensions.Assets
                 if (source == null || source.GetType() == typeof(AssetImporter)) source = AssetDatabase.LoadMainAssetAtPath(src);
                 var preset = new Preset(source);
                 if (!preset.IsValid()) throw new AnimUsageException($"--from '{src}': a preset can't be made from {AnimationErrors.A(source.GetType().Name)}.");
+                var paths = preset.PropertyModifications.Select(m => m.propertyPath).ToList();
+                var excluded = Exclusions(paths, only, exclude);
+                if (excluded.Length > 0) preset.excludedProperties = excluded;
                 AssetDatabase.CreateAsset(preset, dst);
-                cmd.Result.Write(new { preset = dst, type = TypeName(preset.GetPresetType()), properties = preset.PropertyModifications.Length });
+                int kept = paths.Count(p => !excluded.Any(e => Covers(e, p)));
+                cmd.Result.Write(new
+                {
+                    preset = dst, type = TypeName(preset.GetPresetType()), properties = paths.Count,
+                    kept = excluded.Length > 0 ? kept : (int?)null,
+                    excluded = excluded.Length > 0 ? excluded : null,
+                    platformSettings = paths.Any(p => Covers(PlatformBlock, p)) ? (excluded.Contains(PlatformBlock) ? "excluded" : "kept") : null
+                });
                 return ExitCode.Success;
             }
             catch (Exception e) when (IsArgError(e)) { return Report(cmd, e); }
@@ -457,7 +566,7 @@ namespace UnityCLIExtensions.Assets
         }
 
         [CliGroupCommand("cliext.presets", "Make a preset a default for its type, for assets matching --filter (a folder such as Assets/Art/UI, or a search filter such as glob:\"Assets/Art/UI/**/*.png\"; empty for every asset). " +
-                                           "New and reimported assets there get it; it goes first in its type's list. --remove true takes it out of the defaults (only the entry with --filter when one is given). " +
+                                           "New and reimported assets there get it; it goes first in its type's list. Saved to ProjectSettings/PresetManager.asset. --remove true takes it out of the defaults (only the entry with --filter when one is given). " +
                                            "Exit 13 when the preset or the --filter folder is missing, 2 when --preset isn't a preset or its type can't have defaults, 6 when it is already the first default with that filter, or with --remove isn't a default.",
             Name = "set_default", Tags = new[] { "cliext", "assets", "presets" }, Effect = CommandEffect.Destructive)]
         internal static ExitCode SetDefault(
@@ -494,8 +603,8 @@ namespace UnityCLIExtensions.Assets
                     }
                     list.Insert(0, new DefaultPreset(f, preset, true));
                 }
-                if (!Preset.SetDefaultPresetsForType(type, list.ToArray())) { cmd.Fail($"Unity refused the default presets for {TypeName(type)}; nothing was changed."); return ExitCode.Failed; }
-                cmd.Result.Write(new { type = TypeName(type), defaults = list.Select(d => new { preset = AssetDatabase.GetAssetPath(d.preset), d.filter, d.enabled }).ToArray() });
+                if (!SetDefaults(type, list.ToArray())) { cmd.Fail($"Unity refused the default presets for {TypeName(type)}; nothing was changed."); return ExitCode.Failed; }
+                cmd.Result.Write(new { type = TypeName(type), defaults = list.Select(d => new { preset = AssetDatabase.GetAssetPath(d.preset), d.filter, d.enabled }).ToArray(), saved = PresetManagerAsset });
                 return ExitCode.Success;
             }
             catch (Exception e) when (IsArgError(e)) { return Report(cmd, e); }
@@ -567,6 +676,7 @@ namespace UnityCLIExtensions.Assets
         }
 
         [CliGroupCommand("cliext.presets", "Audit: for every asset under --folder whose type has default presets, the settings where its importer breaks the preset that applies to it (by the presets' folder filters). Nothing is changed. " +
+                                           "A clean audit prints one summary record: { folder, audited (assets with a default preset), presets (the defaults that applied), breaking: 0, note }. " +
                                            "Exit 6 when any asset breaks a preset, 13 when the folder is missing, 2 for a path outside Assets/ or Packages/ or a --limit under 1.",
             Name = "audit", Tags = new[] { "cliext", "assets", "presets" }, Effect = CommandEffect.ReadOnly)]
         internal static ExitCode Audit(
@@ -578,26 +688,44 @@ namespace UnityCLIExtensions.Assets
             {
                 string f = Folder(folder);
                 if (limit < 1) throw new AnimUsageException($"--limit {limit}: give 1 or more differences to list per asset.");
-                int breaking = 0, checkedCount = 0;
-                foreach (string p in AssetsIn(f, "", ""))
-                {
-                    var importer = AssetImporter.GetAtPath(p);
-                    if (importer == null) continue;
-                    var presets = Preset.GetDefaultPresetsForObject(importer);
-                    if (presets == null || presets.Length == 0) continue;
-                    checkedCount++;
-                    // Several defaults can match; the Preset Manager applies them in order, so the last one wins a property.
-                    var diff = presets.SelectMany(pr => Diff(pr, importer).Select(d => $"{d.text} ({AssetDatabase.GetAssetPath(pr)})")).ToList();
-                    if (diff.Count == 0) continue;
-                    breaking++;
-                    cmd.Result.WriteRecord(new { path = p, differences = diff.Take(limit).ToArray(), more = diff.Count > limit ? diff.Count - limit : (int?)null });
-                }
-                string summary = $"{breaking} of {checkedCount} asset(s) under '{f}' with default presets break them.";
-                if (breaking > 0) { cmd.Fail(summary + " Fix them with cliext.presets apply (or reimport them)."); return ExitCode.Failed; }
-                cmd.Log.Info(checkedCount == 0 ? $"No asset under '{f}' has a default preset (cliext.presets list lists them)." : summary);
+                var result = RunAudit(f, limit);
+                foreach (var r in result.Breaking) cmd.Result.WriteRecord(r);
+                if (result.Breaking.Count > 0) { cmd.Fail(result.Note + " Fix them with cliext.presets apply (or reimport them)."); return ExitCode.Failed; }
+                cmd.Result.Write(new { folder = f, audited = result.Audited, presets = result.Presets.ToArray(), breaking = 0, note = result.Note });
                 return ExitCode.Success;
             }
             catch (Exception e) when (IsArgError(e)) { return Report(cmd, e); }
+        }
+
+        internal sealed class AuditResult
+        {
+            public int Audited;
+            public readonly SortedSet<string> Presets = new SortedSet<string>(StringComparer.Ordinal);
+            public readonly List<object> Breaking = new List<object>();
+            public string Note;
+        }
+
+        /// <summary>The audit of <paramref name="folder"/> (an existing folder): the breaking assets' records, the count audited, the presets that applied and the summary line.</summary>
+        internal static AuditResult RunAudit(string folder, int limit)
+        {
+            var result = new AuditResult();
+            foreach (string p in AssetsIn(folder, "", ""))
+            {
+                var importer = AssetImporter.GetAtPath(p);
+                if (importer == null) continue;
+                var presets = Preset.GetDefaultPresetsForObject(importer);
+                if (presets == null || presets.Length == 0) continue;
+                result.Audited++;
+                foreach (var pr in presets) result.Presets.Add(AssetDatabase.GetAssetPath(pr));
+                // Several defaults can match; the Preset Manager applies them in order, so the last one wins a property.
+                var diff = presets.SelectMany(pr => Diff(pr, importer).Select(d => $"{d.text} ({AssetDatabase.GetAssetPath(pr)})")).ToList();
+                if (diff.Count == 0) continue;
+                result.Breaking.Add(new { path = p, differences = diff.Take(limit).ToArray(), more = diff.Count > limit ? diff.Count - limit : (int?)null });
+            }
+            result.Note = result.Audited == 0
+                ? $"No asset under '{folder}' has a default preset, so nothing was audited (cliext.presets list lists the defaults; set_default makes one)."
+                : $"{result.Breaking.Count} of {result.Audited} asset(s) under '{folder}' with default presets break them.";
+            return result;
         }
 
         /// <summary>Properties where <paramref name="target"/> differs from <paramref name="preset"/>, with the text "path: is X, preset Y".</summary>
