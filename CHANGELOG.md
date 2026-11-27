@@ -1,6 +1,9 @@
 # Changelog
 All notable changes to Unity CLI Extensions. Versions are git tags: install one with `https://github.com/qhenshaw/UnityCLIExtensions.git#<version>`.
 
+## Unreleased
+- The watchdog starts when `watchdog.pid` is empty (left by a watchdog killed mid-write); before, it exited on a null error and `cliext.watchdog start` reported starting it.
+
 ## 0.30.0
 Fixes from the T3 agent runs on 0.29.0, and area skills. 204 EditMode tests and 148 `cliext-clitest.ps1` checks pass.
 - `cliext-clitest.ps1`'s `xcut.skill-freshness` ignores the version stamp of every installed skill (it used to flag `clarify`).

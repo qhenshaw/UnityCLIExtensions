@@ -532,7 +532,8 @@ $stopFile = Join-Path $stateDir 'watchdog.stop'
 $statusFile = Join-Path $stateDir 'watchdog-status.json'
 
 if (Test-Path $pidFile) {
-    $other = 0; [int]::TryParse((Get-Content $pidFile -Raw).Trim(), [ref]$other) | Out-Null
+    # An empty pid file (a watchdog killed while writing it) reads as $null: treat it as no watchdog.
+    $other = 0; [int]::TryParse("$(Get-Content $pidFile -Raw)".Trim(), [ref]$other) | Out-Null
     if ($other -and $other -ne $PID -and (Get-Process -Id $other -ErrorAction SilentlyContinue)) {
         Write-Output "A watchdog (pid $other) already watches $projectPath."
         exit 0
@@ -634,5 +635,5 @@ try {
     }
 }
 finally {
-    if ((Test-Path $pidFile) -and ((Get-Content $pidFile -Raw).Trim() -eq [string]$PID)) { Remove-Item $pidFile -Force }
+    if ((Test-Path $pidFile) -and ("$(Get-Content $pidFile -Raw)".Trim() -eq [string]$PID)) { Remove-Item $pidFile -Force }
 }
