@@ -188,7 +188,11 @@ namespace UnityCLIExtensions
 
         private static string FixTmpEssentials()
         {
+#if UNITY_6000_6_OR_NEWER
+            UnityEditor.AssetPackage.Package.Import(TmpEssentialsPackagePath(), false);
+#else
             AssetDatabase.ImportPackage(TmpEssentialsPackagePath(), false);
+#endif
             return "Importing TMP Essential Resources without the Import dialog; the import finishes a moment after this returns.";
         }
 

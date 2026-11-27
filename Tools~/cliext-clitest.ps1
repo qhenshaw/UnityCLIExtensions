@@ -3497,6 +3497,385 @@ Add-Check 'qual.errors' $qualRow 'cliext.quality levels and set with unknown lev
     "$($seen.Count) failures with the fix; settings and their files unchanged"
 }
 
+# --- cliext.import, cliext.presets ------------------------------------------------------------------------------------
+
+# Import settings are changed only on copies: New-ImpTextures copies four textures of the committed VFXTexturePack
+# (AssetDatabase.CopyAsset, so new GUIDs) into the scratch folder, Imp (A, B, Sub/C), ImpMixed (D and a .txt) and
+# ImpText (a .txt only), with an empty ImpPresets folder for the presets. The pack's own files are checked with git
+# after every check. Default presets go to ProjectSettings/PresetManager.asset: a check that sets one takes it out
+# again with --remove in a finally, then writes the file's original bytes back, and compares the default presets the
+# Editor holds (Get-PresetSig) and git status of ProjectSettings.
+$impRow = 'cliext.import, cliext.presets'
+$impRel = "$scratchRel/Imp"
+$impPack = 'Assets/ThirdParty/VFXTexturePack'
+$presetFiles = @('ProjectSettings/PresetManager.asset')
+
+function New-ImpTextures {
+    New-ScratchFolder
+    $code = @'
+string root = "Assets/_CliextTests/CliTest";
+foreach (var d in new[] { "Imp", "ImpMixed", "ImpText", "ImpPresets" }) UnityEditor.AssetDatabase.DeleteAsset(root + "/" + d);
+UnityEditor.AssetDatabase.CreateFolder(root, "Imp"); UnityEditor.AssetDatabase.CreateFolder(root + "/Imp", "Sub");
+UnityEditor.AssetDatabase.CreateFolder(root, "ImpMixed"); UnityEditor.AssetDatabase.CreateFolder(root, "ImpText"); UnityEditor.AssetDatabase.CreateFolder(root, "ImpPresets");
+string src = "{{pack}}/";
+bool ok = UnityEditor.AssetDatabase.CopyAsset(src + "Tx_Burst_directional_01.png", root + "/Imp/A.png")
+    & UnityEditor.AssetDatabase.CopyAsset(src + "Tx_Burst_directional_02.png", root + "/Imp/B.png")
+    & UnityEditor.AssetDatabase.CopyAsset(src + "Tx_Burst_radial_01.png", root + "/Imp/Sub/C.png")
+    & UnityEditor.AssetDatabase.CopyAsset(src + "Tx_Burst_radial_02.png", root + "/ImpMixed/D.png");
+System.IO.File.WriteAllText(root + "/ImpMixed/Notes.txt", "scratch");
+System.IO.File.WriteAllText(root + "/ImpText/Readme.txt", "scratch");
+UnityEditor.AssetDatabase.ImportAsset(root + "/ImpMixed/Notes.txt");
+UnityEditor.AssetDatabase.ImportAsset(root + "/ImpText/Readme.txt");
+return ok ? "ok" : "copy failed";
+'@
+    $r = Invoke-Eval 'imp-new.cs' $code.Replace('{{pack}}', $impPack)
+    Expect ($r -eq 'ok') "scratch textures: $r"
+}
+function Get-ImpState([string]$dir = $impRel) {
+    # Every texture under $dir as name:maxTextureSize,mipmapEnabled,userData,Android overridden,Android maxTextureSize.
+    $code = @'
+var paths = new System.Collections.Generic.List<string>();
+foreach (var g in UnityEditor.AssetDatabase.FindAssets("t:Texture2D", new[] { "{{dir}}" })) paths.Add(UnityEditor.AssetDatabase.GUIDToAssetPath(g));
+paths.Sort(System.StringComparer.Ordinal);
+var sb = new System.Text.StringBuilder();
+foreach (var p in paths)
+{
+    var ti = (UnityEditor.TextureImporter)UnityEditor.AssetImporter.GetAtPath(p);
+    var a = ti.GetPlatformTextureSettings("Android");
+    sb.Append(System.IO.Path.GetFileName(p)).Append(':').Append(ti.maxTextureSize).Append(',').Append(ti.mipmapEnabled).Append(',').Append(ti.userData).Append(',').Append(a.overridden).Append(',').Append(a.maxTextureSize).Append(' ');
+}
+return sb.ToString().Trim();
+'@
+    Invoke-Eval 'imp-state.cs' $code.Replace('{{dir}}', $dir)
+}
+function Get-ImpMetas {
+    # A hash of every .meta file in the scratch import folders.
+    $all = @('Imp', 'ImpMixed', 'ImpText', 'ImpPresets') | ForEach-Object { Join-Path $scratch $_ } | Where-Object { Test-Path $_ } |
+        ForEach-Object { Get-ChildItem $_ -Recurse -File } | Sort-Object FullName | ForEach-Object { "$($_.Name)=$((Get-FileHash $_.FullName).Hash)" }
+    ($all -join ';')
+}
+function Get-PackGit {
+    if (-not (Test-Path (Join-Path $projectPath '.git'))) { return '(no git)' }
+    $ErrorActionPreference = 'Continue'
+    "$(& git -C $projectPath status --porcelain -- $impPack 2>$null)"
+}
+function Expect-PackClean([string]$what) { $g = Get-PackGit; Expect ($g -eq '' -or $g -eq '(no git)') "${what}: the committed pack changed: $g" }
+function Save-PresetFiles {
+    $h = @{}
+    foreach ($f in $presetFiles) { $p = Join-Path $projectPath ($f -replace '/', '\'); if (Test-Path $p) { $h[$f] = [IO.File]::ReadAllBytes($p) } }
+    $h
+}
+function Get-PresetSig {
+    # The default presets the Editor holds, as type|preset|filter|enabled; (quotes in filters as ').
+    $code = @'
+var sb = new System.Text.StringBuilder();
+foreach (var t in UnityEditor.Presets.Preset.GetAllDefaultTypes())
+    foreach (var d in UnityEditor.Presets.Preset.GetDefaultPresetsForType(t))
+        sb.Append(t.GetManagedTypeName()).Append('|').Append(d.preset == null ? "null" : UnityEditor.AssetDatabase.GetAssetPath(d.preset)).Append('|').Append(d.filter).Append('|').Append(d.enabled).Append(';');
+return sb.Length == 0 ? "(none)" : sb.ToString().Replace('"', '\'');
+'@
+    Invoke-Eval 'preset-sig.cs' $code
+}
+function Expect-PresetsBack($saved, [string]$sig0, [string]$git0, [string]$what) {
+    $sig1 = Get-PresetSig
+    $put = Restore-SettingsFiles $saved
+    Expect ($sig1 -eq $sig0) "${what}: the default presets were not put back ($sig0 -> $sig1)"
+    Expect ((Get-SettingsGit) -eq $git0) "${what}: git status of ProjectSettings changed"
+    $(if ($put.Count) { "defaults restored; $($put -join ', ') written back" } else { 'defaults restored, PresetManager.asset untouched' })
+}
+function Test-ImpFailures([string]$group, [object[]]$cases) {
+    # Each case: args, hint regex, exit, what. Importer settings, .meta files, default presets and their file, and the
+    # committed pack must not change.
+    $state0 = "$(Get-ImpState $scratchRel)"; $metas0 = Get-ImpMetas; $saved = Save-PresetFiles; $sig0 = Get-PresetSig; $git0 = Get-SettingsGit
+    $seen = @()
+    foreach ($c in $cases) {
+        $x = Invoke-Cli (@($group) + $c[0] + @('--format', 'json')) 60
+        Expect-P3Failure $x $c[1] $c[3] $c[2]
+        $seen += "$($c[3]) $($x.exit)"
+    }
+    Expect ("$(Get-ImpState $scratchRel)" -eq $state0) "a failed $group call changed import settings: $state0 -> $(Get-ImpState $scratchRel)"
+    Expect ((Get-ImpMetas) -eq $metas0) "a failed $group call changed a .meta or file in the scratch folders"
+    Expect ((Get-PresetSig) -eq $sig0) "a failed $group call changed the default presets"
+    $put = Restore-SettingsFiles $saved
+    Expect ($put.Count -eq 0) "a failed $group call wrote $($put -join ', ')"
+    Expect ((Get-SettingsGit) -eq $git0) "a failed $group call changed git status of ProjectSettings"
+    Expect-PackClean "a failed $group call"
+    , $seen
+}
+
+Add-Check 'imp.batch' $impRow 'cliext.import batch sets maxTextureSize and mipmapEnabled on the three scratch textures (subfolder included), then an Android override; TextureImporter and GetPlatformTextureSettings show them, the committed pack does not change' {
+    New-ImpTextures
+    $s0 = Get-ImpState
+    Expect ($s0 -match '^A\.png:2048,True,,False,\d+ B\.png:2048,True,,False,\d+ C\.png:2048,True,,False,\d+$') "scratch textures start at 2048, mipmaps on, no override: $s0"
+    $b = Invoke-Cli @('cliext.import', 'batch', '--folder', $impRel, '--type', 'Texture2D', '--set', 'maxTextureSize=512;mipmapEnabled=false', '--format', 'json')
+    Expect ($b.exit -eq 0 -and @($b.json).Count -eq 3 -and (@($b.json)[0].changes -join ';') -eq 'maxTextureSize: 2048 -> 512;mipmapEnabled: true -> false') "batch: exit $($b.exit): $(Short ($b.stdout + $b.stderr))"
+    $s1 = Get-ImpState
+    Expect ($s1 -match '^A\.png:512,False,,False,\d+ B\.png:512,False,,False,\d+ C\.png:512,False,,False,\d+$') "TextureImporter after batch: $s1"
+    $p = Invoke-Cli @('cliext.import', 'batch', '--folder', $impRel, '--type', 'Texture2D', '--filter', 'B.png', '--platform', 'Android', '--set', 'maxTextureSize=256', '--format', 'json')
+    Expect ($p.exit -eq 0 -and @($p.json).Count -eq 1 -and (@($p.json)[0].changes -join ';') -match 'Android maxTextureSize: \d+ -> 256;Android overridden: false -> true') "platform batch: exit $($p.exit): $(Short ($p.stdout + $p.stderr))"
+    $s2 = Get-ImpState
+    Expect ($s2 -match '^A\.png:512,False,,False,\d+ B\.png:512,False,,True,256 C\.png:512,False,,False,\d+$') "after the Android override: $s2"
+    Expect-PackClean 'batch'
+    "$s0 -> $s2; pack unchanged"
+}
+
+Add-Check 'imp.batch-dry-run' $impRow 'cliext.import batch --dry-run true lists each asset''s changes and changes nothing (importer values and .meta files as before); the same set on values the assets have exits 6' {
+    New-ImpTextures
+    $s0 = Get-ImpState; $m0 = Get-ImpMetas
+    $d = Invoke-Cli @('cliext.import', 'batch', '--folder', $impRel, '--type', 'Texture2D', '--set', 'maxTextureSize=1024;textureType=Sprite', '--dry-run', 'true', '--format', 'json')
+    Expect ($d.exit -eq 0 -and @($d.json).Count -eq 3 -and (@($d.json)[2].changes -join ';') -eq 'maxTextureSize: 2048 -> 1024;textureType: Default -> Sprite' -and "$($d.stderr)$($d.stdout)" -notmatch 'error') "dry run: exit $($d.exit): $(Short ($d.stdout + $d.stderr))"
+    Expect ((Get-ImpState) -eq $s0) "a dry run changed import settings: $(Get-ImpState)"
+    Expect ((Get-ImpMetas) -eq $m0) 'a dry run changed a .meta file'
+    $n = Invoke-Cli @('cliext.import', 'batch', '--folder', $impRel, '--type', 'Texture2D', '--set', 'maxTextureSize=2048;mipmapEnabled=true', '--format', 'json')
+    Expect-P3Failure $n 'already have maxTextureSize=2048;mipmapEnabled=true: nothing would change' 'a set the assets have' 6
+    Expect ((Get-ImpMetas) -eq $m0) 'a set that changes nothing wrote a .meta file'
+    Expect-PackClean 'dry run'
+    "3 assets would change (maxTextureSize, textureType); nothing changed; values they have exit 6"
+}
+
+Add-Check 'imp.batch-errors' $impRow 'cliext.import batch with a missing or outside folder, a file as the folder, an unknown type, nothing matching, unknown settings, bad numbers, bools, enums and texture sizes, an unknown platform, a mixed folder and a platform on a non-texture exits 13 or 2 with the fix, and changes nothing' {
+    New-ImpTextures
+    $seen = Test-ImpFailures 'cliext.import' @(
+        @(@('batch', '--folder', 'Assets/NoSuchFolder', '--set', 'maxTextureSize=1024'), "--folder: no folder 'Assets/NoSuchFolder'\. Check the path .*asset create_folder", 13, 'a missing folder'),
+        @(@('batch', '--folder', 'C:/Temp', '--set', 'maxTextureSize=1024'), "--folder 'C:/Temp' isn't under Assets/ or Packages/", 2, 'a folder outside the project'),
+        @(@('batch', '--folder', "$impRel/A.png", '--set', 'maxTextureSize=1024'), "is a file, not a folder: give the folder that holds it .*--filter A\.png", 2, 'a file as the folder'),
+        @(@('batch', '--folder', $impRel, '--type', 'Texure2D', '--set', 'maxTextureSize=1024'), "--type: no asset type 'Texure2D'\. Did you mean: Texture2D", 2, 'a misspelled type'),
+        @(@('batch', '--folder', $impRel, '--filter', '*.tga', '--set', 'maxTextureSize=1024'), "No assets under '.*Imp' matching --filter \*\.tga: nothing to set", 13, 'a filter nothing matches'),
+        @(@('batch', '--folder', $impRel, '--set', 'maxTexureSize=1024'), "TextureImporter has no setting 'maxTexureSize'\. Did you mean: maxTextureSize\? Settings: .*mipmapEnabled", 2, 'a misspelled setting'),
+        @(@('batch', '--folder', $impRel, '--set', 'globalScale=2'), "TextureImporter has no setting 'globalScale'", 2, 'a model setting on textures'),
+        @(@('batch', '--folder', $impRel, '--set', 'maxTextureSize=big'), "maxTextureSize: 'big' isn't a Int32 value: give a number", 2, 'a size that is not a number'),
+        @(@('batch', '--folder', $impRel, '--set', 'maxTextureSize=1000'), 'maxTextureSize: 1000 isn''t a texture size: give one of 32, 64', 2, 'a size that is not a power of two'),
+        @(@('batch', '--folder', $impRel, '--set', 'maxTextureSize=1024;mipmapEnabled=maybe'), "mipmapEnabled: 'maybe' isn't a Boolean value: give true or false", 2, 'a bool that is not one (after a good size)'),
+        @(@('batch', '--folder', $impRel, '--set', 'textureType=Normal'), "textureType: 'Normal' isn't a TextureImporterType\. Did you mean: NormalMap\? Use one of: Default, NormalMap", 2, 'an enum name that is close'),
+        @(@('batch', '--folder', $impRel, '--set', 'maxTextureSize'), "'maxTextureSize' isn't name=value", 2, 'a setting without a value'),
+        @(@('batch', '--folder', $impRel, '--set', 'maxTextureSize=512;MaxTextureSize=256'), '--set names MaxTextureSize twice', 2, 'a setting given twice'),
+        @(@('batch', '--folder', $impRel, '--platform', 'Andriod', '--set', 'maxTextureSize=512'), "--platform: no texture platform 'Andriod'\. Did you mean: Android\? Platforms: ", 2, 'a misspelled platform'),
+        @(@('batch', '--folder', "$scratchRel/ImpMixed", '--set', 'maxTextureSize=512'), "Notes\.txt' \(a TextAsset\) has no setting 'maxTextureSize', which the TextureImporter assets in the batch have: narrow the batch with --type Texture2D or --filter\. Nothing was changed", 2, 'a mixed folder: the .txt after the texture'),
+        @(@('batch', '--folder', "$scratchRel/ImpMixed", '--platform', 'Android', '--set', 'maxTextureSize=512'), '--platform overrides are for textures, and .*Notes\.txt.*add --type Texture2D', 2, 'a platform override on a mixed folder'),
+        @(@('batch', '--folder', $impRel, '--set', 'maxTextureSize=1024', '--dry-run', 'maybe'), 'expects Boolean|maybe', 2, '--dry-run not a bool')
+    )
+    "$($seen.Count) refusals with the fix; nothing changed"
+}
+
+Add-Check 'imp.batch-rollback' $impRow 'cliext.import batch that fails part-way (B.png.meta locked against writes while A and C change) exits 6, says the batch was put back, and leaves every importer value and .meta file as before' {
+    New-ImpTextures
+    $s0 = Get-ImpState; $m0 = Get-ImpMetas
+    $meta = Join-Path $scratch 'Imp\B.png.meta'
+    $lock = [IO.File]::Open($meta, 'Open', 'Read', 'Read')
+    try { $r = Invoke-Cli @('cliext.import', 'batch', '--folder', $impRel, '--type', 'Texture2D', '--set', 'maxTextureSize=1024', '--format', 'json') 90 }
+    finally { $lock.Close() }
+    Expect-P3Failure $r "Unity didn't keep maxTextureSize = 1024 on '.*B\.png'.*put back as they were.*nothing was changed" 'a batch with a locked .meta' 6
+    Expect ("$($r.stdout)" -notmatch 'changes') "a failed batch still listed changes: $(Short $r.stdout)"
+    $s1 = Get-ImpState
+    Expect ($s1 -eq $s0) "the batch was not put back: $s0 -> $s1"
+    Expect ((Get-ImpMetas) -eq $m0) 'the batch left a .meta file changed'
+    Expect-PackClean 'rollback'
+    "exit 6: $(Short $r.stderr 110); $s1"
+}
+
+Add-Check 'imp.presets-defaults' $impRow 'cliext.presets create makes a preset from A.png, set_default makes it the default for the Imp folder (Preset.GetDefaultPresetsForType and list show it), audit names B (changed by batch) and not A, exit 6; set_default again exits 6; removed in a finally, PresetManager.asset as before' {
+    New-ImpTextures
+    $preset = "$scratchRel/ImpPresets/Tex2048.preset"
+    $c = Invoke-Cli @('cliext.presets', 'create', '--from', "$impRel/A.png", '--out', $preset, '--format', 'json')
+    Expect ($c.exit -eq 0 -and $c.json.preset -eq $preset -and $c.json.type -eq 'UnityEditor.TextureImporter') "create: exit $($c.exit): $(Short ($c.stdout + $c.stderr))"
+    $e = Invoke-Eval 'preset-load.cs' "var p = UnityEditor.AssetDatabase.LoadAssetAtPath<UnityEditor.Presets.Preset>(`"$preset`"); return p == null ? `"none`" : p.GetPresetType().GetManagedTypeName() + `"|`" + p.CanBeAppliedTo(UnityEditor.AssetImporter.GetAtPath(`"$impRel/B.png`"));"
+    Expect ($e -eq 'UnityEditor.TextureImporter|True') "the saved preset: $e"
+    $b = Invoke-Cli @('cliext.import', 'batch', '--folder', $impRel, '--filter', 'B.png', '--set', 'maxTextureSize=256', '--format', 'json')
+    Expect ($b.exit -eq 0) "batch B: exit $($b.exit): $(Short ($b.stdout + $b.stderr))"
+    $saved = Save-PresetFiles; $sig0 = Get-PresetSig; $git0 = Get-SettingsGit
+    try {
+        $s = Invoke-Cli @('cliext.presets', 'set_default', '--preset', $preset, '--filter', $impRel, '--format', 'json')
+        Expect ($s.exit -eq 0 -and $s.json.type -eq 'UnityEditor.TextureImporter' -and @($s.json.defaults)[0].preset -eq $preset -and @($s.json.defaults)[0].filter -eq "glob:`"$impRel/**`"") "set_default: exit $($s.exit): $(Short ($s.stdout + $s.stderr))"
+        $sig1 = Get-PresetSig
+        Expect ($sig1 -like "*UnityEditor.TextureImporter|$preset|glob:'$impRel/**'|True;*") "Preset.GetDefaultPresetsForType: $sig1"
+        $l = Invoke-Cli @('cliext.presets', 'list', '--format', 'json')
+        Expect ($l.exit -eq 0 -and @(@($l.json) | Where-Object { $_.preset -eq $preset -and $_.enabled }).Count -eq 1) "list: $(Short $l.stdout)"
+        $again = Invoke-Cli @('cliext.presets', 'set_default', '--preset', $preset, '--filter', $impRel, '--format', 'json')
+        Expect-P3Failure $again 'is already the first default for UnityEditor.TextureImporter with filter .*nothing would change' 'set_default twice' 6
+        $a = Invoke-Cli @('cliext.presets', 'audit', '--folder', $impRel, '--format', 'json')
+        Expect-P3Failure $a '1 of 3 asset\(s\) under .* with default presets break them\. Fix them with cliext\.presets apply' 'audit with B changed' 6
+        $rec = @($a.json)
+        Expect ($rec.Count -eq 1 -and $rec[0].path -eq "$impRel/B.png" -and (@($rec[0].differences) -join ';') -match 'm_MaxTextureSize: is 256, preset 2048') "audit records: $(Short $a.stdout)"
+        $ok = Invoke-Cli @('cliext.presets', 'audit', '--folder', "$impRel/Sub", '--format', 'json')
+        Expect ($ok.exit -eq 0 -and "$($ok.stdout)".Trim() -eq '') "audit of Sub (C matches): exit $($ok.exit): $(Short ($ok.stdout + $ok.stderr))"
+    }
+    finally { $rm = Invoke-Cli @('cliext.presets', 'set_default', '--preset', $preset, '--remove', 'true', '--format', 'json') }
+    Expect ($rm.exit -eq 0 -and @($rm.json.defaults | Where-Object { $_.preset -eq $preset }).Count -eq 0) "remove: exit $($rm.exit): $(Short ($rm.stdout + $rm.stderr))"
+    $rm2 = Invoke-Cli @('cliext.presets', 'set_default', '--preset', $preset, '--remove', 'true', '--format', 'json')
+    Expect-P3Failure $rm2 "isn't a default preset: nothing would change\. cliext\.presets list lists the defaults" 'remove twice' 6
+    $restored = Expect-PresetsBack $saved $sig0 $git0 'set_default'
+    Expect-PackClean 'presets'
+    "preset $($c.json.properties) properties; default for $impRel; audit: B maxTextureSize 256 vs 2048; $restored"
+}
+
+Add-Check 'imp.presets-apply' $impRow 'cliext.presets apply --dry-run lists B and C (changed by batch) and changes nothing; apply sets them back to the preset (TextureImporter shows 2048, mipmaps on) and keeps B''s per-asset userData; apply again exits 6' {
+    New-ImpTextures
+    $preset = "$scratchRel/ImpPresets/Tex2048.preset"
+    $c = Invoke-Cli @('cliext.presets', 'create', '--from', "$impRel/A.png", '--out', $preset, '--format', 'json')
+    Expect ($c.exit -eq 0) "create: exit $($c.exit): $(Short ($c.stdout + $c.stderr))"
+    foreach ($n in 'B.png', 'C.png') {
+        $b = Invoke-Cli @('cliext.import', 'batch', '--folder', $impRel, '--filter', $n, '--set', 'maxTextureSize=256;mipmapEnabled=false', '--format', 'json')
+        Expect ($b.exit -eq 0) "batch ${n}: exit $($b.exit): $(Short ($b.stdout + $b.stderr))"
+    }
+    $u = Invoke-Cli @('cliext.import', 'batch', '--folder', $impRel, '--filter', 'B.png', '--set', 'userData=keep-me', '--format', 'json')
+    Expect ($u.exit -eq 0) "userData: exit $($u.exit): $(Short ($u.stdout + $u.stderr))"
+    $s0 = Get-ImpState; $m0 = Get-ImpMetas
+    Expect ($s0 -match '^A\.png:2048,True,,False,\d+ B\.png:256,False,keep-me,False,\d+ C\.png:256,False,,False,\d+$') "before apply: $s0"
+    $d = Invoke-Cli @('cliext.presets', 'apply', '--preset', $preset, '--folder', $impRel, '--dry-run', 'true', '--format', 'json')
+    Expect ($d.exit -eq 0 -and (@($d.json).path -join ',') -eq "$impRel/B.png,$impRel/Sub/C.png" -and (@(@($d.json)[0].differences) -join ';') -match 'm_MaxTextureSize: is 256, preset 2048' -and (@(@($d.json)[0].differences) -join ';') -notmatch 'm_UserData') "dry run: exit $($d.exit): $(Short ($d.stdout + $d.stderr))"
+    Expect ((Get-ImpState) -eq $s0 -and (Get-ImpMetas) -eq $m0) 'a dry run changed something'
+    $a = Invoke-Cli @('cliext.presets', 'apply', '--preset', $preset, '--folder', $impRel, '--format', 'json')
+    Expect ($a.exit -eq 0 -and @($a.json).Count -eq 2) "apply: exit $($a.exit): $(Short ($a.stdout + $a.stderr))"
+    $s1 = Get-ImpState
+    Expect ($s1 -match '^A\.png:2048,True,,False,\d+ B\.png:2048,True,keep-me,False,\d+ C\.png:2048,True,,False,\d+$') "after apply: $s1"
+    $again = Invoke-Cli @('cliext.presets', 'apply', '--preset', $preset, '--folder', $impRel, '--format', 'json')
+    Expect-P3Failure $again "All 3 asset\(s\) under .* that take '.*Tex2048\.preset' already match it: nothing would change" 'apply twice' 6
+    Expect-PackClean 'apply'
+    "$s0 -> $s1 (userData kept)"
+}
+
+Add-Check 'imp.presets-errors' $impRow 'cliext.presets create, set_default, apply and audit with missing or wrong-type presets, assets and folders, paths outside the project, an existing --out, a preset for another importer, a folder nothing takes it in and a bad --limit exit 13, 2 or 6 with the fix, and change nothing' {
+    New-ImpTextures
+    $preset = "$scratchRel/ImpPresets/Tex.preset"; $txtPreset = "$scratchRel/ImpPresets/Text.preset"
+    $c1 = Invoke-Cli @('cliext.presets', 'create', '--from', "$impRel/A.png", '--out', $preset, '--format', 'json')
+    $c2 = Invoke-Cli @('cliext.presets', 'create', '--from', "$scratchRel/ImpText/Readme.txt", '--out', $txtPreset, '--format', 'json')
+    Expect ($c1.exit -eq 0 -and $c2.exit -eq 0 -and $c2.json.type -match 'TextScriptImporter') "presets: $($c1.exit) $($c2.exit) $(Short ($c2.stdout + $c2.stderr))"
+    $seen = Test-ImpFailures 'cliext.presets' @(
+        @(@('create', '--from', "$impRel/Nope.png", '--out', "$scratchRel/ImpPresets/X.preset"), "--from: no asset at '.*Nope\.png'\. Check the path", 13, 'create from a missing asset'),
+        @(@('create', '--from', "$impRel/Sub", '--out', "$scratchRel/ImpPresets/X.preset"), "--from '.*Sub' is a folder: give an asset in it", 2, 'create from a folder'),
+        @(@('create', '--from', "$impRel/A.png", '--out', 'Assets/NoSuchFolder/X.preset'), "--out: no folder 'Assets/NoSuchFolder'\. Create it first \(asset create_folder", 13, 'create into a missing folder'),
+        @(@('create', '--from', "$impRel/A.png", '--out', 'C:/Temp/X.preset'), "--out 'C:/Temp/X\.preset' isn't under Assets/ or Packages/", 2, 'create outside the project'),
+        @(@('create', '--from', "$impRel/A.png", '--out', $preset), "--out '.*Tex\.preset' already exists: pick another path, or delete it first", 6, 'create over an existing preset'),
+        @(@('set_default', '--preset', "$scratchRel/ImpPresets/None.preset"), "--preset: no preset at '.*None\.preset'\. Make one with cliext\.presets create", 13, 'set_default of a missing preset'),
+        @(@('set_default', '--preset', "$impRel/A.png"), "--preset '.*A\.png' is a Texture2D, not a Preset", 2, 'set_default of a texture'),
+        @(@('set_default', '--preset', $preset, '--filter', 'Assets/NoSuchFolder'), "--filter: no folder 'Assets/NoSuchFolder'\. Create it .*or pass a search filter", 13, 'set_default for a missing folder'),
+        @(@('set_default', '--preset', $preset, '--filter', 'D:/Art'), "--filter 'D:/Art' isn't under Assets/ or Packages/", 2, 'set_default for a folder outside the project'),
+        @(@('set_default', '--preset', $preset, '--remove', 'true'), "isn't a default preset: nothing would change", 6, 'remove a preset that is not a default'),
+        @(@('apply', '--preset', "$scratchRel/ImpPresets/None.preset", '--folder', $impRel), "--preset: no preset at", 13, 'apply a missing preset'),
+        @(@('apply', '--preset', "$impRel/A.png", '--folder', $impRel), 'is a Texture2D, not a Preset', 2, 'apply a texture as the preset'),
+        @(@('apply', '--preset', $preset, '--folder', 'Assets/NoSuchFolder'), "--folder: no folder 'Assets/NoSuchFolder'", 13, 'apply to a missing folder'),
+        @(@('apply', '--preset', $preset, '--folder', $impRel, '--filter', '*.tga'), 'No assets under .* matching --filter \*\.tga: nothing to apply the preset to', 13, 'apply where nothing matches'),
+        @(@('apply', '--preset', $txtPreset, '--folder', $impRel), "is a preset of UnityEditor\.TextScriptImporter, and no asset under .* takes it \(they use TextureImporter\): give a preset made from one of them", 2, 'a preset for another importer type'),
+        @(@('apply', '--preset', $preset, '--folder', "$scratchRel/ImpText"), 'no asset under .*ImpText.* takes it \(they use TextScriptImporter\)', 2, 'a texture preset on a folder of text'),
+        @(@('audit', '--folder', 'Assets/NoSuchFolder'), "--folder: no folder 'Assets/NoSuchFolder'", 13, 'audit a missing folder'),
+        @(@('audit', '--folder', 'C:/Temp'), "isn't under Assets/ or Packages/", 2, 'audit outside the project'),
+        @(@('audit', '--folder', $impRel, '--limit', '0'), '--limit 0: give 1 or more', 2, 'audit with --limit 0')
+    )
+    "$($seen.Count) refusals with the fix; nothing changed"
+}
+
+# --- cliext.package ---------------------------------------------------------------------------------------------------
+
+# The package is made here: AssetDatabase.ExportPackage of a scratch folder (a texture copy and a .txt) into the temp
+# work folder; the folder is then deleted, so the import has to create it, with the same GUIDs. The imported folder
+# is deleted at the end of each check (and with the scratch folder at the end of the run). Unity's own import stops
+# at a "Missing signature" dialog for an unsigned package: the checks count those in the dialog journal.
+$pkgRow = 'cliext.package'
+$pkgRel = "$scratchRel/PkgSrc"
+$pkgFile = Join-Path $work 'cliext-test.unitypackage'
+
+function New-TestPackage {
+    New-ScratchFolder
+    $code = @'
+string dir = "{{dir}}";
+UnityEditor.AssetDatabase.DeleteAsset(dir);
+UnityEditor.AssetDatabase.CreateFolder("Assets/_CliextTests/CliTest", "PkgSrc");
+UnityEditor.AssetDatabase.CopyAsset("{{pack}}/Tx_Burst_radial_03.png", dir + "/PkgTex.png");
+System.IO.File.WriteAllText(dir + "/PkgNotes.txt", "from the package");
+UnityEditor.AssetDatabase.ImportAsset(dir + "/PkgNotes.txt");
+UnityEditor.AssetDatabase.ExportPackage(dir, @"{{out}}", UnityEditor.ExportPackageOptions.Recurse);
+string guids = UnityEditor.AssetDatabase.AssetPathToGUID(dir) + "," + UnityEditor.AssetDatabase.AssetPathToGUID(dir + "/PkgTex.png") + "," + UnityEditor.AssetDatabase.AssetPathToGUID(dir + "/PkgNotes.txt");
+UnityEditor.AssetDatabase.DeleteAsset(dir);
+return guids;
+'@
+    $g = Invoke-Eval 'pkg-new.cs' $code.Replace('{{dir}}', $pkgRel).Replace('{{pack}}', $impPack).Replace('{{out}}', $pkgFile)
+    Expect ((Test-Path $pkgFile) -and $g -match '^[0-9a-f]{32},[0-9a-f]{32},[0-9a-f]{32}$') "test package: $g"
+    Expect (-not (Test-Path (Join-Path $scratch 'PkgSrc'))) 'the exported folder was not deleted'
+    $g
+}
+function Get-PkgGuids {
+    Invoke-Eval 'pkg-guids.cs' "string d = `"$pkgRel`"; return UnityEditor.AssetDatabase.AssetPathToGUID(d) + `",`" + UnityEditor.AssetDatabase.AssetPathToGUID(d + `"/PkgTex.png`") + `",`" + UnityEditor.AssetDatabase.AssetPathToGUID(d + `"/PkgNotes.txt`") + `"|`" + (UnityEditor.AssetDatabase.LoadAssetAtPath<UnityEngine.Texture2D>(d + `"/PkgTex.png`") != null);"
+}
+function Get-SignatureDialogs {
+    $j = Join-Path $projectPath 'Library\CLIExtensions\dialogs.jsonl'
+    if (-not (Test-Path $j)) { return 0 }
+    @(Get-Content $j | Where-Object { $_ -match '"title":"Missing signature"' -and $_ -notmatch '"detail":"MissingSignatureAnswer' }).Count
+}
+function Remove-PkgImport { [void](Invoke-Eval 'pkg-remove.cs' "UnityEditor.AssetDatabase.DeleteAsset(`"$pkgRel`"); return `"ok`";") }
+
+Add-Check 'pkg.import' $pkgRow 'cliext.package import of a package exported from scratch: --dry-run lists the folder, texture and .txt as created and writes nothing; the import creates them with the package''s GUIDs (AssetDatabase and disk), opens no dialog and returns in time; a second import exits 6; a changed file is listed as replaced; deleted after' {
+    $guids = New-TestPackage
+    $dialogs0 = Get-SignatureDialogs
+    try {
+        $d = Invoke-Cli @('cliext.package', 'import', '--path', $pkgFile, '--dry-run', 'true', '--format', 'json') 60
+        Expect ($d.exit -eq 0 -and $d.json.dryRun -eq $true -and (@($d.json.created) -join ',') -eq "$pkgRel,$pkgRel/PkgNotes.txt,$pkgRel/PkgTex.png") "dry run: exit $($d.exit): $(Short ($d.stdout + $d.stderr))"
+        Expect (-not (Test-Path (Join-Path $scratch 'PkgSrc'))) 'a dry run wrote the package''s files'
+        $i = Invoke-Cli @('cliext.package', 'import', '--path', $pkgFile, '--format', 'json') 60
+        Expect ($i.exit -ne 124) 'import timed out (a dialog?)'
+        Expect ($i.exit -eq 0 -and $i.json.assets -eq 3 -and @($i.json.created).Count -eq 3) "import: exit $($i.exit): $(Short ($i.stdout + $i.stderr))"
+        Expect ((Test-Path (Join-Path $scratch 'PkgSrc\PkgTex.png')) -and (Test-Path (Join-Path $scratch 'PkgSrc\PkgNotes.txt.meta'))) 'the files are not on disk'
+        $g = Get-PkgGuids
+        Expect ($g -eq "$guids|True") "AssetDatabase after import: $g, package GUIDs $guids"
+        Expect ((Get-SignatureDialogs) -eq $dialogs0) 'a Missing signature dialog opened'
+        $again = Invoke-Cli @('cliext.package', 'import', '--path', $pkgFile, '--format', 'json') 60
+        Expect-P3Failure $again "All 3 asset\(s\) in '.*cliext-test\.unitypackage' are already in the project, unchanged: nothing would change" 'import twice' 6
+        [IO.File]::WriteAllText((Join-Path $scratch 'PkgSrc\PkgNotes.txt'), 'changed here')
+        $r = Invoke-Cli @('cliext.package', 'import', '--path', $pkgFile, '--format', 'json') 60
+        Expect ($r.exit -eq 0 -and (@($r.json.replaced) -join ',') -eq "$pkgRel/PkgNotes.txt" -and $r.json.unchanged -eq 2) "reimport over a changed file: exit $($r.exit): $(Short ($r.stdout + $r.stderr))"
+        Expect ([IO.File]::ReadAllText((Join-Path $scratch 'PkgSrc\PkgNotes.txt')) -eq 'from the package') 'the changed file was not replaced'
+        $st = Invoke-Cli @('cliext', 'status', '--format', 'json') 30
+        Expect ($st.exit -eq 0) "the Editor stopped answering after the import: $(Short ($st.stdout + $st.stderr))"
+    }
+    finally { Remove-PkgImport }
+    Expect (-not (Test-Path (Join-Path $scratch 'PkgSrc'))) 'the imported folder was not deleted'
+    Expect-PackClean 'package import'
+    "created 3 with the package's GUIDs in $($i.ms) ms, no dialog; again exit 6; changed .txt replaced; removed"
+}
+
+Add-Check 'pkg.errors' $pkgRow 'cliext.package import of a missing file, a folder, a .png, a text file and a gzip file named .unitypackage, and a package with a path outside Assets/ exits 13 or 2 with the fix, opens no dialog and writes nothing' {
+    New-ScratchFolder
+    $dialogs0 = Get-SignatureDialogs
+    $text = Write-WorkFile 'not-a-package.unitypackage' 'just text'
+    $gz = Join-Path $work 'gzip-only.unitypackage'
+    $fs = [IO.File]::Create($gz); $z = New-Object IO.Compression.GZipStream($fs, [IO.Compression.CompressionMode]::Compress); $bytes = [Text.Encoding]::ASCII.GetBytes(('x' * 700)); $z.Write($bytes, 0, $bytes.Length); $z.Close(); $fs.Close()
+    # A tar.gz whose one asset is at ../Outside.txt.
+    $evil = Join-Path $work 'outside.unitypackage'
+    $ms = New-Object IO.MemoryStream
+    $entry = {
+        param($name, [byte[]]$data)
+        $h = New-Object byte[] 512
+        [Text.Encoding]::ASCII.GetBytes($name).CopyTo($h, 0)
+        [Text.Encoding]::ASCII.GetBytes('0000644').CopyTo($h, 100)
+        [Text.Encoding]::ASCII.GetBytes([Convert]::ToString($data.Length, 8).PadLeft(11, '0')).CopyTo($h, 124)
+        $h[156] = [byte][char]'0'
+        $ms.Write($h, 0, 512); $ms.Write($data, 0, $data.Length); $pad = (512 - $data.Length % 512) % 512; $ms.Write((New-Object byte[] $pad), 0, $pad)
+    }
+    & $entry '0123456789abcdef0123456789abcdef/pathname' ([Text.Encoding]::ASCII.GetBytes('../Outside.txt'))
+    & $entry '0123456789abcdef0123456789abcdef/asset' ([Text.Encoding]::ASCII.GetBytes('outside'))
+    $ms.Write((New-Object byte[] 1024), 0, 1024)
+    $fs = [IO.File]::Create($evil); $z = New-Object IO.Compression.GZipStream($fs, [IO.Compression.CompressionMode]::Compress); $raw = $ms.ToArray(); $z.Write($raw, 0, $raw.Length); $z.Close(); $fs.Close()
+    $before = @(Get-ChildItem $scratch -Recurse -Force | ForEach-Object FullName) -join ';'
+    $cases = @(
+        @(@('import', '--path', (Join-Path $work 'none.unitypackage')), "--path: no file at '.*none\.unitypackage'\. Give the path of a \.unitypackage.*ExportPackage", 13, 'a missing file'),
+        @(@('import', '--path', $work), "is a folder: give the \.unitypackage file in it", 2, 'a folder'),
+        @(@('import', '--path', (Join-Path $projectPath 'Assets\ThirdParty\VFXTexturePack\Tx_Burst_radial_01.png')), "isn't a \.unitypackage \(it ends in '\.png'\): give a \.unitypackage file\. For loose files use asset import", 2, 'a .png'),
+        @(@('import', '--path', $text), "isn't a \.unitypackage: it isn't a gzip archive\. Export one with AssetDatabase\.ExportPackage", 2, 'a text file named .unitypackage'),
+        @(@('import', '--path', $gz), "isn't a \.unitypackage: it is a gzip file but not a tar archive", 2, 'a gzip file that is not a tar'),
+        @(@('import', '--path', $evil), "has an asset at '\.\./Outside\.txt', outside Assets/: it can't be imported here\. Nothing was imported", 2, 'a package with a path outside Assets/')
+    )
+    $seen = @()
+    foreach ($c in $cases) {
+        $x = Invoke-Cli (@('cliext.package') + $c[0] + @('--format', 'json')) 60
+        Expect-P3Failure $x $c[1] $c[3] $c[2]
+        $seen += "$($c[3]) $($x.exit)"
+    }
+    Expect (-not (Test-Path (Join-Path $projectPath 'Outside.txt'))) 'the outside path was written'
+    Expect ((@(Get-ChildItem $scratch -Recurse -Force | ForEach-Object FullName) -join ';') -eq $before) 'a refused import wrote into the scratch folder'
+    Expect ((Get-SignatureDialogs) -eq $dialogs0) 'a Missing signature dialog opened'
+    Expect-PackClean 'package errors'
+    "$($seen.Count) refusals with the fix; nothing written, no dialog"
+}
+
 # --- Cross-cutting ----------------------------------------------------------------------------------------------------
 
 $batchEdits = @(
@@ -3678,6 +4057,7 @@ if (-not $T3Ready) {
         # P3 rows
         'cliext.cinemachine' = '^cliext\.cinemachine '; 'cliext.splines' = '^cliext\.splines '
         'cliext.navmesh' = '^cliext\.navmesh '; 'cliext.physics' = '^cliext\.physics '; 'cliext.quality' = '^cliext\.quality '
+        'cliext.import, cliext.presets' = '^cliext\.(import|presets) '; 'cliext.package' = '^cliext\.package '
     }
     $q = Invoke-Cli @('--query', 'cliext', '--format', 'json') 60
     $all = @()

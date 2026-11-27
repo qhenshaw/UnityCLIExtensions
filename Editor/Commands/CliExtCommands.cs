@@ -172,18 +172,64 @@ namespace UnityCLIExtensions
         // ---------------------------------------------------------------------------------------------------------
         // cliext.package, cliext.scene
 
-        [CliGroupCommand(PackageGroup, "Import a .unitypackage without the Import dialog (every asset in it is imported).", Tags = new[] { "editor", "cliext", "assets/import" }, Effect = CommandEffect.Destructive)]
-        internal static ExitCode Import(CommandContext cmd, [CliArg("path", "Path to the .unitypackage", Required = true)] string path)
+        [CliGroupCommand(PackageGroup, "Import a .unitypackage with no dialog: every asset in it is written into the project (at its path in the package, or where its GUID already is) and imported before this returns. " +
+                                       "It reads the package itself, so neither the Import window nor Unity's \"Missing signature\" dialog opens. Returns the created, replaced and unchanged paths; --dry-run true lists them and changes nothing. " +
+                                       "Everything is checked first, and a write that fails part-way is undone. A package with scripts starts a compile: wait with cliext-wait.ps1 after. " +
+                                       "Exit 13 when the file is missing, 2 when it isn't a .unitypackage or has paths outside Assets/ (or an existing Packages/ folder), 6 when every asset is already there unchanged.",
+            Tags = new[] { "editor", "cliext", "assets/import" }, Effect = CommandEffect.Destructive)]
+        internal static ExitCode Import(
+            CommandContext cmd,
+            [CliArg("path", "Path to the .unitypackage", Required = true)] string path,
+            [CliArg("dry-run", "List what would be created and replaced, and change nothing")] bool dryRun = false)
         {
-            string full = Path.GetFullPath(path);
+            string full = Path.GetFullPath(string.IsNullOrWhiteSpace(path) ? "." : path.Trim());
+            if (Directory.Exists(full))
+            {
+                cmd.Fail($"--path '{full}' is a folder: give the .unitypackage file in it.");
+                return ExitCode.InvalidUsage;
+            }
             if (!File.Exists(full))
             {
-                cmd.Fail($"No file at '{full}'.");
+                cmd.Fail($"--path: no file at '{full}'. Give the path of a .unitypackage (relative paths start at the project folder); make one with AssetDatabase.ExportPackage (Assets > Export Package).");
                 return ExitCode.NotFound;
             }
-            AssetDatabase.ImportPackage(full, false);
-            cmd.Result.Write(new { imported = full });
-            return ExitCode.Success;
+            if (!string.Equals(Path.GetExtension(full), ".unitypackage", StringComparison.OrdinalIgnoreCase))
+            {
+                cmd.Fail($"--path '{full}' isn't a .unitypackage (it ends in '{Path.GetExtension(full)}'): give a .unitypackage file. For loose files use asset import.");
+                return ExitCode.InvalidUsage;
+            }
+            string temp = Path.Combine(Path.GetTempPath(), "cliext-package-" + Guid.NewGuid().ToString("N"));
+            try
+            {
+                var entries = UnityCLIExtensions.Assets.UnityPackageFile.Read(full, Path.Combine(temp, "assets"));
+                var result = UnityCLIExtensions.Assets.UnityPackageFile.Import(entries, Path.Combine(temp, "backup"), dryRun);
+                if (result.created.Count + result.replaced.Count == 0)
+                {
+                    cmd.Fail($"All {entries.Count} asset(s) in '{full}' are already in the project, unchanged: nothing would change.");
+                    return ExitCode.Failed;
+                }
+                cmd.Result.Write(new
+                {
+                    package = full, dryRun, assets = entries.Count,
+                    created = result.created, replaced = result.replaced, unchanged = result.unchanged.Count,
+                    atExistingGuid = result.movedByGuid.Count > 0 ? result.movedByGuid : null,
+                });
+                return ExitCode.Success;
+            }
+            catch (Exception e) when (e is ArgumentException)
+            {
+                cmd.Fail(e.Message);
+                return UnityCLIExtensions.Animation.AnimationErrors.Exit(e);
+            }
+            catch (IOException e)
+            {
+                cmd.Fail(e.Message);
+                return ExitCode.Failed;
+            }
+            finally
+            {
+                try { if (Directory.Exists(temp)) Directory.Delete(temp, true); } catch (IOException) { }
+            }
         }
 
         [CliGroupCommand(SceneGroup, "Save open scenes that have unsaved changes and a file (every one, or only --scene), so tests, switching scenes, building or quitting have nothing to prompt about. " +
