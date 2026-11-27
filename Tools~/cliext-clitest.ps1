@@ -2608,6 +2608,402 @@ return UnityEngine.UIElements.UQueryExtensions.Q<UnityEngine.UIElements.Toggle>(
     "tree and query; click ran the handler; Toggle, Slider, DropdownField, TextField and Label set and read back; $($seen.Count + 2) failures with the fix; back in Edit mode, scene clean"
 }
 
+# --- cliext.cinemachine -----------------------------------------------------------------------------------------------
+
+# Edit mode checks run in a new untitled scene (Open-P3Scene: a tagged Main Camera with no brain, CliTestPlayer and
+# CliTestPlain), made with the CLI's own create, then discarded by Close-P3Scene, which reopens the scene that was open
+# from disk. The Play mode check uses that saved scene and makes its cameras in Play mode, so nothing is saved.
+$cmRow = 'cliext.cinemachine'
+
+function Open-P3Scene {
+    $scenes = Invoke-Cli @('scene', 'list_open', '--format', 'json')
+    Expect (-not (@($scenes.json) | Where-Object { $_.isDirty })) "an open scene has unsaved changes: $(Short $scenes.stdout)"
+    $code = @'
+string before = UnityEngine.SceneManagement.SceneManager.GetActiveScene().path;
+UnityEditor.SceneManagement.EditorSceneManager.NewScene(UnityEditor.SceneManagement.NewSceneSetup.EmptyScene, UnityEditor.SceneManagement.NewSceneMode.Single);
+var cam = new UnityEngine.GameObject("Main Camera"); cam.tag = "MainCamera"; cam.AddComponent<UnityEngine.Camera>(); cam.transform.position = new UnityEngine.Vector3(0, 1, -10);
+new UnityEngine.GameObject("CliTestPlayer").transform.position = new UnityEngine.Vector3(0, 0, 5);
+new UnityEngine.GameObject("CliTestPlain");
+return "ok|" + before;
+'@
+    $r = Invoke-Cli @('script', 'eval', '--file', (Write-WorkFile 'p3-open.cs' $code), '--format', 'json')
+    Expect ($r.exit -eq 0 -and "$($r.stdout)" -match 'ok\|(Assets/[^"]+\.unity)') "scratch scene: exit $($r.exit): $(Short ($r.stdout + $r.stderr))"
+    $Matches[1]
+}
+function Close-P3Scene([string]$path) {
+    # Reopens the scene that was open from disk, discarding the untitled scratch scene; returns path|dirty|count.
+    $code = "UnityEditor.SceneManagement.EditorSceneManager.OpenScene(`"$path`", UnityEditor.SceneManagement.OpenSceneMode.Single); var a = UnityEngine.SceneManagement.SceneManager.GetActiveScene(); return a.path + `"|`" + a.isDirty + `"|`" + UnityEngine.SceneManagement.SceneManager.sceneCount;"
+    (Invoke-Cli @('script', 'eval', '--file', (Write-WorkFile 'p3-close.cs' $code), '--format', 'json')).stdout
+}
+function Expect-P3Failure($r, [string]$hint, [string]$what, [int]$exit = 6) {
+    Expect ($r.exit -ne 124) "${what}: timed out"
+    Expect ($r.exit -eq $exit) "${what}: exit $($r.exit), expected ${exit}: $(Short ($r.stdout + $r.stderr))"
+    Expect ("$($r.stderr)" -match $hint) "${what}: the error doesn't say '$hint': $(Short $r.stderr)"
+    Expect ("$($r.stderr)" -notmatch '   at |Exception:') "${what}: a stack trace instead of a message: $(Short $r.stderr)"
+}
+function Get-CmState {
+    # Every CinemachineCamera's fields as the Editor holds them, the brains' blends and the scene's object count.
+    $code = @'
+var ci = System.Globalization.CultureInfo.InvariantCulture;
+var cams = UnityEngine.Object.FindObjectsByType<Unity.Cinemachine.CinemachineCamera>(UnityEngine.FindObjectsInactive.Include).OrderBy(c => c.name)
+    .Select(c => c.name + ":p" + c.Priority.Value + ":f" + (c.Target.TrackingTarget == null ? "-" : c.Target.TrackingTarget.name)
+        + ":l" + (c.Target.CustomLookAtTarget && c.Target.LookAtTarget != null ? c.Target.LookAtTarget.name : "-")
+        + ":fov" + c.Lens.FieldOfView.ToString(ci) + ":" + (c.enabled ? "on" : "off")
+        + ":[" + string.Join(",", c.GetComponents<Unity.Cinemachine.CinemachineComponentBase>().Select(x => x.GetType().Name)) + "]");
+var brains = UnityEngine.Object.FindObjectsByType<Unity.Cinemachine.CinemachineBrain>(UnityEngine.FindObjectsInactive.Include)
+    .Select(b => b.name + ":" + b.DefaultBlend.Style + " " + b.DefaultBlend.Time.ToString(ci) + ":" + (b.CustomBlends == null ? "-" : UnityEditor.AssetDatabase.GetAssetPath(b.CustomBlends) + "{" + string.Join(",", (b.CustomBlends.CustomBlends ?? new Unity.Cinemachine.CinemachineBlenderSettings.CustomBlend[0]).Select(x => x.From + ">" + x.To + "=" + x.Blend.Style + " " + x.Blend.Time.ToString(ci))) + "}"));
+return string.Join(";", cams) + "|brains " + string.Join(";", brains) + "|objects " + UnityEngine.SceneManagement.SceneManager.GetActiveScene().rootCount;
+'@
+    $r = Invoke-Cli @('script', 'eval', '--file', (Write-WorkFile 'cm-state.cs' $code), '--format', 'json')
+    Expect ($r.exit -eq 0) "script eval: exit $($r.exit): $(Short ($r.stdout + $r.stderr))"
+    $r.stdout.Trim().Trim('"')
+}
+function New-CmCameras {
+    # CliTestCamA (follow rig on CliTestPlayer, priority 20, fov 50) and CliTestCamB (lookat rig, priority 10).
+    $a = Invoke-Cli @('cliext.cinemachine', 'create', '--name', 'CliTestCamA', '--rig', 'follow', '--follow', 'CliTestPlayer', '--priority', '20', '--fov', '50', '--position', '[0,2,-5]', '--format', 'json')
+    Expect ($a.exit -eq 0) "create CliTestCamA: exit $($a.exit): $(Short ($a.stdout + $a.stderr))"
+    $b = Invoke-Cli @('cliext.cinemachine', 'create', '--name', 'CliTestCamB', '--rig', 'lookat', '--lookat', 'CliTestPlayer', '--priority', '10', '--format', 'json')
+    Expect ($b.exit -eq 0) "create CliTestCamB: exit $($b.exit): $(Short ($b.stdout + $b.stderr))"
+    , @($a, $b)
+}
+
+Add-Check 'cm.create-list' $cmRow 'in an unsaved scratch scene, cliext.cinemachine create makes a follow and a lookat camera and adds a brain to the Main Camera; list and the cameras'' fields show them, and in Edit mode list says live and blending need Play mode' {
+    $orig = Open-P3Scene
+    try {
+        $made = New-CmCameras
+        Expect ($made[0].json.brainAdded -eq 'Main Camera' -and -not $made[1].json.brainAdded) "brainAdded: '$($made[0].json.brainAdded)', then '$($made[1].json.brainAdded)'"
+        Expect ($made[0].json.created.follow -eq 'CliTestPlayer' -and $made[1].json.created.lookAt -eq 'CliTestPlayer') "reply targets: $(Short $made[0].stdout)"
+        $l = Invoke-Cli @('cliext.cinemachine', 'list', '--format', 'json')
+        Expect ($l.exit -eq 0) "list: exit $($l.exit): $(Short ($l.stdout + $l.stderr))"
+        $cams = @($l.json.cameras)
+        Expect ((@($cams | ForEach-Object { "$($_.name)@$($_.priority)" }) -join ',') -eq 'CliTestCamA@20,CliTestCamB@10') "list cameras: $(Short ($cams | ConvertTo-Json -Compress))"
+        Expect ((@($cams[0].components) -join ',') -eq 'CinemachineFollow,CinemachineRotationComposer' -and $cams[0].fov -eq 50 -and $cams[0].follow -eq 'CliTestPlayer') "CliTestCamA: $(Short ($cams[0] | ConvertTo-Json -Compress))"
+        Expect ((@($cams[1].components) -join ',') -eq 'CinemachineHardLookAt' -and $cams[1].lookAt -eq 'CliTestPlayer') "CliTestCamB: $(Short ($cams[1] | ConvertTo-Json -Compress))"
+        $brain = @($l.json.brains)
+        Expect ($brain.Count -eq 1 -and $brain[0].camera -eq 'Main Camera' -and $null -eq $brain[0].live -and $null -eq $cams[0].live) "brains: $(Short ($brain | ConvertTo-Json -Compress))"
+        Expect ($l.json.playing -eq $false -and "$($l.json.note)" -match 'Play mode.*editor\.playmode start') "the Edit mode note: '$($l.json.note)'"
+        $s = Get-CmState
+        Expect ($s -match '^CliTestCamA:p20:fCliTestPlayer:l-:fov50:on:\[CinemachineFollow,CinemachineRotationComposer\];CliTestCamB:p10:f-:lCliTestPlayer:fov40:on:\[CinemachineHardLookAt\]\|brains Main Camera:') "in the Editor: $s"
+    }
+    finally { $closed = Close-P3Scene $orig }
+    Expect ("$closed" -match "^`"?$([regex]::Escape($orig))\|False\|1") "after closing the scratch scene: $(Short $closed)"
+    "2 cameras and a brain; list shows priorities, targets, rigs, and the Edit mode note; scratch scene discarded"
+}
+
+Add-Check 'cm.set' $cmRow 'cliext.cinemachine set changes a camera''s priority, follow target, look-at (and clears it with none), fov and enabled; the cameras'' fields and list show it, and only what differed is reported changed' {
+    $orig = Open-P3Scene
+    try {
+        [void](New-CmCameras)
+        $r = Invoke-Cli @('cliext.cinemachine', 'set', '--camera', 'CliTestCamB', '--priority', '30', '--follow', 'CliTestPlain', '--fov', '35', '--format', 'json')
+        Expect ($r.exit -eq 0 -and (@($r.json.changed) -join ',') -eq 'priority,follow,fov') "set: exit $($r.exit): $(Short ($r.stdout + $r.stderr))"
+        $c = Invoke-Cli @('cliext.cinemachine', 'set', '--camera', 'CliTestCamB', '--lookat', 'none', '--enabled', 'false', '--priority', '30', '--format', 'json')
+        Expect ($c.exit -eq 0 -and (@($c.json.changed) -join ',') -eq 'lookAt,enabled') "clear look-at, disable: exit $($c.exit): $(Short ($c.stdout + $c.stderr))"
+        $s = Get-CmState
+        Expect ($s -match 'CliTestCamB:p30:fCliTestPlain:l-:fov35:off:') "in the Editor: $s"
+        $l = Invoke-Cli @('cliext.cinemachine', 'list', '--format', 'json')
+        $b = @($l.json.cameras) | Where-Object { $_.name -eq 'CliTestCamB' }
+        Expect ($b.priority -eq 30 -and $b.follow -eq 'CliTestPlain' -and $null -eq $b.lookAt -and $b.fov -eq 35 -and $b.enabled -eq $false) "list: $(Short ($b | ConvertTo-Json -Compress))"
+    }
+    finally { $closed = Close-P3Scene $orig }
+    Expect ("$closed" -match "^`"?$([regex]::Escape($orig))\|False\|1") "after closing the scratch scene: $(Short $closed)"
+    "priority 30, follow CliTestPlain, fov 35, look-at cleared, disabled; $s"
+}
+
+Add-Check 'cm.blend' $cmRow 'cliext.cinemachine blend sets the brain''s default blend and adds a custom blend between two cameras in a new Custom Blends asset; the brain and list show both' {
+    $orig = Open-P3Scene
+    $asset = "$scratchRel/CliTestBlends.asset"
+    try {
+        [void](New-CmCameras)
+        $mk = Invoke-Cli @('script', 'eval', '--file', (Write-WorkFile 'cm-folder.cs' 'if (!UnityEditor.AssetDatabase.IsValidFolder("Assets/_CliextTests")) UnityEditor.AssetDatabase.CreateFolder("Assets", "_CliextTests"); if (!UnityEditor.AssetDatabase.IsValidFolder("Assets/_CliextTests/CliTest")) UnityEditor.AssetDatabase.CreateFolder("Assets/_CliextTests", "CliTest"); return "ok";'), '--format', 'json')
+        Expect ($mk.exit -eq 0) "scratch folder: $(Short ($mk.stdout + $mk.stderr))"
+        $d = Invoke-Cli @('cliext.cinemachine', 'blend', '--style', 'Linear', '--time', '0.5', '--format', 'json')
+        Expect ($d.exit -eq 0 -and $d.json.defaultBlend -eq 'Linear 0.5s') "default blend: exit $($d.exit): $(Short ($d.stdout + $d.stderr))"
+        $c = Invoke-Cli @('cliext.cinemachine', 'blend', '--style', 'EaseIn', '--time', '1.5', '--from', 'CliTestCamA', '--to', 'CliTestCamB', '--asset', $asset, '--format', 'json')
+        Expect ($c.exit -eq 0 -and $c.json.created -eq $true -and $c.json.asset -eq $asset -and $c.json.count -eq 1) "custom blend: exit $($c.exit): $(Short ($c.stdout + $c.stderr))"
+        $any = Invoke-Cli @('cliext.cinemachine', 'blend', '--style', 'Cut', '--to', 'CliTestCamA', '--format', 'json')
+        Expect ($any.exit -eq 0 -and $any.json.from -eq 'any' -and $any.json.count -eq 2 -and $any.json.created -eq $false) "any -> CamA: exit $($any.exit): $(Short ($any.stdout + $any.stderr))"
+        Expect (Test-Path (Join-Path $projectPath ($asset -replace '/', '\'))) 'the Custom Blends asset is not on disk'
+        $s = Get-CmState
+        Expect ($s -match "\|brains Main Camera:Linear 0\.5:$([regex]::Escape($asset))\{CliTestCamA>CliTestCamB=EaseIn 1\.5,\*\*ANY CAMERA\*\*>CliTestCamA=Cut 1\}") "the brain: $s"
+        $l = Invoke-Cli @('cliext.cinemachine', 'list', '--format', 'json')
+        $b = @($l.json.brains)[0]
+        Expect ($b.defaultBlend -eq 'Linear 0.5s' -and $b.customBlends -eq $asset -and (@($b.custom) -join ';') -eq 'CliTestCamA -> CliTestCamB: EaseIn 1.5s;any -> CliTestCamA: Cut 1s') "list brain: $(Short ($b | ConvertTo-Json -Compress))"
+    }
+    finally { $closed = Close-P3Scene $orig }
+    Expect ("$closed" -match "^`"?$([regex]::Escape($orig))\|False\|1") "after closing the scratch scene: $(Short $closed)"
+    "default Linear 0.5s; custom blends A->B EaseIn 1.5s and any->A Cut in a new asset; scratch scene discarded"
+}
+
+Add-Check 'cm.errors' $cmRow 'cliext.cinemachine create, set and blend with unknown cameras and targets, bad rigs, styles, numbers and asset paths, no brain, and changes that would do nothing exit 13, 2 or 6 with the fix, and change and create nothing' {
+    $orig = Open-P3Scene
+    $seen = @()
+    try {
+        # Before any camera or brain exists.
+        $nb = Invoke-Cli @('cliext.cinemachine', 'blend', '--style', 'Linear', '--format', 'json')
+        Expect-P3Failure $nb 'No CinemachineBrain.*cliext\.cinemachine create adds one' 'blend with no brain' 13
+        $nc = Invoke-Cli @('cliext.cinemachine', 'set', '--camera', 'CliTestCamA', '--priority', '5', '--format', 'json')
+        Expect-P3Failure $nc 'the open scenes have none\. cliext\.cinemachine create makes one' 'set with no cameras' 13
+        [void](New-CmCameras)
+        $mk = Invoke-Cli @('script', 'eval', '--file', (Write-WorkFile 'cm-folder2.cs' 'if (!UnityEditor.AssetDatabase.IsValidFolder("Assets/_CliextTests")) UnityEditor.AssetDatabase.CreateFolder("Assets", "_CliextTests"); if (!UnityEditor.AssetDatabase.IsValidFolder("Assets/_CliextTests/CliTest")) UnityEditor.AssetDatabase.CreateFolder("Assets/_CliextTests", "CliTest"); return "ok";'), '--format', 'json')
+        Expect ($mk.exit -eq 0) "scratch folder: $(Short ($mk.stdout + $mk.stderr))"
+        $before = Get-CmState
+        $cases = @(
+            @(@('create', '--name', 'CliTestBad', '--rig', 'orbitl'), 'Did you mean: orbital.*Use one of: follow, orbital', 2, 'create with a misspelled rig'),
+            @(@('create', '--name', 'CliTestBad', '--follow', 'CliTestPlayr'), "No GameObject 'CliTestPlayr'.*Did you mean: CliTestPlayer.*scene get_hierarchy", 13, 'create following an unknown object'),
+            @(@('create', '--name', 'CliTestBad', '--lookat', 'NoSuchTarget'), "No GameObject 'NoSuchTarget'", 13, 'create looking at an unknown object'),
+            @(@('create', '--name', 'CliTestBad', '--position', '[1,x]'), "--position: '\[1,x\]' isn't a Vector3 value", 2, 'create at a bad position'),
+            @(@('create', '--name', 'CliTestBad', '--fov', '200'), 'more than 0 and less than 180', 2, 'create with fov 200'),
+            @(@('create', '--name', 'CliTestCamA'), "already exists: change it with cliext\.cinemachine set --camera CliTestCamA", 6, 'create a camera that exists'),
+            @(@('set', '--camera', 'CliTestCamZ', '--priority', '5'), "No CinemachineCamera 'CliTestCamZ'.*Did you mean: CliTestCam", 13, 'set an unknown camera'),
+            @(@('set', '--camera', 'CliTestPlain', '--priority', '5'), "'CliTestPlain' has no CinemachineCamera.*cliext\.cinemachine list", 13, 'set an object without a camera'),
+            @(@('set', '--camera', 'CliTestCamA', '--priority', '99', '--follow', 'NoSuchTarget'), "No GameObject 'NoSuchTarget'", 13, 'set a priority and an unknown target'),
+            @(@('set', '--camera', 'CliTestCamA'), 'Nothing to change on CliTestCamA: pass --priority', 2, 'set with nothing to change'),
+            @(@('set', '--camera', 'CliTestCamA', '--priority', '20', '--follow', 'CliTestPlayer'), 'already has priority 20, follow CliTestPlayer: nothing would change', 6, 'set to the values it has'),
+            @(@('set', '--camera', 'CliTestCamA', '--fov', '0'), 'more than 0 and less than 180', 2, 'set fov 0'),
+            @(@('set', '--camera', 'CliTestCamA', '--enabled', 'maybe'), 'expects Boolean', 2, 'set enabled to a non-bool'),
+            @(@('blend', '--style', 'Smooth'), "'Smooth' isn't a blend style\. Use one of: Cut, EaseInOut", 2, 'unknown blend style'),
+            @(@('blend', '--style', '3'), "'3' isn't a blend style", 2, 'blend style as a number'),
+            @(@('blend', '--style', 'Linear', '--time', '-1'), '--time -1 isn''t a duration', 2, 'negative blend time'),
+            @(@('blend', '--style', 'EaseInOut', '--time', '2'), 'already EaseInOut 2s: nothing would change', 6, 'the default blend it has'),
+            @(@('blend', '--style', 'Linear', '--asset', "$scratchRel/X.asset"), '--asset is only for a custom blend', 2, '--asset without --from or --to'),
+            @(@('blend', '--style', 'Linear', '--from', 'CliTestCamZ'), "No CinemachineCamera 'CliTestCamZ'.*Did you mean", 13, 'custom blend from an unknown camera'),
+            @(@('blend', '--style', 'Linear', '--from', 'CliTestCamA', '--to', 'CliTestCamA'), 'both CliTestCamA', 2, 'custom blend from a camera to itself'),
+            @(@('blend', '--style', 'Linear', '--from', 'CliTestCamA', '--to', 'CliTestCamB'), 'pass --asset Assets/', 2, 'custom blend with no asset'),
+            @(@('blend', '--style', 'Linear', '--from', 'CliTestCamA', '--asset', 'C:/CliTestBlends.asset'), "isn't under Assets/ or Packages/", 2, 'asset outside Assets'),
+            @(@('blend', '--style', 'Linear', '--from', 'CliTestCamA', '--asset', "$scratchRel/CliTestBlends.txt"), 'must end in \.asset', 2, 'asset not ending .asset'),
+            @(@('blend', '--style', 'Linear', '--from', 'CliTestCamA', '--asset', "$scratchRel/NoSuchFolder/B.asset"), "No folder '.*NoSuchFolder' for --asset: create it first", 13, 'asset in a missing folder')
+        )
+        foreach ($c in $cases) {
+            $x = Invoke-Cli (@('cliext.cinemachine') + $c[0] + @('--format', 'json'))
+            Expect-P3Failure $x $c[1] $c[3] $c[2]
+            $seen += "$($c[3]) $($x.exit)"
+        }
+        $after = Get-CmState
+        Expect ($after -eq $before) "a failed call changed the scene: '$before' -> '$after'"
+        Expect (-not (Test-Path (Join-Path $scratch 'NoSuchFolder')) -and -not (Test-Path 'C:\CliTestBlends.asset') -and -not (Test-Path (Join-Path $scratch 'CliTestBlends.txt'))) 'a failed blend created a file'
+    }
+    finally { $closed = Close-P3Scene $orig }
+    Expect ("$closed" -match "^`"?$([regex]::Escape($orig))\|False\|1") "after closing the scratch scene: $(Short $closed)"
+    "$($seen.Count + 2) failures with the fix, cameras, brain and objects unchanged"
+}
+
+Add-Check 'cm.play-mode' $cmRow 'in Play mode, cameras made with create go live by priority: list names the live camera, a set priority starts a blend that list shows (from, to, weight), and blend changes the default; leaving Play mode leaves the scene clean' {
+    $scenes = Invoke-Cli @('scene', 'list_open', '--format', 'json')
+    Expect (-not (@($scenes.json) | Where-Object { $_.isDirty })) "an open scene has unsaved changes: $(Short $scenes.stdout)"
+    $start = Invoke-Cli @('editor.playmode', 'start', '--format', 'json')
+    try {
+        Expect ((Wait-Editor 120) -eq 0) "Play mode didn't start: $(Short ($start.stdout + $start.stderr))"
+        $a = Invoke-Cli @('cliext.cinemachine', 'create', '--name', 'CliTestPlayA', '--rig', 'fixed', '--priority', '100', '--position', '[0,3,-8]', '--format', 'json')
+        Expect ($a.exit -eq 0) "create CliTestPlayA: exit $($a.exit): $(Short ($a.stdout + $a.stderr))"
+        $b = Invoke-Cli @('cliext.cinemachine', 'create', '--name', 'CliTestPlayB', '--rig', 'fixed', '--priority', '1', '--position', '[8,3,0]', '--format', 'json')
+        Expect ($b.exit -eq 0) "create CliTestPlayB: exit $($b.exit): $(Short ($b.stdout + $b.stderr))"
+        $bl = Invoke-Cli @('cliext.cinemachine', 'blend', '--style', 'Linear', '--time', '30', '--format', 'json')
+        Expect ($bl.exit -eq 0 -and $bl.json.defaultBlend -eq 'Linear 30s') "blend in Play mode: exit $($bl.exit): $(Short ($bl.stdout + $bl.stderr))"
+        $l = Invoke-Cli @('cliext.cinemachine', 'list', '--format', 'json')
+        $brain = @($l.json.brains)[0]
+        Expect ($l.json.playing -eq $true -and $null -eq $l.json.note -and $brain.live -eq 'CliTestPlayA' -and $brain.defaultBlend -eq 'Linear 30s') "list before the switch: $(Short ($l.json | ConvertTo-Json -Compress -Depth 4) 300)"
+        Expect ((@($l.json.cameras) | Where-Object { $_.name -eq 'CliTestPlayA' }).live -eq $true) 'CliTestPlayA is not live in the camera list'
+        $s = Invoke-Cli @('cliext.cinemachine', 'set', '--camera', 'CliTestPlayB', '--priority', '200', '--format', 'json')
+        Expect ($s.exit -eq 0) "set priority: exit $($s.exit): $(Short ($s.stdout + $s.stderr))"
+        $l2 = Invoke-Cli @('cliext.cinemachine', 'list', '--format', 'json')
+        $brain2 = @($l2.json.brains)[0]
+        Expect ($brain2.live -eq 'CliTestPlayB' -and $brain2.blending.from -eq 'CliTestPlayA' -and $brain2.blending.to -eq 'CliTestPlayB' -and $brain2.blending.duration -eq 30 -and $brain2.blending.weight -lt 1) "list after the switch: $(Short ($brain2 | ConvertTo-Json -Compress -Depth 4) 300)"
+    }
+    finally {
+        [void](Invoke-Cli @('editor.playmode', 'stop', '--format', 'json'))
+        [void](Wait-Editor 120)
+    }
+    $mode = Invoke-Cli @('script', 'eval', '--file', (Write-WorkFile 'cm-mode.cs' 'var a = UnityEngine.SceneManagement.SceneManager.GetActiveScene(); return (UnityEditor.EditorApplication.isPlaying ? "playing" : "edit") + "|" + a.isDirty + "|" + (UnityEngine.GameObject.Find("CliTestPlayA") == null);'), '--format', 'json')
+    Expect ("$($mode.stdout)" -match 'edit\|False\|True') "after Play mode: $(Short $mode.stdout)"
+    "live CliTestPlayA, then blending to CliTestPlayB (weight $($brain2.blending.weight), Linear 30s); back in Edit mode, scene clean"
+}
+
+# --- cliext.splines ---------------------------------------------------------------------------------------------------
+
+# Splines are made with the CLI's create in the untitled scene of Open-P3Scene and discarded with it. Reads go through
+# inspect and a snippet of the knots as the Editor holds them; Undo is driven from snippets (Undo.PerformUndo/Redo).
+$splRow = 'cliext.splines'
+
+function Get-SplKnots([string]$name = 'CliTestPath') {
+    $code = @'
+var ci = System.Globalization.CultureInfo.InvariantCulture;
+var c = UnityEngine.Object.FindObjectsByType<UnityEngine.Splines.SplineContainer>(UnityEngine.FindObjectsInactive.Include).FirstOrDefault(x => x.name == "{{name}}");
+if (c == null) return "none";
+return string.Join("|", c.Splines.Select(s => (s.Closed ? "closed:" : "open:") + string.Join(";", Enumerable.Range(0, s.Count).Select(i =>
+    s[i].Position.x.ToString("0.###", ci) + "," + s[i].Position.y.ToString("0.###", ci) + "," + s[i].Position.z.ToString("0.###", ci) + "/" + s.GetTangentMode(i)))));
+'@
+    $r = Invoke-Cli @('script', 'eval', '--file', (Write-WorkFile 'spl-knots.cs' $code.Replace('{{name}}', $name)), '--format', 'json')
+    Expect ($r.exit -eq 0) "script eval: exit $($r.exit): $(Short ($r.stdout + $r.stderr))"
+    $r.stdout.Trim().Trim('"')
+}
+function Invoke-SplUndo([string]$what = 'Undo') {
+    $r = Invoke-Cli @('script', 'eval', '--file', (Write-WorkFile "spl-$what.cs" "UnityEditor.Undo.Perform$what(); return `"ok`";"), '--format', 'json')
+    Expect ($r.exit -eq 0) "${what}: exit $($r.exit): $(Short ($r.stdout + $r.stderr))"
+}
+function New-SplPath {
+    $r = Invoke-Cli @('cliext.splines', 'create', '--name', 'CliTestPath', '--knots', '[0,0,0];[4,0,0];[4,0,4]', '--mode', 'Linear', '--position', '[1,0,0]', '--format', 'json')
+    Expect ($r.exit -eq 0) "create: exit $($r.exit): $(Short ($r.stdout + $r.stderr))"
+    $r
+}
+
+Add-Check 'spl.create-inspect-list' $splRow 'in an unsaved scratch scene, cliext.splines create makes a SplineContainer through three knots at an offset; inspect shows local and world knots and modes, list its knot count and length' {
+    $orig = Open-P3Scene
+    try {
+        $c = New-SplPath
+        Expect ($c.json.knots -eq 3 -and $c.json.length -eq 8) "create reply: $(Short $c.stdout)"
+        $i = Invoke-Cli @('cliext.splines', 'inspect', '--object', 'CliTestPath', '--format', 'json')
+        Expect ($i.exit -eq 0) "inspect: exit $($i.exit): $(Short ($i.stdout + $i.stderr))"
+        $pts = @($i.json.splines[0].points)
+        Expect ((@($pts | ForEach-Object { "$($_.position)>$($_.world)/$($_.mode)" }) -join ' ') -eq '[0,0,0]>[1,0,0]/Linear [4,0,0]>[5,0,0]/Linear [4,0,4]>[5,0,4]/Linear') "inspect knots: $(Short ($pts | ConvertTo-Json -Compress))"
+        $l = Invoke-Cli @('cliext.splines', 'list', '--format', 'json')
+        $rec = @($l.json) | Where-Object { $_.name -eq 'CliTestPath' }
+        Expect ($l.exit -eq 0 -and $rec -and $rec.splines[0].knots -eq 3 -and $rec.splines[0].closed -eq $false -and $rec.splines[0].length -eq 8) "list: exit $($l.exit): $(Short $l.stdout)"
+        $k = Get-SplKnots
+        Expect ($k -eq 'open:0,0,0/Linear;4,0,0/Linear;4,0,4/Linear') "in the Editor: $k"
+    }
+    finally { $closed = Close-P3Scene $orig }
+    Expect ("$closed" -match "^`"?$([regex]::Escape($orig))\|False\|1") "after closing the scratch scene: $(Short $closed)"
+    "3 Linear knots, world offset [1,0,0], length 8; $k"
+}
+
+Add-Check 'spl.edit' $splRow 'cliext.splines edit adds, moves (in world space) and removes knots, closes the loop, changes tangent modes and adds a spline in one call; inspect and the knots show it, and one Undo takes the whole batch back' {
+    $orig = Open-P3Scene
+    try {
+        [void](New-SplPath)
+        $k0 = Get-SplKnots
+        $ops = '[{"op":"add_knot","position":"[0,0,4]"},{"op":"set_knot","index":1,"position":"[5,2,0]","world":true},{"op":"add_knot","index":1,"position":"[2,0,0]","mode":"Broken"},{"op":"remove_knot","index":4},{"op":"set_closed","value":"true"},{"op":"set_tangent_mode","mode":"Continuous","index":0},{"op":"add_spline","knots":"[0,1,0];[0,2,0]","mode":"Linear"}]'
+        $r = Invoke-Cli @('cliext.splines', 'edit', '--object', 'CliTestPath', '--ops-file', (Write-WorkFile 'spl-edit.json' $ops), '--format', 'json')
+        Expect ($r.exit -eq 0 -and $r.json.applied -eq 7 -and @($r.json.splines).Count -eq 2) "edit: exit $($r.exit): $(Short ($r.stdout + $r.stderr))"
+        $k = Get-SplKnots
+        Expect ($k -eq 'closed:0,0,0/Continuous;2,0,0/Broken;4,2,0/Linear;4,0,4/Linear|open:0,1,0/Linear;0,2,0/Linear') "in the Editor: $k"
+        $i = Invoke-Cli @('cliext.splines', 'inspect', '--object', 'CliTestPath', '--format', 'json')
+        Expect ($i.json.splines[0].closed -eq $true -and $i.json.splines[0].points[2].world -eq '[5,2,0]' -and $i.json.splines[1].knots -eq 2) "inspect: $(Short $i.stdout)"
+        Invoke-SplUndo 'Undo'
+        $ku = Get-SplKnots
+        Expect ($ku -eq $k0) "one Undo: expected '$k0', got '$ku'"
+    }
+    finally { $closed = Close-P3Scene $orig }
+    Expect ("$closed" -match "^`"?$([regex]::Escape($orig))\|False\|1") "after closing the scratch scene: $(Short $closed)"
+    "7 ops in one call ($k); one Undo back to $k0"
+}
+
+Add-Check 'spl.sample' $splRow 'cliext.splines sample returns the world position and tangent at --t and --distance, the nearest point to --near with its distance, and --count evenly spaced samples' {
+    $orig = Open-P3Scene
+    try {
+        $c = Invoke-Cli @('cliext.splines', 'create', '--name', 'CliTestLine', '--knots', '[0,0,0];[4,0,0]', '--mode', 'Linear', '--position', '[1,0,0]', '--format', 'json')
+        Expect ($c.exit -eq 0) "create: exit $($c.exit): $(Short ($c.stdout + $c.stderr))"
+        $t = Invoke-Cli @('cliext.splines', 'sample', '--object', 'CliTestLine', '--t', '0.5', '--format', 'json')
+        Expect ($t.exit -eq 0 -and $t.json.position -eq '[3,0,0]' -and $t.json.tangent -eq '[1,0,0]') "t 0.5: exit $($t.exit): $(Short ($t.stdout + $t.stderr))"
+        $d = Invoke-Cli @('cliext.splines', 'sample', '--object', 'CliTestLine', '--distance', '1', '--format', 'json')
+        $dx = if ($d.json.position) { [double](($d.json.position.Trim('[]') -split ',')[0]) } else { -1 }
+        Expect ($d.exit -eq 0 -and [math]::Abs($dx - 2) -lt 0.01 -and $d.json.t -eq 0.25) "distance 1: exit $($d.exit): $(Short ($d.stdout + $d.stderr))"
+        $n = Invoke-Cli @('cliext.splines', 'sample', '--object', 'CliTestLine', '--near', '[3,5,0]', '--format', 'json')
+        Expect ($n.exit -eq 0 -and $n.json.nearest -eq '[3,0,0]' -and $n.json.distance -eq 5 -and $n.json.t -eq 0.5) "near: exit $($n.exit): $(Short ($n.stdout + $n.stderr))"
+        $k = Invoke-Cli @('cliext.splines', 'sample', '--object', 'CliTestLine', '--count', '3', '--format', 'json')
+        Expect ($k.exit -eq 0 -and (@($k.json | ForEach-Object { $_.position }) -join ' ') -eq '[1,0,0] [3,0,0] [5,0,0]') "count 3: exit $($k.exit): $(Short ($k.stdout + $k.stderr))"
+    }
+    finally { $closed = Close-P3Scene $orig }
+    Expect ("$closed" -match "^`"?$([regex]::Escape($orig))\|False\|1") "after closing the scratch scene: $(Short $closed)"
+    't 0.5 [3,0,0], distance 1 [2,0,0], near [3,5,0] -> [3,0,0] at 5, count 3 [1..5]'
+}
+
+Add-Check 'spl.errors' $splRow 'cliext.splines inspect, sample, create and edit with unknown objects and splines, objects without a container, out-of-range t and distance, bad vectors, modes and knots, duplicate names and bad JSON exit 13, 2 or 6 with the fix; edit ops that fail (knot out of range, unknown op, bad mode or value, a change that does nothing) exit 6 and change nothing' {
+    $orig = Open-P3Scene
+    $seen = @()
+    try {
+        $none = Invoke-Cli @('cliext.splines', 'inspect', '--object', 'CliTestPath', '--format', 'json')
+        Expect-P3Failure $none 'the open scenes have none\. cliext\.splines create makes one' 'inspect with no containers' 13
+        [void](New-SplPath)
+        $k0 = Get-SplKnots
+        $cases = @(
+            @(@('inspect', '--object', 'CliTestPth'), "No SplineContainer on 'CliTestPth'.*Did you mean: CliTestPath", 13, 'inspect a misspelled object'),
+            @(@('inspect', '--object', 'CliTestPlain'), "'CliTestPlain' has no SplineContainer\. Did you mean: CliTestPath", 13, 'inspect an object without a container'),
+            @(@('sample', '--object', 'NoSuchPath', '--t', '0.5'), "No SplineContainer on 'NoSuchPath'.*cliext\.splines list", 13, 'sample an unknown object'),
+            @(@('sample', '--object', 'CliTestPath', '--spline', '3'), 'No spline 3 on CliTestPath: it has 1 \(0 to 0\)', 13, 'sample a spline out of range'),
+            @(@('sample', '--object', 'CliTestPath', '--t', '5'), '--t 5 is outside 0-1', 2, 'sample t 5'),
+            @(@('sample', '--object', 'CliTestPath', '--distance', '99'), '--distance 99 is past the end of spline 0 \(8 long\)', 2, 'sample past the end'),
+            @(@('sample', '--object', 'CliTestPath', '--near', '[1,x]'), "--near: '\[1,x\]' isn't a Vector3 value", 2, 'sample near a bad point'),
+            @(@('sample', '--object', 'CliTestPath', '--t', '0.5', '--count', '3'), 'Give only one of --t, --distance, --near and --count', 2, 'sample with t and count'),
+            @(@('sample', '--object', 'CliTestPath', '--count', '1'), '--count 1: give 2 or more', 2, 'sample count 1'),
+            @(@('create', '--name', 'CliTestBad', '--knots', '[0,0,0];[1,0,0]', '--mode', 'Smooth'), "'Smooth' isn't a tangent mode\. Use one of: AutoSmooth, Linear", 2, 'create with an unknown mode'),
+            @(@('create', '--name', 'CliTestBad', '--knots', '[0,0,0]'), 'at least two knots', 2, 'create with one knot'),
+            @(@('create', '--name', 'CliTestBad', '--knots', '[0,0,0];[1,x,0]'), "Knot 1: '\[1,x,0\]' isn't a Vector3 value", 2, 'create with a bad knot'),
+            @(@('create', '--name', 'CliTestBad', '--knots', '[0,0,0];[1,0,0]', '--position', 'up'), "--position: 'up' isn't a Vector3 value", 2, 'create at a bad position'),
+            @(@('create', '--name', 'CliTestPath', '--knots', '[0,0,0];[1,0,0]'), 'already exists: change it with cliext\.splines edit --object CliTestPath', 6, 'create a container that exists'),
+            @(@('edit', '--object', 'CliTestPth', '--ops', '[{"op":"set_closed"}]'), 'Did you mean: CliTestPath', 13, 'edit a misspelled object')
+        )
+        foreach ($c in $cases) {
+            $x = Invoke-Cli (@('cliext.splines') + $c[0] + @('--format', 'json'))
+            Expect-P3Failure $x $c[1] $c[3] $c[2]
+            $seen += "$($c[3]) $($x.exit)"
+        }
+        $bad = Get-SplKnots 'CliTestBad'
+        Expect ($bad -eq 'none') "a failed create made CliTestBad: $bad"
+        $ops = @(
+            @('[{"op":"remove_knot","index":7}]', 'No knot 7: spline 0 has 3 \(0 to 2\)\. cliext\.splines inspect', 'knot index out of range'),
+            @('[{"op":"set_knot","position":"[1,1,1]"}]', 'set_knot needs an index', 'set_knot without an index'),
+            @('[{"op":"set_knot","index":0}]', 'set_knot needs position, tangentIn.*would change nothing', 'set_knot with nothing to set'),
+            @('[{"op":"set_knot","index":1,"position":"[4,0,0]"}]', 'already has those values', 'set_knot to the values it has'),
+            @('[{"op":"set_knot","index":0,"position":"[1,x]"}]', "position: '\[1,x\]' isn't a Vector3 value", 'bad position'),
+            @('[{"op":"set_closed","value":"false"}]', 'already open: set_closed would change nothing', 'open an open spline'),
+            @('[{"op":"set_closed","value":"maybe"}]', "value: 'maybe' isn't a Boolean value: give true or false", 'non-boolean value'),
+            @('[{"op":"set_tangent_mode","mode":"Smooth"}]', "'Smooth' isn't a tangent mode\. Use one of: AutoSmooth", 'unknown tangent mode'),
+            @('[{"op":"set_tangent_mode","mode":"Linear"}]', 'already Linear', 'tangent mode it has'),
+            @('[{"op":"add_knot"}]', 'add_knot needs a position', 'add_knot without a position'),
+            @('[{"op":"add_knot","index":9,"position":"[0,0,0]"}]', 'add_knot index 9 is past the end', 'add_knot past the end'),
+            @('[{"op":"remove_spline","spline":2}]', 'No spline 2: CliTestPath has 1', 'spline out of range'),
+            @('[{"op":"add_knt","position":"[0,0,0]"}]', 'Did you mean: add_knot', 'misspelled op'),
+            @('[{"op":"frob"}]', "Unknown op 'frob'\. Ops: add_knot, set_knot", 'unknown op')
+        )
+        $i = 0
+        foreach ($o in $ops) {
+            $i++
+            $r = Invoke-Cli @('cliext.splines', 'edit', '--object', 'CliTestPath', '--ops-file', (Write-WorkFile "spl-fail-$i.json" $o[0]), '--format', 'json')
+            Expect-P3Failure $r $o[1] $o[2]
+            Expect ($r.json.saved -eq $false -and $r.json.failedAt -eq 0) "$($o[2]): reply $(Short $r.stdout)"
+            $seen += $o[2]
+        }
+        $j = Invoke-Cli @('cliext.splines', 'edit', '--object', 'CliTestPath', '--ops-file', (Write-WorkFile 'spl-badjson.json' '[{"op":'), '--format', 'json')
+        Expect-P3Failure $j "aren't valid JSON" 'broken JSON' 2
+        $e = Invoke-Cli @('cliext.splines', 'edit', '--object', 'CliTestPath', '--ops-file', (Write-WorkFile 'spl-empty.json' '[]'), '--format', 'json')
+        Expect-P3Failure $e 'No ops given' 'no ops' 2
+        $k1 = Get-SplKnots
+        Expect ($k1 -eq $k0) "a failed call changed the spline: '$k0' -> '$k1'"
+    }
+    finally { $closed = Close-P3Scene $orig }
+    Expect ("$closed" -match "^`"?$([regex]::Escape($orig))\|False\|1") "after closing the scratch scene: $(Short $closed)"
+    "$($seen.Count + 3) failures with the fix; the spline unchanged ($k1)"
+}
+
+Add-Check 'spl.edit-rollback' $splRow 'a splines edit batch that adds knots and a spline, closes the loop and changes modes, then hits a knot out of range, leaves the spline as before in the scene and in Undo: one Undo then takes back the edit before it, and Redo restores that edit' {
+    $orig = Open-P3Scene
+    try {
+        [void](New-SplPath)
+        $k0 = Get-SplKnots
+        $good = Invoke-Cli @('cliext.splines', 'edit', '--object', 'CliTestPath', '--ops-file', (Write-WorkFile 'spl-good.json' '[{"op":"set_knot","index":1,"position":"[4,1,0]"}]'), '--format', 'json')
+        Expect ($good.exit -eq 0) "good edit: exit $($good.exit): $(Short ($good.stdout + $good.stderr))"
+        $k1 = Get-SplKnots
+        $i1 = (Invoke-Cli @('cliext.splines', 'inspect', '--object', 'CliTestPath', '--format', 'json')).stdout
+        $ops = '[{"op":"add_knot","position":"[0,0,4]"},{"op":"set_closed"},{"op":"add_spline","knots":"[0,1,0];[0,2,0]"},{"op":"set_tangent_mode","mode":"Broken"},{"op":"remove_knot","index":0},{"op":"remove_knot","index":40}]'
+        $r = Invoke-Cli @('cliext.splines', 'edit', '--object', 'CliTestPath', '--ops-file', (Write-WorkFile 'spl-bad-batch.json' $ops), '--format', 'json')
+        Expect-P3Failure $r 'Op 5 \(remove_knot\) failed: No knot 40.*Nothing was changed' 'bad batch'
+        Expect ($r.json.saved -eq $false -and $r.json.failedAt -eq 5 -and $r.json.applied -eq 0) "reply: $(Short $r.stdout)"
+        $k2 = Get-SplKnots
+        Expect ($k2 -eq $k1) "in the scene: '$k1' -> '$k2'"
+        $i2 = (Invoke-Cli @('cliext.splines', 'inspect', '--object', 'CliTestPath', '--format', 'json')).stdout
+        Expect ($i2 -eq $i1) "inspect after the failed batch differs: $(Short $i2)"
+        Invoke-SplUndo 'Undo'
+        $ku = Get-SplKnots
+        Expect ($ku -eq $k0) "one Undo after the failed batch: expected the state before the good edit '$k0', got '$ku'"
+        Invoke-SplUndo 'Redo'
+        $kr = Get-SplKnots
+        Expect ($kr -eq $k1) "Redo: expected the good edit '$k1', got '$kr'"
+    }
+    finally { $closed = Close-P3Scene $orig }
+    Expect ("$closed" -match "^`"?$([regex]::Escape($orig))\|False\|1") "after closing the scratch scene: $(Short $closed)"
+    "failed at op 5, spline unchanged ($k2); Undo -> $k0, Redo -> $k1"
+}
+
 # --- Cross-cutting ----------------------------------------------------------------------------------------------------
 
 $batchEdits = @(
@@ -2786,11 +3182,13 @@ if (-not $T3Ready) {
         'cliext.vfx' = '^cliext\.vfx '; 'cliext.shadergraph' = '^cliext\.shadergraph '
         'cliext.animator, cliext.anim' = '^cliext\.(animator|anim) '; 'cliext.timeline' = '^cliext\.timeline '
         'cliext.input' = '^cliext\.input '; 'cliext.uitk' = '^cliext\.uitk '
+        # P3 rows
+        'cliext.cinemachine' = '^cliext\.cinemachine '; 'cliext.splines' = '^cliext\.splines '
     }
     $q = Invoke-Cli @('--query', 'cliext', '--format', 'json') 60
     $all = @()
     if ($q.json -ne $null) { $all = @($q.json.data.commands | ForEach-Object { $_.command }) }
-    Write-Output 'T1 coverage (P1 and P2 rows; commands called at least once):'
+    Write-Output 'T1 coverage (P1, P2 and P3 rows; commands called at least once):'
     foreach ($row in $rows.Keys) {
         $cmds = @($all | Where-Object { $_ -match $rows[$row] } | Sort-Object)
         $hit = @($cmds | Where-Object { $invoked.Contains($_) })

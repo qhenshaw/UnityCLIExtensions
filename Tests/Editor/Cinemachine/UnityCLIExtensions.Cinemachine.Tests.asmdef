@@ -1,0 +1,33 @@
+{
+    "name": "UnityCLIExtensions.Cinemachine.Tests",
+    "rootNamespace": "UnityCLIExtensions.Cinemachine.Tests",
+    "references": [
+        "UnityCLIExtensions.Cinemachine",
+        "UnityCLIExtensions.Editor",
+        "Unity.Cinemachine",
+        "UnityEngine.TestRunner",
+        "UnityEditor.TestRunner"
+    ],
+    "includePlatforms": [
+        "Editor"
+    ],
+    "excludePlatforms": [],
+    "allowUnsafeCode": false,
+    "overrideReferences": true,
+    "precompiledReferences": [
+        "nunit.framework.dll"
+    ],
+    "autoReferenced": false,
+    "defineConstraints": [
+        "UNITY_INCLUDE_TESTS",
+        "CLIEXT_CINEMACHINE_3"
+    ],
+    "versionDefines": [
+        {
+            "name": "com.unity.cinemachine",
+            "expression": "3.0.0",
+            "define": "CLIEXT_CINEMACHINE_3"
+        }
+    ],
+    "noEngineReferences": false
+}

@@ -1,0 +1,34 @@
+{
+    "name": "UnityCLIExtensions.Splines.Tests",
+    "rootNamespace": "UnityCLIExtensions.Splines.Tests",
+    "references": [
+        "UnityCLIExtensions.Splines",
+        "UnityCLIExtensions.Editor",
+        "Unity.Splines",
+        "Unity.Mathematics",
+        "UnityEngine.TestRunner",
+        "UnityEditor.TestRunner"
+    ],
+    "includePlatforms": [
+        "Editor"
+    ],
+    "excludePlatforms": [],
+    "allowUnsafeCode": false,
+    "overrideReferences": true,
+    "precompiledReferences": [
+        "nunit.framework.dll"
+    ],
+    "autoReferenced": false,
+    "defineConstraints": [
+        "UNITY_INCLUDE_TESTS",
+        "CLIEXT_SPLINES"
+    ],
+    "versionDefines": [
+        {
+            "name": "com.unity.splines",
+            "expression": "",
+            "define": "CLIEXT_SPLINES"
+        }
+    ],
+    "noEngineReferences": false
+}
