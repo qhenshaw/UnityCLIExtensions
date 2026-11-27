@@ -5306,7 +5306,23 @@ Add-Check 'env.ps51-quoted-code' 'Environment' 'the core skill says to pass C# s
     "inline --code broken: $broken; skill says to use files: $warned"
 }
 
-Add-Check 'env.play-capture-run' 'Environment' 'cliext-play-capture.ps1 -Run "a","b" through powershell -File (which joins them into "a,b") and through & (a real array), and "a;;b", each give two steps; commas inside an argument stay; a bad quote exits 2' {
+Add-Check 'env.skill-pipeline-names' 'Environment' 'the core skill names the Pipeline commands agents guess wrong (scene list_open, scene get_hierarchy, editor.playmode start), each of which the Editor has and the guess scene list it doesn''t; and it says to write ops files with the Write tool, that capture --camera needs a Camera, and to check the scene diff after a save' {
+    $skill = Get-Content (Join-Path $packageRoot 'Skills~\unity-cliext\SKILL.md') -Raw
+    $missing = @()
+    foreach ($w in @('scene list_open', 'scene get_hierarchy', 'editor.playmode start', 'Write tool', 'capture game_view --camera', 'Camera component', 'Cinemachine brain')) {
+        if ($skill -notmatch [regex]::Escape($w)) { $missing += $w }
+    }
+    Expect ($missing.Count -eq 0) "the core skill doesn't say: $($missing -join ', ')"
+    $scene = Invoke-Cli @('scene')
+    $play = Invoke-Cli @('editor.playmode')
+    $all = "$($scene.stdout)$($scene.stderr)$($play.stdout)$($play.stderr)"
+    foreach ($c in @('scene list_open', 'scene get_hierarchy', 'editor.playmode start')) { Expect ($all -match [regex]::Escape($c)) "the Editor has no '$c'" }
+    $guess = Invoke-Cli @('scene', 'list', '--format', 'json')
+    Expect ($guess.exit -ne 0) "'scene list' exists now (exit 0): update the skill"
+    'skill names list_open, get_hierarchy, editor.playmode start; the Editor has them and not scene list'
+}
+
+Add-Check 'env.play-capture-run''Environment' 'cliext-play-capture.ps1 -Run "a","b" through powershell -File (which joins them into "a,b") and through & (a real array), and "a;;b", each give two steps; commas inside an argument stay; a bad quote exits 2' {
     # What an agent gets typing the same thing; -DryRun prints the parsed steps without touching the Editor.
     $ErrorActionPreference = 'Continue'
     $capture = Join-Path $tools 'cliext-play-capture.ps1'
