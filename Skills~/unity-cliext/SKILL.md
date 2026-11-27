@@ -48,9 +48,10 @@ scripts named below are in `{{cliext-tools}}` (`cliext-wait.ps1`, `cliext-run.ps
 - Save or discard scene changes before tests, scene switches or builds: an unsaved scene stops them at a save prompt.
   To keep them, save the one scene by name (`cliext.scene save_open --scene <path>`; `--dry-run` lists what would be
   saved).
-- After saving a scene, read its diff (`git diff -- <scene>`, or `cliext.diff snapshot` before and `compare` after)
-  and report every object it changes that your task didn't touch. A Cinemachine brain writes its live camera's
-  values (position, rotation, lens) into the Main Camera, so a save can carry them; say so, or put them back.
+- Save scenes with `cliext.scene save_open`. Its reply lists, per scene, what the save writes against the file
+  (`changedObjects`, `changes` with old and new values). Report every object there that your task didn't touch.
+  Changes marked `drivenBy: CinemachineBrain` are camera values a brain writes in Edit mode, not edits. Mention them,
+  or reopen the scene before saving to leave them out. After saving some other way, read `git diff -- <scene>`.
 - Exit 6 means two things. A real failure prints its reason on stderr, usually as an `error:` line (stdout is empty, or
   holds the command's partial result). A reply dropped by a domain reload prints
   `{"success":false,"errors":[{"code":"EDITOR_CONNECTION_LOST",...}]}` on stdout with `--format json`: after a compile

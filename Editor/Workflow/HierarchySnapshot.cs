@@ -162,6 +162,56 @@ namespace UnityCLIExtensions
             return Diff(before, after);
         }
 
+        // Set while ChangesOnSave captures: the brain-driven values are kept (they are what a save writes), and the
+        // objects with a CinemachineBrain are collected so their changes can be named as the brain's.
+        private static HashSet<string> s_BrainPaths;
+
+        /// <summary>One change a save would write, with the component that likely made it when nobody edited it.</summary>
+        [Serializable]
+        public class SaveChange : Change { public string drivenBy; }
+
+        /// <summary>
+        /// What saving the open scene <paramref name="scenePath"/> would write: its file on disk (captured from a temporary
+        /// copy, opened additively) against the scene in memory, brain-driven camera values included. Changes to values a
+        /// CinemachineBrain writes in Edit mode carry <c>drivenBy = "CinemachineBrain"</c>.
+        /// </summary>
+        public static List<SaveChange> ChangesOnSave(string scenePath)
+        {
+            string tempDir = "Assets/__CliextSaveCompare";
+            string temp = $"{tempDir}/{Guid.NewGuid():N}.unity";
+            var brains = new HashSet<string>();
+            s_BrainPaths = brains;
+            try
+            {
+                Directory.CreateDirectory(tempDir);
+                File.Copy(scenePath, temp);
+                AssetDatabase.ImportAsset(temp, ImportAssetOptions.ForceSynchronousImport);
+                Snapshot before = Capture(temp);
+                before.assetPath = scenePath;
+                Snapshot after = Capture(scenePath);
+                return Diff(before, after).Select(c => new SaveChange
+                {
+                    change = c.change, @object = c.@object, component = c.component, property = c.property, before = c.before, after = c.after,
+                    drivenBy = c.change == "property-changed" && brains.Contains(c.@object) && IsBrainProperty(c.component, c.property) ? "CinemachineBrain" : null
+                }).ToList();
+            }
+            finally
+            {
+                s_BrainPaths = null;
+                AssetDatabase.DeleteAsset(temp);
+                if (AssetDatabase.IsValidFolder(tempDir) && AssetDatabase.FindAssets("", new[] { tempDir }).Length == 0) AssetDatabase.DeleteAsset(tempDir);
+            }
+        }
+
+        private static bool IsBrainProperty(string component, string property)
+        {
+            if (string.IsNullOrEmpty(property)) return false;
+            string type = (component ?? "").Split('[', '#', ' ')[0];
+            if (type == "Transform") return property.StartsWith("m_LocalPosition", StringComparison.Ordinal) || property.StartsWith("m_LocalRotation", StringComparison.Ordinal);
+            if (type == "Camera") return s_BrainCameraProperties.Any(x => property == x || property.StartsWith(x + ".", StringComparison.Ordinal));
+            return false;
+        }
+
         // -------------------------------------------------------------------------------------------------------------
         // Capture
 
@@ -210,6 +260,7 @@ namespace UnityCLIExtensions
             var counts = new Dictionary<string, int>();
             Component[] components = go.GetComponents<Component>();
             bool driven = components.Any(IsCinemachineBrain);
+            if (driven) s_BrainPaths?.Add(path);
             foreach (Component component in components)
             {
                 string type = component == null ? "MissingScript" : component.GetType().Name;
@@ -217,7 +268,7 @@ namespace UnityCLIExtensions
                 counts[type] = index + 1;
                 snap.components.Add(component == null
                     ? new ComponentSnap { id = "", type = type, index = index }
-                    : CaptureComponent(component, type, index, IdOf(component, persistent), driven ? DrivenByBrain(component) : null));
+                    : CaptureComponent(component, type, index, IdOf(component, persistent), driven && s_BrainPaths == null ? DrivenByBrain(component) : null));
             }
             into.Add(snap);
 

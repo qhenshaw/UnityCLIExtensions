@@ -1,6 +1,10 @@
 # Changelog
 All notable changes to Unity CLI Extensions. Versions are git tags: install one with `https://github.com/qhenshaw/UnityCLIExtensions.git#<version>`.
 
+## 0.32.1
+- `cliext.scene save_open` reports what each save writes. For every scene, against its file on disk: `changedObjects`, then `changes` with old and new values (up to 50), `total`, and `drivenByCinemachineBrain`. A copy of the file is captured, then the scene in memory. Camera values a CinemachineBrain writes in Edit mode (position, rotation, lens) are marked `drivenBy: CinemachineBrain` with a note. Saves had been carrying them unreported. `--dry-run` reports the same without saving; `--changes false` skips the comparison.
+- The `unity-cliext` skill says to save with `save_open` and report objects in its reply that the task didn't touch.
+
 ## 0.32.0
 Fixes for the gaps the 0.30.0 T3 round found. 216 EditMode tests and 160 `cliext-clitest.ps1` checks pass.
 - `cliext-clitest.ps1`: new checks `failures.field-report-score`, `pack.converter`, `pack.extract-remove`, `uitk.style-link`, `tl.pose-proof` (on its own timeline), `env.skill-pipeline-names`, `phys.material-folders` and `spl.list-bounds`.

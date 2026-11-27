@@ -121,6 +121,39 @@ namespace UnityCLIExtensions.Tests
             StringAssert.Contains("asset find --type Scene", Assert.Throws<Animation.AnimNotFoundException>(() => HierarchySnapshot.ResolvePath("Assets/NoSuchScene.unity")).Message);
             StringAssert.Contains("asset find --type Prefab", Assert.Throws<Animation.AnimNotFoundException>(() => HierarchySnapshot.ResolvePath("Assets/NoSuch.prefab")).Message);
         }
+
+        [Test]
+        public void ChangesOnSave_ListsWhatTheSaveWrites_AgainstTheFile()
+        {
+            const string path = "Assets/CliTestSaveChanges.unity";
+            // The test runner's own scene is untitled and unsaved, so a new scene can't be added beside it.
+            var scene = UnityEditor.SceneManagement.EditorSceneManager.NewScene(UnityEditor.SceneManagement.NewSceneSetup.EmptyScene, UnityEditor.SceneManagement.NewSceneMode.Single);
+            try
+            {
+                var moved = new UnityEngine.GameObject("Moved");
+                var cam = new UnityEngine.GameObject("Cam").AddComponent<UnityEngine.Camera>();
+                new UnityEngine.GameObject("Untouched");
+                UnityEngine.SceneManagement.SceneManager.MoveGameObjectToScene(moved, scene);
+                UnityEngine.SceneManagement.SceneManager.MoveGameObjectToScene(cam.gameObject, scene);
+                UnityEngine.SceneManagement.SceneManager.MoveGameObjectToScene(UnityEngine.GameObject.Find("Untouched"), scene);
+                Assert.IsTrue(UnityEditor.SceneManagement.EditorSceneManager.SaveScene(scene, path));
+                Assert.IsEmpty(HierarchySnapshot.ChangesOnSave(path), "A scene just saved has nothing to write.");
+
+                moved.transform.position = new UnityEngine.Vector3(2, 0, 0);
+                cam.fieldOfView = 40;
+                var changes = HierarchySnapshot.ChangesOnSave(path);
+                CollectionAssert.AreEquivalent(new[] { "Moved", "Cam" }, changes.Select(c => c.@object).Distinct().ToArray());
+                Assert.IsTrue(changes.Any(c => c.@object == "Moved" && c.property == "m_LocalPosition.x" && c.before == "0" && c.after == "2"));
+                Assert.IsTrue(changes.Any(c => c.@object == "Cam" && c.property == "field of view" && c.before == "60" && c.after == "40"));
+                Assert.IsTrue(changes.All(c => c.drivenBy == null), "No CinemachineBrain here, so nothing is the brain's.");
+                Assert.IsFalse(UnityEditor.AssetDatabase.IsValidFolder("Assets/__CliextSaveCompare"), "The temporary copy was left behind.");
+            }
+            finally
+            {
+                UnityEditor.SceneManagement.EditorSceneManager.NewScene(UnityEditor.SceneManagement.NewSceneSetup.EmptyScene, UnityEditor.SceneManagement.NewSceneMode.Single);
+                UnityEditor.AssetDatabase.DeleteAsset(path);
+            }
+        }
     }
 
     public class AssetDependencyArgTests

@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using Unity.Pipeline.Commands;
@@ -233,12 +234,16 @@ namespace UnityCLIExtensions
         }
 
         [CliGroupCommand(SceneGroup, "Save open scenes that have unsaved changes and a file (every one, or only --scene), so tests, switching scenes, building or quitting have nothing to prompt about. " +
-                                     "Overwrites each scene's file with its in-memory changes; --dry-run lists what would be saved and changes nothing. Untitled scenes are skipped. Returns the saved paths.",
+                                     "Overwrites each scene's file with its in-memory changes; --dry-run lists what would be saved and changes nothing. Untitled scenes are skipped. Returns the saved paths, " +
+                                     "and per scene the changes the save writes against the file on disk (changedObjects, and changes with old and new values, up to 50): read them and report any object the task didn't touch. " +
+                                     "Values a CinemachineBrain writes to its camera in Edit mode (position, rotation, lens) are marked drivenBy CinemachineBrain: nobody edited them, and they are saved unless the scene is reopened first. " +
+                                     "--changes false skips the comparison (it opens a copy of each scene, which takes a moment on a large one).",
             Tags = new[] { "editor", "cliext", "scenes" }, Effect = CommandEffect.Destructive)]
         internal static ExitCode SaveOpen(
             CommandContext cmd,
             [CliArg("scene", "Save only this open scene, by asset path (e.g. Assets/Scenes/Main.unity); default: every open scene with unsaved changes")] string scene = "",
-            [CliArg("dry-run", "List the scenes that would be saved, and save nothing")] bool dryRun = false)
+            [CliArg("dry-run", "List the scenes that would be saved, and save nothing")] bool dryRun = false,
+            [CliArg("changes", "Report what each save writes against the scene's file")] bool changes = true)
         {
             string only = string.IsNullOrWhiteSpace(scene) ? null : scene.Trim();
             var open = DialogPrevention.OpenScenePaths();
@@ -248,10 +253,38 @@ namespace UnityCLIExtensions
                 cmd.Fail($"'{only}' is not an open scene. Open scenes: {string.Join(", ", open)}.");
                 return ExitCode.NotFound;
             }
+            // The comparison needs the files as they are before the save.
+            var report = changes ? SaveReport(DialogPrevention.SaveOpenScenes(only, true, out _)) : null;
             var paths = DialogPrevention.SaveOpenScenes(only, dryRun, out int untitled);
-            if (dryRun) cmd.Result.Write(new { dryRun, wouldSave = paths, untitledSkipped = untitled });
-            else cmd.Result.Write(new { dryRun, saved = paths, untitledSkipped = untitled });
+            if (dryRun) cmd.Result.Write(new { dryRun, wouldSave = paths, untitledSkipped = untitled, scenes = report });
+            else cmd.Result.Write(new { dryRun, saved = paths, untitledSkipped = untitled, scenes = report });
             return ExitCode.Success;
+        }
+
+        internal const int MaxSaveChanges = 50;
+
+        /// <summary>Per scene: the objects a save changes, the changes (capped), and how many a CinemachineBrain made.</summary>
+        internal static List<object> SaveReport(IEnumerable<string> scenePaths)
+        {
+            var report = new List<object>();
+            foreach (string path in scenePaths)
+            {
+                List<HierarchySnapshot.SaveChange> all;
+                try { all = HierarchySnapshot.ChangesOnSave(path); }
+                catch (Exception e) { report.Add(new { scene = path, error = $"Couldn't compare with the file: {e.Message}" }); continue; }
+                int byBrain = all.Count(c => c.drivenBy != null);
+                report.Add(new
+                {
+                    scene = path,
+                    changedObjects = all.Select(c => c.@object).Distinct().ToList(),
+                    total = all.Count,
+                    drivenByCinemachineBrain = byBrain,
+                    note = byBrain > 0 ? $"{byBrain} change(s) are values a CinemachineBrain wrote to its camera in Edit mode, not edits: mention them, or reopen the scene before saving to leave them out." : null,
+                    changes = all.Take(MaxSaveChanges).ToList(),
+                    truncated = all.Count > MaxSaveChanges
+                });
+            }
+            return report;
         }
 
         private static string[] SplitIds(string ids) =>
