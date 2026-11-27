@@ -158,7 +158,11 @@ buttons for the watchdog to press, `-automated` doesn't affect it, and while it 
 the Pipeline server are stopped.
 
 `MissingSignatureAnswer` presses Import Anyway as the dialog opens, from `EditorWindow.windowFocusChanged`, which Unity
-still raises inside the modal (also with the Editor in the background). It presses the dialog's own button with a
+still raises inside the modal. Unity raises it only when the dialog gets focus, and one that opens without focus (as
+from `AssetDatabase.ImportPackage` in a `script eval`) stays open: the watchdog's `missing-signature` rule (`focus`)
+brings it to the front so it is answered, and `cliext-watchdog.ps1 -Click "Import Anyway"` does the same by hand.
+`-Status` can't read its text or buttons (Unity draws them), so it adds a `note` that names `cliext.package import`,
+the dialog-free way to import a .unitypackage. It presses the dialog's own button with a
 navigation submit; nothing moves the mouse. It always runs, with or without agent mode, and has no setting. Each answer
 goes to the dialog journal (`kind: answered`) and the Console. It answers only the dialog titled exactly "Missing
 signature": the trust dialogs for an invalid or untrusted signature have other titles and are left for a person.
@@ -176,7 +180,8 @@ Every couple of seconds it:
   buttons and checkboxes;
 - checks whether the Editor's window responds (`WM_NULL` with a timeout) and how old the Editor's heartbeat is;
 - applies the policy: the first rule whose title regex matches decides between `click` (press a button by regex),
-  `close` (cancel the window), `wait` (a progress window) and `escalate` (report it and leave it). Each dialog is acted
+  `close` (cancel the window), `focus` (bring a Unity-drawn modal to the front for the Editor to answer: Missing
+  signature), `wait` (a progress window) and `escalate` (report it and leave it). Each dialog is acted
   on once, and everything is written to the journal;
 - writes `Library/CLIExtensions/watchdog-status.json`;
 - notices a normal quit (and exits), a crash (and, with **Reopen After Crash**, reopens the project at most three times
@@ -194,7 +199,7 @@ Run it by hand:
 | Command | Does |
 |---|---|
 | `cliext-watchdog.ps1 -Project <path or name>` | Prints one snapshot as JSON. Without `-Project`, any open Editor. |
-| `cliext-watchdog.ps1 -Project <p> -Click "<label>" [-Title <regex>]` | Presses a button on the Editor's dialog, then prints a snapshot. |
+| `cliext-watchdog.ps1 -Project <p> -Click "<label>" [-Title <regex>]` | Presses a button on the Editor's dialog (the blocking one before a progress window), then prints a snapshot. On Missing signature, `-Click "Import Anyway"` focuses it for the Editor to answer. |
 | `cliext-watchdog.ps1 -Project <p> -Close` | Closes (cancels) the dialog. |
 | `cliext-watchdog.ps1 -Project <p> -Watch [-Detach] [-NoAutoClick]` | Watches until the Editor quits or `Library/CLIExtensions/watchdog.stop` appears. |
 
@@ -641,7 +646,9 @@ With Cinemachine 3 in the project, `cliext.cinemachine` reads and changes the ca
 - `create --name Overhead --rig follow|orbital|thirdperson|lookat|fixed [--follow Player] [--lookat Boss]
   [--priority 10] [--fov 50] [--position "[0,15,-10]"]`: a camera with that rig's components; a CinemachineBrain is
   added to the main Camera when there is none. In Play mode the camera lasts until Play mode ends.
-- `set --camera Overhead [--priority 20] [--follow Player|none] [--lookat ...] [--fov 50] [--enabled false]`.
+- `set --camera Overhead [--priority 20] [--follow Player|none] [--lookat ...] [--fov 50] [--enabled false]
+  [--rig follow|orbital|thirdperson|lookat|fixed]`. `--rig` replaces the position and rotation components as `create`
+  makes them; targets on a camera with no body or aim component don't move it, and `warnings` says so.
 - `blend --style EaseInOut --time 1`: the brain's default blend. With `--from A --to B` (either left out for any
   camera), a custom blend in the brain's Custom Blends asset, created at `--asset <path>` when it has none.
 
@@ -715,7 +722,8 @@ With the Splines package in the project, `cliext.splines` works with the SplineC
   Undoable; marks the scene dirty.
 - `sample --object Road [--spline 0]` with `--t 0.5` (0-1 along it), `--distance 12` (world units), `--near "[x,y,z]"`
   (the nearest point on the spline, its t and distance), or `--count 10` evenly spaced samples: world position,
-  direction and up.
+  direction and up. On an open spline `--count N` is t = k/(N-1), both ends included; on a closed one t = k/N, N
+  different points (t = 1 is the start again).
 
 ## Addressables
 With the Addressables package in the project, `cliext.addressables`:
@@ -740,7 +748,7 @@ With the Addressables package in the project, `cliext.addressables`:
   count. The first build's "Enable Build Report" prompt is answered as seen, without changing the setting, so it
   doesn't wait on a dialog.
 - `analyze [--rule "Bundle Dependencies"]`: runs the Analyze rules and returns their results with severities
-  (nothing is fixed); exit 6 on error results.
+  (nothing is fixed); exit 6 on error results. A rule's "No issues found" result (severity None) counts as 0 issues.
 
 ## Import settings and presets
 Pipeline's `asset get_import_settings` / `set_import_settings` read and change one asset. `cliext.import batch`
@@ -754,15 +762,18 @@ unity command cliext.import batch --folder Assets/Art --type Texture2D --platfor
 platform override. Each changed asset comes back with `name: old -> new`.
 
 `cliext.presets` manages default presets per folder and checks them:
-- `list`: the default presets per type, with their filters.
+- `list`: the default presets per type, with their filters (one `{defaults: 0, note}` record when there are none).
 - `create --from Assets/Art/UI/Button.png --out Assets/Presets/UITexture.preset`: a preset from an asset's importer.
+  `--only "textureType;mipmapEnabled;maxTextureSize"` keeps just those properties and `--exclude
+  "sRGBTexture;alphaUsage;swizzle"` leaves those out (the preset's excluded properties), so each asset keeps its own;
+  the platform settings block (`m_PlatformSettings`) stays whole unless `--exclude` names it.
 - `set_default --preset Assets/Presets/UITexture.preset --filter Assets/Art/UI`: new and reimported assets in that
-  folder get it (a folder becomes `glob:"Assets/Art/UI/**"`; any Preset Manager filter works). `--remove true` takes
-  it out.
+  folder get it (a folder becomes `glob:"Assets/Art/UI/**"`; any Preset Manager filter works), saved to
+  `ProjectSettings/PresetManager.asset`. `--remove true` takes it out.
 - `apply --preset ... --folder ... [--filter "*.png"] [--dry-run true]`: applies it to existing assets.
 - `audit [--folder Assets]`: every asset whose importer breaks the default preset that applies to it, with each
   differing setting (`m_MaxTextureSize: is 8192, preset 512`). Nothing is changed; exit 6 when anything breaks a
-  preset.
+  preset. A clean audit prints one summary record (`audited`, `presets`, `breaking: 0`, `note`).
 
 ## Animation import, clips and avatar masks
 `cliext.anim` covers what Pipeline's `animation.clip` commands (whole curves on .anim clips) leave out:
@@ -789,10 +800,16 @@ platform override. Each changed asset comes back with `name: old -> new`.
 ## Physics, NavMesh and quality settings
 Pipeline's `settings.*` commands read and set the basics (gravity, tags and layers, the quality level). These add:
 
-- `cliext.physics matrix [--2d true]`: for each named layer, the layers it doesn't collide with.
-  `set_matrix --a Player --b Pickup --collide false [--2d true]` changes a pair (both directions), saved.
+- `cliext.physics layers`: the 32 layers (index, name, built-in). `layers --set "8=Player;9=Pickup"` names user
+  layers (3, 6-31; `8=none` clears one), saved to TagManager.asset; a built-in or already-named index, or a name another
+  layer has, exits 2 with the free indexes.
+- `cliext.physics matrix [--2d true] [--all true]`: for each named layer, the named layers it doesn't collide with
+  and `unnamedIgnored`, the unnamed ones it doesn't collide with (`"3, 6-7, 10-31"`); `--all` lists the unnamed rows.
+  `set_matrix --a Player --b Pickup --collide false [--2d true]` changes a pair (both directions), saved;
+  `set_matrix --a Pickup --only "Player"` makes Pickup collide with just Player and ignore the other 31 layers.
 - `cliext.physics material --path Assets/Physics/Ice.physicMaterial --set "dynamicFriction=0.02;staticFriction=0.05;frictionCombine=Minimum"`
   creates or changes a physics material (`--2d true` for a PhysicsMaterial2D: friction, bounciness).
+  `--assign Floor` (a name or hierarchy path) also puts it on that object's colliders.
 - `cliext.physics raycast --from "[0,20,0]" [--direction "[0,-1,0]" | --to "[x,y,z]"] [--distance 50]
   [--layers "Default;Ground"] [--all true]`: hits in the open scenes (Edit or Play mode) with object, collider,
   point, normal, distance and layer.
@@ -801,6 +818,8 @@ Pipeline's `settings.*` commands read and set the basics (gravity, tags and laye
 - `cliext.navmesh query --from "[0,0,0]" --to "[5,0,5]" [--agent Humanoid] [--areas "Walkable;Mud"]`: a path
   (status, corners, length) on the baked NavMesh, both ends snapped within `--distance`; or `--sample "[x,y,z]"` for
   the nearest NavMesh point.
+- `cliext.navmesh obstacle --object Crate [--shape Box|Capsule] [--size "[2,2,2]"] [--radius 0.5 --height 2]
+  [--center "[0,1,0]"] [--carve true]`: adds or changes the object's NavMeshObstacle; `--remove true` takes it off.
 - `cliext.navmesh surfaces` and `bake [--surface TestRoom|all]` (AI Navigation 2): NavMeshSurfaces and baking them
   as the Bake button does, waiting for the bake. A surface's old data asset is cleared first, so no
   `NavMesh-Room 1.asset` is left; surfaces on prefab instances are baked the button's way (a new asset beside the old).
@@ -923,8 +942,8 @@ All under `unity command --project-path <project>`:
 | `cliext.anim takes` / `edit_clips --path <model>` | A model's takes and imported clips (loop, root motion, masks, events). |
 | `cliext.anim clip` / `edit_clip --path <anim>` | Keys, events and settings on .anim clips. |
 | `cliext.anim mask` / `check` | Avatar masks, and whether clips fit a model. |
-| `cliext.physics matrix` / `set_matrix` / `material` / `raycast` | Collision matrix, physics materials, raycasts. |
-| `cliext.navmesh settings` / `set` / `query` / `surfaces` / `bake` | NavMesh areas, agents, paths, surfaces and baking. |
+| `cliext.physics layers` / `matrix` / `set_matrix` / `material` / `raycast` | Layer names, collision matrix, physics materials (and putting them on colliders), raycasts. |
+| `cliext.navmesh settings` / `set` / `query` / `obstacle` / `surfaces` / `bake` | NavMesh areas, agents, paths, obstacles, surfaces and baking. |
 | `cliext.quality levels` / `set` / `graphics` | Quality levels, platform defaults, graphics APIs. |
 
 `cliext.dialogs log` and `cliext.watchdog report` only read files and run off the main thread, so they still answer

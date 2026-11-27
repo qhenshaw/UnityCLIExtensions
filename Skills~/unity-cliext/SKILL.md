@@ -88,7 +88,7 @@ scripts named below are in `{{cliext-tools}}` (`cliext-wait.ps1`, `cliext-run.ps
 | `cliext.splines` | `list`, `inspect`, `create`, `edit` knots, `sample` |
 | `cliext.addressables` | `status`, `init`, `entries`, `edit`, `build`, `analyze` |
 | `cliext.import`, `cliext.presets` | import settings across folders; default presets per folder and an `audit` |
-| `cliext.physics`, `cliext.navmesh`, `cliext.quality` | collision matrix, materials, raycasts; NavMesh areas, agents, paths, bakes; quality levels, graphics APIs |
+| `cliext.physics`, `cliext.navmesh`, `cliext.quality` | layer names, collision matrix, materials (on colliders), raycasts; NavMesh areas, agents, paths, obstacles, bakes; quality levels, graphics APIs |
 
 Scripts: `cliext-play-capture.ps1` compiles, enters Play mode, optionally slows time (`-TimeScale`), waits for a state,
 runs the project's own commands (`-Run`), and screenshots it at timed moments (`NAME@SECONDS`) or after snippets into a
