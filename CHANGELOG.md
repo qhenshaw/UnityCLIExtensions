@@ -1,6 +1,22 @@
 # Changelog
 All notable changes to Unity CLI Extensions. Versions are git tags: install one with `https://github.com/qhenshaw/UnityCLIExtensions.git#<version>`.
 
+## 0.32.0
+Fixes for the gaps the 0.30.0 T3 round found. 216 EditMode tests and 160 `cliext-clitest.ps1` checks pass.
+- `cliext-clitest.ps1`: new checks `failures.field-report-score`, `pack.converter`, `pack.extract-remove`, `uitk.style-link`, `tl.pose-proof` (on its own timeline), `env.skill-pipeline-names`, `phys.material-folders` and `spl.list-bounds`.
+- asset-packs skill: `PackMaterialConverter` takes the pack folder (`ConvertAll(root)`; `DefaultPackRoot` is marked for the menu item), turns alpha clipping on only when the pack asks for it and the base texture imports with alpha, clears keywords and texture slots it doesn't set, and keeps the vendor's HDR emission colour times its intensity.
+- asset-packs skill: `extract_unitypackage.py --dry-run` lists each match with its own dependencies, so variants can be compared before extracting; `--remove` takes a trial extraction back out with the dependencies only it uses.
+- `cliext.uitk inspect` reports each `<Style src>` as `styleSheets` (sheet, exists, linked) with a warning when the imported UXML holds a null style sheet; `--reimport true` relinks it. `cliext.uitk edit` checks the links after saving a UXML, reimports once when one is null, and returns `styleSheets`, `relinked` and `warnings`.
+- `cliext.timeline director --read` accepts paths from the scene root (a leading `/` is optional) or relative to a bound object; a path that matches nothing names where an object of that name is.
+- animation skill: `ops/pose.cs` proves a pose from a `--read` of every bone (`mode=bones`, `mode=compare`) instead of `--keep-pose` and a restore, which left float noise in the saved scene.
+- unity-cliext skill: names `scene list_open`, `scene get_hierarchy` and `editor.playmode start`/`stop`; says to write ops files with the Write tool, that `capture game_view --camera` needs a Camera, and to check the scene diff after a save (the Cinemachine brain writes Main Camera values).
+- `cliext-field-report.ps1`: a `SKILL.md` printed from the shell counts as loaded, and the logged errors a console read prints are not counted as failures (as T3's score.py does).
+- `cliext.presets create --only/--exclude` take the importer's API names as `cliext.import batch --set` does (`mipmapEnabled`, `filterMode`, `wrapMode`, `spriteImportMode`, `alphaSource`, model and audio names), as well as `m_` property paths. The reply's `resolved` lists what each became, and the help example now works as written.
+- Texture platform settings named by API name (`maxTextureSize`, `textureCompression`, `compressionQuality`, ...) stand for the whole `m_PlatformSettings` block: `--only` keeps it, and `--exclude` refuses them and says to name `m_PlatformSettings` to drop the block.
+- `cliext.presets create --out`, `cliext.physics material --path` and `cliext.cinemachine blend --asset` make a missing folder, or import one that exists on disk but not in the AssetDatabase, instead of refusing it. A refused call still makes nothing, and `foldersMade` lists the folders.
+- `cliext.diff snapshot` takes `--scene` as well as `--path`.
+- `cliext.splines list`/`inspect`/`create`: `boundsCenter` and `boundsSize` are the curve's bounds, not the hull of its tangent handles (a 6-knot circle of radius 5 now reports 9.74, not 10.10).
+
 ## 0.31.0
 Field notes, the field report and a one-step bug report, for problems found in real projects. 210 EditMode tests and 152 `cliext-clitest.ps1` checks pass.
 - **Field notes.** New `cliext.failures note --kind bug|workaround|missing|docs|slow --what "<one line>" [--command <cmd>] [--workaround "<one line>"]`, or `--file note.json` with the same fields (for Windows PowerShell 5.1). It appends one line to `Library/CLIExtensions/field-notes.jsonl` with the time and the Unity, Pipeline and package versions, and no parameter values. An unknown kind exits 2 and lists the kinds; an unreadable `--file` exits 13. `cliext.failures log --notes true` lists the notes, `summary` adds them grouped by kind and command (each record now has `source`: `failure` or `note`), and `clear --notes true` deletes them (`clear` alone still deletes only the failure log and now names the file it cleared).

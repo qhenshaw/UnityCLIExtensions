@@ -511,7 +511,7 @@ Add-Check 'failures.field-report-score' 'cliext.dialogs, cliext.watchdog, cliext
     "skills: $skills; 4 calls, 1 failed (the console read's logged errors not counted)"
 }
 
-Add-Check 'failures.report-zip''cliext.dialogs, cliext.watchdog, cliext.failures' 'cliext-report.ps1 -NoEditor builds a zip with the field report, state files, versions, skills, the CLAUDE.md block and README.txt (zip and folder deleted after)' {
+Add-Check 'failures.report-zip' 'cliext.dialogs, cliext.watchdog, cliext.failures' 'cliext-report.ps1 -NoEditor builds a zip with the field report, state files, versions, skills, the CLAUDE.md block and README.txt (zip and folder deleted after)' {
     $out = Join-Path $work 'report'
     $unz = Join-Path $work 'report-unzipped'
     try {
@@ -2168,25 +2168,36 @@ return string.Format(System.Globalization.CultureInfo.InvariantCulture, "{0:0.0}
 Add-Check 'tl.pose-proof' $tlRow 'the animation skill''s pose proof: pose.cs mode=bones lists the rig''s bones, director --read of them saved to a file, and pose.cs mode=compare puts the active clip under 1 degree and the other clip well away; the scene stays as saved (no --keep-pose, nothing restored)' {
     Need-TlAssets
     $scenePath = "$scratchRel/CliTestPose.unity"
+    # Its own timeline with one animation track and one clip, so what earlier checks left on the shared timeline can't
+    # blend into the pose. The clip is the longest one in the run model; the scrub time is 40% into it.
+    $timelinePath = "$scratchRel/CliTestPose.playable"
+    $runModel = 'Assets/TestLevel/Animations/kenney run.fbx'
     $setup = @'
+var clip = UnityEditor.AssetDatabase.LoadAllAssetsAtPath("{{model}}").OfType<UnityEngine.AnimationClip>().Where(c => !c.name.StartsWith("__preview__")).OrderByDescending(c => c.length).First();
+var t = UnityEngine.ScriptableObject.CreateInstance<UnityEngine.Timeline.TimelineAsset>();
+UnityEditor.AssetDatabase.CreateAsset(t, "{{timeline}}");
+var track = t.CreateTrack<UnityEngine.Timeline.AnimationTrack>(null, "Anim");
+var tc = track.CreateClip(clip); tc.start = 0; tc.duration = clip.length;
+UnityEditor.EditorUtility.SetDirty(t); UnityEditor.AssetDatabase.SaveAssets();
 var scene = UnityEditor.SceneManagement.EditorSceneManager.NewScene(UnityEditor.SceneManagement.NewSceneSetup.EmptyScene, UnityEditor.SceneManagement.NewSceneMode.Additive);
 var model = UnityEditor.AssetDatabase.LoadAssetAtPath<UnityEngine.GameObject>("Assets/TestLevel/Characters/characterMedium.fbx");
 var rig = (UnityEngine.GameObject)UnityEditor.PrefabUtility.InstantiatePrefab(model, scene); rig.name = "CliTestPoseRig";
 var dgo = new UnityEngine.GameObject("CliTestPoseDirector"); UnityEngine.SceneManagement.SceneManager.MoveGameObjectToScene(dgo, scene);
-var d = dgo.AddComponent<UnityEngine.Playables.PlayableDirector>(); d.playOnAwake = false;
-var t = UnityEditor.AssetDatabase.LoadAssetAtPath<UnityEngine.Timeline.TimelineAsset>("{{path}}"); d.playableAsset = t;
-d.SetGenericBinding(t.GetRootTracks().First(x => x.name == "Anim"), rig.GetComponent<UnityEngine.Animator>());
+var d = dgo.AddComponent<UnityEngine.Playables.PlayableDirector>(); d.playOnAwake = false; d.playableAsset = t;
+d.SetGenericBinding(track, rig.GetComponent<UnityEngine.Animator>());
 UnityEditor.SceneManagement.EditorSceneManager.SaveScene(scene, "{{scene}}");
-return "ok|" + scene.isDirty;
+return "ok|" + scene.isDirty + "|" + (clip.length * 0.4).ToString("0.###", System.Globalization.CultureInfo.InvariantCulture);
 '@
     $pose = Join-Path $packageRoot 'Skills~\unity-cliext-animation\ops\pose.cs'
     $scrub = Join-Path $work 'tl-pose-scrub.json'
     try {
-        Expect ((Invoke-Eval 'tl-pose-setup.cs' $setup.Replace('{{path}}', $script:tlPath).Replace('{{scene}}', $scenePath)) -eq 'ok|False') 'scratch scene'
+        $made = "$(Invoke-Eval 'tl-pose-setup.cs' $setup.Replace('{{model}}', $runModel).Replace('{{timeline}}', $timelinePath).Replace('{{scene}}', $scenePath))"
+        Expect ($made -like 'ok|False|*') "scratch scene: $(Short $made)"
+        $scrubTime = $made.Split('|')[2]
         $b = Invoke-Cli @('cliext.eval', 'run', '--file', $pose, '--vars', 'mode=bones;object=CliTestPoseRig;clip=-;time=0;read=-', '--format', 'json')
         $bones = $b.stdout.Trim().Trim([char]34)
         Expect ($b.exit -eq 0 -and $bones -match '^CliTestPoseRig/.+;CliTestPoseRig/') "mode=bones: exit $($b.exit): $(Short ($b.stdout + $b.stderr))"
-        $d = Invoke-Cli @('cliext.timeline', 'director', '--director', 'CliTestPoseDirector', '--time', '1.5', '--read', $bones, '--format', 'json')
+        $d = Invoke-Cli @('cliext.timeline', 'director', '--director', 'CliTestPoseDirector', '--time', $scrubTime, '--read', $bones, '--format', 'json')
         Expect ($d.exit -eq 0 -and @($d.json.read).Count -eq @($bones -split ';').Count) "director --read: exit $($d.exit), $(@($d.json.read).Count) poses: $(Short $d.stderr)"
         [IO.File]::WriteAllText($scrub, $d.stdout)
         $run = @($d.json.tracks | Where-Object { $_.track -eq 'Anim' })[0].clips[0]
@@ -2196,20 +2207,20 @@ return "ok|" + scene.isDirty;
             Expect ($c.exit -eq 0 -and "$($c.stdout)" -match 'mean ([\d.]+) deg over (\d+) bones') "compare $($clip.clip): $(Short ($c.stdout + $c.stderr))"
             [double]::Parse($Matches[1], [Globalization.CultureInfo]::InvariantCulture)
         }
-        $own = Compare-Pose 'Assets/TestLevel/Animations/kenney run.fbx' $run
+        $own = Compare-Pose $runModel $run
         $other = Compare-Pose 'Assets/TestLevel/Animations/standing idle.fbx' ([pscustomobject]@{ clip = 'standing idle'; animationClip = 'standing idle'; localTime = 0.5 })
         Expect ($own -lt 1 -and $other -gt $own + 2) "mean off the active clip $own, off the other $other"
         $dirty = Invoke-Eval 'tl-pose-dirty.cs' "return UnityEngine.SceneManagement.SceneManager.GetSceneByPath(`"$scenePath`").isDirty.ToString();"
         Expect ($dirty -eq 'False') 'the scene is dirty after the proof'
-        "$(@($bones -split ';').Count) bones read at 1.5 s; mean $own deg off $($run.animationClip), $other off standing idle; scene clean"
+        "$(@($bones -split ';').Count) bones read at $scrubTime s; mean $own deg off $($run.animationClip), $other off standing idle; scene clean"
     }
     finally {
-        $close = "var s = UnityEngine.SceneManagement.SceneManager.GetSceneByPath(`"$scenePath`"); if (s.IsValid()) UnityEditor.SceneManagement.EditorSceneManager.CloseScene(s, true); UnityEditor.AssetDatabase.DeleteAsset(`"$scenePath`"); return `"ok`";"
+        $close = "var s = UnityEngine.SceneManagement.SceneManager.GetSceneByPath(`"$scenePath`"); if (s.IsValid()) UnityEditor.SceneManagement.EditorSceneManager.CloseScene(s, true); UnityEditor.AssetDatabase.DeleteAsset(`"$scenePath`"); UnityEditor.AssetDatabase.DeleteAsset(`"$timelinePath`"); return `"ok`";"
         [void](Invoke-Cli @('script', 'eval', '--file', (Write-WorkFile 'tl-pose-close.cs' $close), '--format', 'json'))
     }
 }
 
-Add-Check 'tl.clip-refs' $tlRow'cliext.timeline edit add_clip given a take name two clips share, or a bare model with several clips, exits 2 listing them with their lengths and saves nothing' {
+Add-Check 'tl.clip-refs' $tlRow 'cliext.timeline edit add_clip given a take name two clips share, or a bare model with several clips, exits 2 listing them with their lengths and saves nothing' {
     Need-TlAssets
     $before = Get-TlHash
     $idle = 'Assets/TestLevel/Animations/kenney idle.fbx'
@@ -5379,7 +5390,7 @@ Add-Check 'env.skill-pipeline-names' 'Environment' 'the core skill names the Pip
     'skill names list_open, get_hierarchy, editor.playmode start; the Editor has them and not scene list'
 }
 
-Add-Check 'env.play-capture-run''Environment' 'cliext-play-capture.ps1 -Run "a","b" through powershell -File (which joins them into "a,b") and through & (a real array), and "a;;b", each give two steps; commas inside an argument stay; a bad quote exits 2' {
+Add-Check 'env.play-capture-run' 'Environment' 'cliext-play-capture.ps1 -Run "a","b" through powershell -File (which joins them into "a,b") and through & (a real array), and "a;;b", each give two steps; commas inside an argument stay; a bad quote exits 2' {
     # What an agent gets typing the same thing; -DryRun prints the parsed steps without touching the Editor.
     $ErrorActionPreference = 'Continue'
     $capture = Join-Path $tools 'cliext-play-capture.ps1'
