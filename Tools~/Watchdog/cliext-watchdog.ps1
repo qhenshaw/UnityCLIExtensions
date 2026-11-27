@@ -154,6 +154,26 @@ public static class CliExtNative
         return PostMessage(dialog, WM_COMMAND, (IntPtr)(id & 0xFFFF), button);
     }
 
+    [DllImport("user32.dll")] static extern bool SetForegroundWindow(IntPtr h);
+    [DllImport("user32.dll")] static extern IntPtr GetForegroundWindow();
+    [DllImport("user32.dll")] static extern bool BringWindowToTop(IntPtr h);
+    [DllImport("user32.dll")] static extern bool AttachThreadInput(uint idAttach, uint idAttachTo, bool attach);
+    [DllImport("kernel32.dll")] static extern uint GetCurrentThreadId();
+
+    // Brings a window to the foreground. Windows may refuse a background process; attaching to the foreground
+    // window's input thread for the call is the usual way round. True when the window is then in front.
+    public static bool Activate(IntPtr h)
+    {
+        if (!IsWindow(h)) return false;
+        if (SetForegroundWindow(h) && GetForegroundWindow() == h) return true;
+        uint pid;
+        uint fgThread = GetWindowThreadProcessId(GetForegroundWindow(), out pid), me = GetCurrentThreadId();
+        bool attached = fgThread != 0 && fgThread != me && AttachThreadInput(me, fgThread, true);
+        try { BringWindowToTop(h); SetForegroundWindow(h); }
+        finally { if (attached) AttachThreadInput(me, fgThread, false); }
+        return GetForegroundWindow() == h;
+    }
+
     public static bool CloseWindow(IntPtr h)
     {
         return IsWindow(h) && PostMessage(h, WM_CLOSE, IntPtr.Zero, IntPtr.Zero);
@@ -304,6 +324,26 @@ function Press-Button($dialog, [string]$label) {
     return $false
 }
 
+$MissingSignatureTitle = 'Missing signature'
+
+function Get-DialogNote($dialog) {
+    # What a status reader can't see for itself: a Unity-drawn modal has no Win32 text or buttons to read.
+    if ($dialog.kind -ne 'unity-modal') { return $null }
+    if ($dialog.title -eq $MissingSignatureTitle) {
+        return "Unity's Missing signature dialog (importing a .unitypackage with no signature). It is a UI Toolkit modal, so its text and buttons " +
+               "(Import Anyway or Reimport Anyway, Cancel, Learn More) are drawn by Unity and can't be read or pressed from outside. The package answers it " +
+               "(Import Anyway) once the dialog has focus: -Click 'Import Anyway' brings it to the front for that (the watchdog's -Watch mode does it by itself), and -Close cancels the import. " +
+               "To import a .unitypackage without this dialog, use: unity command cliext.package import --path <file.unitypackage>."
+    }
+    return "A window drawn by Unity (EditorWindow.ShowModal): it has no Win32 text or buttons to read or press. -Close cancels it."
+}
+
+function Wait-WindowGone([int64]$hwnd, [int]$ms) {
+    $deadline = [DateTime]::UtcNow.AddMilliseconds($ms)
+    while ([DateTime]::UtcNow -lt $deadline) { if (-not [CliExtNative]::IsWindow([IntPtr]$hwnd)) { return $true }; Start-Sleep -Milliseconds 200 }
+    return -not [CliExtNative]::IsWindow([IntPtr]$hwnd)
+}
+
 function Find-ButtonByPattern($dialog, [string]$pattern) {
     foreach ($b in $dialog.buttons) { if ($b -match $pattern) { return $b } }
     return $null
@@ -323,6 +363,7 @@ function Get-DefaultPolicy {
             [pscustomobject]@{ name = 'input-system-backends'; title = 'Input System native platform backend'; action = 'click'; button = "^Don't Enable" }
             [pscustomobject]@{ name = 'safe-mode'; title = 'Enter Safe Mode'; action = 'click'; button = '^Ignore' }
             [pscustomobject]@{ name = 'file-picker'; title = '^(Open|Open File|Save|Save As|Save File|Select Folder|Choose Folder|Browse For Folder)$'; action = 'close' }
+            [pscustomobject]@{ name = 'missing-signature'; title = '^Missing signature$'; action = 'focus' }
         )
         # The Editor writes the full policy (WatchdogPolicy.DefaultRules) to Library/CLIExtensions/watchdog-policy.json;
         # these defaults only cover the startup dialogs that come up before the package's code has run.
@@ -399,6 +440,7 @@ function Get-Snapshot($editor, [string]$projectPath, $policy) {
         $out += [ordered]@{
             kind = $d.kind; hwnd = $d.hwnd; title = $d.title; message = $d.message; buttons = $d.buttons; checkboxes = $d.checkboxes
             rule = $(if ($rule) { $rule.name } else { $null }); action = $(if ($rule) { $rule.action } else { 'escalate' })
+            note = (Get-DialogNote $d)
         }
     }
     # Progress windows ("Reloading Domain", "Compiling...") match a "wait" rule: the Editor is busy, not blocked.
@@ -431,11 +473,24 @@ if (-not $Watch) {
         if (-not $editor) { throw "No open Unity Editor for project '$Project'." }
         $dialogs = @(Get-Dialogs $editor)
         if ($Title) { $dialogs = @($dialogs | Where-Object { $_.title -match $Title }) }
+        else {
+            # A progress window ("Running managed callbacks") can sit above the blocking dialog: act on the blocking one first.
+            $clickPolicy = Get-Policy $projectPath
+            $dialogs = @(@($dialogs | Where-Object { $r = Find-Rule $clickPolicy $_; -not ($r -and $r.action -eq 'wait') }) + @($dialogs | Where-Object { $r = Find-Rule $clickPolicy $_; $r -and $r.action -eq 'wait' }))
+        }
         if ($dialogs.Count -eq 0) { throw 'No dialog is open in that Editor.' }
         $d = $dialogs[0]
         if ($Close) {
             $ok = [CliExtNative]::CloseWindow([IntPtr]$d.hwnd)
             Write-Journal $projectPath @{ kind = 'clicked'; title = $d.title; message = $d.message; buttons = $d.buttons; answer = '(close)'; detail = 'watchdog -Close' }
+        } elseif ($d.kind -eq 'unity-modal' -and $d.title -eq $MissingSignatureTitle -and (Get-Label $Click) -match '^(Re)?import Anyway$') {
+            # Drawn by Unity: the Editor's MissingSignatureAnswer presses Import Anyway once the dialog has focus.
+            $front = [CliExtNative]::Activate([IntPtr]$d.hwnd)
+            $gone = Wait-WindowGone $d.hwnd 5000
+            Write-Journal $projectPath @{ kind = 'clicked'; title = $d.title; message = $d.message; buttons = $d.buttons; answer = $Click; detail = "watchdog -Click: focused the dialog for MissingSignatureAnswer (foreground $front, closed $gone)" }
+            if (-not $gone) { throw "Brought '$($d.title)' to the front (foreground: $front), but it is still open after 5 s: the Editor didn't answer it. -Close cancels the import; unity command cliext.package import --path <file> imports without the dialog." }
+        } elseif ($d.kind -eq 'unity-modal') {
+            throw "'$($d.title)' is drawn by Unity: it has no buttons to press from outside. -Close cancels it."
         } else {
             $ok = Press-Button $d $Click
             if (-not $ok) { throw "No button '$Click' on '$($d.title)'. Buttons: $($d.buttons -join ', ')" }
@@ -547,6 +602,14 @@ try {
                 elseif ($action -eq 'close' -and $policy.autoClick) {
                     [CliExtNative]::CloseWindow([IntPtr]$d.hwnd) | Out-Null
                     $entry.kind = 'clicked'; $entry.answer = '(close)'
+                }
+                elseif ($action -eq 'focus' -and $policy.autoClick) {
+                    # A Unity-drawn modal the Editor answers itself once it has focus (Missing signature): bring it to the front.
+                    $front = [CliExtNative]::Activate([IntPtr]$d.hwnd)
+                    $gone = Wait-WindowGone $d.hwnd 3000
+                    $entry.kind = $(if ($gone) { 'clicked' } else { 'escalated' }); $entry.answer = '(focus)'
+                    $entry.detail = "$($rule.name): focused it for the Editor to answer (foreground $front, closed $gone)"
+                    $entry.message = Get-DialogNote $d
                 }
                 else { $entry.kind = 'escalated' }
                 $handled[$key] = [DateTime]::UtcNow

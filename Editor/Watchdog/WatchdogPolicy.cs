@@ -16,7 +16,8 @@ namespace UnityCLIExtensions
         public string title;
         /// <summary>Optional regex on the dialog's message text.</summary>
         public string message;
-        /// <summary><c>click</c> (press <see cref="button"/>), <c>close</c> (cancel the window), <c>wait</c> (a progress window: do nothing), or <c>escalate</c> (report it and leave it open).</summary>
+        /// <summary><c>click</c> (press <see cref="button"/>), <c>close</c> (cancel the window), <c>focus</c> (bring a Unity-drawn modal to the front, so the
+        /// Editor's own handler answers it), <c>wait</c> (a progress window: do nothing), or <c>escalate</c> (report it and leave it open).</summary>
         public string action;
         /// <summary>For <c>click</c>: regex on the button label, mnemonic '&amp;' removed.</summary>
         public string button;
@@ -50,6 +51,9 @@ namespace UnityCLIExtensions
         public string relaunchArgs = "-automated -accept-apiupdate -skipUpgradeDialogs";
         public List<WatchdogRule> rules = new List<WatchdogRule>();
 
+        /// <summary>The rule for Unity's "Missing signature" dialog.</summary>
+        public const string MissingSignatureRule = "missing-signature";
+
         /// <summary>Rules for the dialogs Unity 6 is known to block on. See Documentation~/blocking-dialogs.md.</summary>
         public static List<WatchdogRule> DefaultRules(ScenePromptAnswer scenePrompt)
         {
@@ -73,6 +77,10 @@ namespace UnityCLIExtensions
 
                 // A file picker opened by code waits for a path no agent can type; closing it is Cancel.
                 new WatchdogRule("file-picker", "^(Open|Open File|Save|Save As|Save File|Select Folder|Choose Folder|Browse For Folder)$", "close"),
+
+                // A UI Toolkit modal with no Win32 buttons. MissingSignatureAnswer presses Import Anyway from windowFocusChanged,
+                // which Unity raises only when the dialog gets focus: one opened with the Editor in the background never does.
+                new WatchdogRule(MissingSignatureRule, "^" + MissingSignatureAnswer.DialogTitle + "$", "focus"),
 
                 // These change the project or its setup: leave them for a person.
                 new WatchdogRule("api-updater", "Script Updating Consent|API Update", "escalate"),
