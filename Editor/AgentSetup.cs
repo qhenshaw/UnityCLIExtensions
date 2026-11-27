@@ -127,7 +127,14 @@ namespace UnityCLIExtensions
             return new HashSet<string>(UnityEditor.PackageManager.PackageInfo.GetAllRegisteredPackages().Select(p => p.name), StringComparer.Ordinal);
         }
 
-        private static string Block(string version, ICollection<string> skills)
+        /// <summary>The CLAUDE.md block's sentence that asks agents to record a field note (<c>cliext.failures note</c>).</summary>
+        internal const string NoteSentence =
+            " When a cliext command fails in a way its error doesn't explain, when you work around one (hand-editing a file a cliext command edits, " +
+            "a `script eval` where a command should exist, reading the package source or README to learn a command), or when a command you need doesn't exist, " +
+            "record it before moving on: `unity command cliext.failures note --kind bug|workaround|missing|docs|slow --command \"cliext.<group> <command>\" --what \"<one line>\" [--workaround \"<one line>\"]`, " +
+            "or `--file <note.json>` holding the same fields.";
+
+        internal static string Block(string version, ICollection<string> skills)
         {
             string text =
                 $"{BlockBegin} (managed by Unity CLI Extensions {version}; edits inside this block are replaced) -->\n" +
@@ -138,7 +145,7 @@ namespace UnityCLIExtensions
             foreach (string skill in skills)
                 if (SkillPurposes.TryGetValue(skill, out string purpose))
                     text += $" Before {purpose}, also load the `{skill}` skill (`.claude/skills/{skill}/SKILL.md`).";
-            return text + "\n" + BlockEnd;
+            return text + NoteSentence + "\n" + BlockEnd;
         }
 
         /// <summary>

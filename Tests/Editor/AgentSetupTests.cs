@@ -39,6 +39,19 @@ namespace UnityCLIExtensions.Tests
         }
 
         [Test]
+        public void Block_AsksAgentsToRecordAFieldNote_WithTheExactCommand()
+        {
+            string block = AgentSetup.Block("1.2.3", new List<string> { AgentSetup.SkillName, AgentSetup.VfxSkillName });
+            StringAssert.Contains(AgentSetup.NoteSentence.Trim(), block);
+            StringAssert.Contains("unity command cliext.failures note --kind bug|workaround|missing|docs|slow", block);
+            StringAssert.Contains("--file", block);
+            StringAssert.Contains("a command you need doesn't exist", block);
+            Assert.Less(block.IndexOf("unity-cliext-vfx", System.StringComparison.Ordinal), block.IndexOf("cliext.failures note", System.StringComparison.Ordinal),
+                "the note sentence comes after the skill sentences");
+            StringAssert.EndsWith("<!-- END unity-cliext -->", block);
+        }
+
+        [Test]
         public void StampedVersion_ReadsTheStampOfAnySkill()
         {
             string text = "# Skill\n\n" + AgentSetup.Stamp(AgentSetup.VfxSkillName, "0.23.0") + "\n";
