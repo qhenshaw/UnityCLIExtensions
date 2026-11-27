@@ -3004,6 +3004,499 @@ Add-Check 'spl.edit-rollback' $splRow 'a splines edit batch that adds knots and 
     "failed at op 5, spline unchanged ($k2); Undo -> $k0, Redo -> $k1"
 }
 
+# --- cliext.navmesh ---------------------------------------------------------------------------------------------------
+
+# These groups change PROJECT SETTINGS. Every check that changes one reads it first, puts it back with the command's own
+# set in a finally, and then writes the settings files' original bytes back: Unity re-serializes a settings file it
+# saves (a newer serializedVersion, new default fields), so the values come back but the file text would not. The
+# checks compare a hash of every serialized value of those settings (Get-SettingsSig) before and after, and git status
+# of ProjectSettings when the project is a git repository.
+$settingsFiles = @('ProjectSettings/DynamicsManager.asset', 'ProjectSettings/Physics2DSettings.asset', 'ProjectSettings/NavMeshAreas.asset', 'ProjectSettings/QualitySettings.asset', 'ProjectSettings/ProjectSettings.asset')
+
+function Save-SettingsFiles {
+    $h = @{}
+    foreach ($f in $settingsFiles) {
+        $p = Join-Path $projectPath ($f -replace '/', '\')
+        if (Test-Path $p) { $h[$f] = [IO.File]::ReadAllBytes($p) }
+    }
+    $h
+}
+function Restore-SettingsFiles($saved) {
+    # Writes back each file whose bytes changed; returns the ones it wrote.
+    $put = @()
+    foreach ($f in @($saved.Keys)) {
+        $p = Join-Path $projectPath ($f -replace '/', '\')
+        if ([Convert]::ToBase64String([IO.File]::ReadAllBytes($p)) -ne [Convert]::ToBase64String($saved[$f])) { [IO.File]::WriteAllBytes($p, $saved[$f]); $put += $f }
+    }
+    , $put
+}
+function Get-SettingsGit {
+    if (-not (Test-Path (Join-Path $projectPath '.git'))) { return '(no git)' }
+    $ErrorActionPreference = 'Continue'
+    "$(& git -C $projectPath status --porcelain -- ProjectSettings 2>$null)"
+}
+function Get-SettingsSig {
+    # A hash of every serialized value in the physics, NavMesh and quality settings and the graphics APIs of three
+    # platforms, as the Editor holds them.
+    $code = @'
+var sb = new System.Text.StringBuilder();
+foreach (var path in new[] { "ProjectSettings/DynamicsManager.asset", "ProjectSettings/Physics2DSettings.asset", "ProjectSettings/NavMeshAreas.asset", "ProjectSettings/QualitySettings.asset" })
+{
+    var it = new UnityEditor.SerializedObject(UnityEditor.AssetDatabase.LoadAllAssetsAtPath(path)[0]).GetIterator();
+    while (it.Next(true))
+    {
+        string v = it.propertyType == UnityEditor.SerializedPropertyType.Integer ? it.longValue.ToString()
+            : it.propertyType == UnityEditor.SerializedPropertyType.Enum || it.propertyType == UnityEditor.SerializedPropertyType.LayerMask ? it.intValue.ToString()
+            : it.propertyType == UnityEditor.SerializedPropertyType.Float ? it.floatValue.ToString("R", System.Globalization.CultureInfo.InvariantCulture)
+            : it.propertyType == UnityEditor.SerializedPropertyType.String ? it.stringValue
+            : it.propertyType == UnityEditor.SerializedPropertyType.Boolean ? it.boolValue.ToString()
+            : it.propertyType == UnityEditor.SerializedPropertyType.ObjectReference ? (it.objectReferenceValue == null ? "null" : UnityEditor.AssetDatabase.GetAssetPath(it.objectReferenceValue))
+            : it.isArray ? "n" + it.arraySize : "";
+        sb.Append(it.propertyPath).Append('=').Append(v).Append('\n');
+    }
+}
+foreach (var t in new[] { UnityEditor.BuildTarget.StandaloneWindows64, UnityEditor.BuildTarget.Android, UnityEditor.BuildTarget.WebGL, UnityEditor.EditorUserBuildSettings.activeBuildTarget })
+    sb.Append(t).Append(UnityEditor.PlayerSettings.GetUseDefaultGraphicsAPIs(t)).Append(string.Join(",", UnityEditor.PlayerSettings.GetGraphicsAPIs(t))).Append('\n');
+for (int a = 0; a < 32; a++) for (int b = 0; b < 32; b++) if (UnityEngine.Physics.GetIgnoreLayerCollision(a, b)) sb.Append(a).Append('x').Append(b).Append(' ');
+sb.Append("|q" + UnityEngine.QualitySettings.GetQualityLevel() + " " + UnityEngine.QualitySettings.shadowDistance + " " + UnityEngine.QualitySettings.antiAliasing);
+var md5 = System.Security.Cryptography.MD5.Create();
+return System.BitConverter.ToString(md5.ComputeHash(System.Text.Encoding.UTF8.GetBytes(sb.ToString()))).Replace("-", "") + "|" + sb.Length;
+'@
+    $r = Invoke-Cli @('script', 'eval', '--file', (Write-WorkFile 'settings-sig.cs' $code), '--format', 'json')
+    Expect ($r.exit -eq 0) "settings signature: exit $($r.exit): $(Short ($r.stdout + $r.stderr))"
+    $r.stdout.Trim().Trim('"')
+}
+function Invoke-Eval([string]$name, [string]$code) {
+    $r = Invoke-Cli @('script', 'eval', '--file', (Write-WorkFile $name $code), '--format', 'json')
+    Expect ($r.exit -eq 0) "script eval ${name}: exit $($r.exit): $(Short ($r.stdout + $r.stderr))"
+    $r.stdout.Trim().Trim('"')
+}
+function New-ScratchFolder {
+    [void](Invoke-Eval 'scratch-folder.cs' 'if (!UnityEditor.AssetDatabase.IsValidFolder("Assets/_CliextTests")) UnityEditor.AssetDatabase.CreateFolder("Assets", "_CliextTests"); if (!UnityEditor.AssetDatabase.IsValidFolder("Assets/_CliextTests/CliTest")) UnityEditor.AssetDatabase.CreateFolder("Assets/_CliextTests", "CliTest"); return "ok";')
+}
+function Expect-SettingsBack($saved, [string]$sig0, [string]$git0, [string]$what) {
+    # After the finally put the values back: same values in the Editor, then the original file bytes, then git.
+    $sig1 = Get-SettingsSig
+    $put = Restore-SettingsFiles $saved
+    Expect ($sig1 -eq $sig0) "${what}: the settings were not put back ($sig0 -> $sig1)"
+    $git1 = Get-SettingsGit
+    Expect ($git1 -eq $git0) "${what}: git status of ProjectSettings changed: '$git0' -> '$git1'"
+    $(if ($put.Count) { "values restored; re-serialized $($put -join ', ') written back" } else { 'values restored, files untouched' })
+}
+function Test-SettingsFailures([string]$group, [object[]]$cases) {
+    # Each case: args, hint regex, exit, what. Returns the labels; the settings and their files must not change.
+    $saved = Save-SettingsFiles
+    $sig0 = Get-SettingsSig
+    $git0 = Get-SettingsGit
+    $seen = @()
+    foreach ($c in $cases) {
+        $x = Invoke-Cli (@($group) + $c[0] + @('--format', 'json'))
+        Expect-P3Failure $x $c[1] $c[3] $c[2]
+        $seen += "$($c[3]) $($x.exit)"
+    }
+    $sig1 = Get-SettingsSig
+    $put = Restore-SettingsFiles $saved
+    Expect ($sig1 -eq $sig0) "a failed $group call changed the settings ($sig0 -> $sig1)"
+    Expect ($put.Count -eq 0) "a failed $group call wrote $($put -join ', ')"
+    Expect ((Get-SettingsGit) -eq $git0) "a failed $group call changed git status of ProjectSettings"
+    , $seen
+}
+
+# Area and agent changes go to the project's NavMesh settings and are put back in a finally. Bakes run in a scratch
+# scene saved in the scratch folder (a 30 x 30 floor with a NavMeshSurface, a wall across its middle and an island
+# that doesn't connect), so the baked data goes next to it there; the scene that was open is reopened from disk after,
+# and TestLevel's own surface is never baked.
+$navRow = 'cliext.navmesh'
+
+function Open-NavScene([string]$name) {
+    $scenes = Invoke-Cli @('scene', 'list_open', '--format', 'json')
+    Expect (-not (@($scenes.json) | Where-Object { $_.isDirty })) "an open scene has unsaved changes: $(Short $scenes.stdout)"
+    New-ScratchFolder
+    $code = @'
+string before = UnityEngine.SceneManagement.SceneManager.GetActiveScene().path;
+var s = UnityEditor.SceneManagement.EditorSceneManager.NewScene(UnityEditor.SceneManagement.NewSceneSetup.EmptyScene, UnityEditor.SceneManagement.NewSceneMode.Single);
+var floor = UnityEngine.GameObject.CreatePrimitive(UnityEngine.PrimitiveType.Plane); floor.name = "CliTestFloor"; floor.transform.localScale = new UnityEngine.Vector3(3, 1, 3);
+var wall = UnityEngine.GameObject.CreatePrimitive(UnityEngine.PrimitiveType.Cube); wall.name = "CliTestWall"; wall.transform.SetParent(floor.transform, false);
+wall.transform.localPosition = new UnityEngine.Vector3(0, 1, 0); wall.transform.localScale = new UnityEngine.Vector3(20f / 3, 2, 1f / 3);
+var island = UnityEngine.GameObject.CreatePrimitive(UnityEngine.PrimitiveType.Plane); island.name = "CliTestIsland"; island.transform.SetParent(floor.transform, false);
+island.transform.localPosition = new UnityEngine.Vector3(40f / 3, 0, 0); island.transform.localScale = new UnityEngine.Vector3(1f / 3, 1, 1f / 3);
+floor.AddComponent<Unity.AI.Navigation.NavMeshSurface>().collectObjects = Unity.AI.Navigation.CollectObjects.Children;
+UnityEditor.SceneManagement.EditorSceneManager.SaveScene(s, "{{path}}");
+return "ok|" + before;
+'@
+    $r = Invoke-Cli @('script', 'eval', '--file', (Write-WorkFile 'nav-open.cs' $code.Replace('{{path}}', "$scratchRel/$name.unity")), '--format', 'json')
+    Expect ($r.exit -eq 0 -and "$($r.stdout)" -match 'ok\|(Assets/[^"]+\.unity)') "scratch NavMesh scene: exit $($r.exit): $(Short ($r.stdout + $r.stderr))"
+    $Matches[1]
+}
+function Invoke-NavBake([string]$scene) {
+    $b = Invoke-Cli @('cliext.navmesh', 'bake', '--surface', 'CliTestFloor', '--format', 'json') 300
+    Expect ($b.exit -eq 0) "bake: exit $($b.exit): $(Short ($b.stdout + $b.stderr))"
+    $b
+}
+
+Add-Check 'nav.settings-set' $navRow 'cliext.navmesh set names area 3 and sets its cost, and changes the Humanoid agent''s radius and height; settings and NavMesh.GetAreaFromName/GetAreaCost/GetSettingsByID show them; put back in a finally (--name none clears the area), the settings and their files are as before' {
+    $saved = Save-SettingsFiles; $sig0 = Get-SettingsSig; $git0 = Get-SettingsGit
+    $s0 = Invoke-Cli @('cliext.navmesh', 'settings', '--format', 'json')
+    Expect ($s0.exit -eq 0) "settings: exit $($s0.exit): $(Short ($s0.stdout + $s0.stderr))"
+    $area3 = @($s0.json.areas) | Where-Object { $_.index -eq 3 }
+    Expect (-not $area3) "area 3 is already named: $(Short ($area3 | ConvertTo-Json -Compress))"
+    $agent = @($s0.json.agents)[0]
+    Expect ($null -ne $agent.drop -and $null -ne $agent.jump) "settings has no drop and jump: $(Short ($agent | ConvertTo-Json -Compress))"
+    $ci = [Globalization.CultureInfo]::InvariantCulture
+    try {
+        $a = Invoke-Cli @('cliext.navmesh', 'set', '--index', '3', '--name', 'CliTestMud', '--cost', '3.5', '--format', 'json')
+        Expect ($a.exit -eq 0 -and @($a.json.changes).Count -eq 2) "set area: exit $($a.exit): $(Short ($a.stdout + $a.stderr))"
+        $g = Invoke-Cli @('cliext.navmesh', 'set', '--agent', $agent.name, '--set', 'agentRadius=0.4;agentHeight=1.8', '--format', 'json')
+        Expect ($g.exit -eq 0 -and (@($g.json.changes) -join ';') -match 'agentRadius: .* -> 0\.4;.*agentHeight: .* -> 1\.8') "set agent: exit $($g.exit): $(Short ($g.stdout + $g.stderr))"
+        $s1 = Invoke-Cli @('cliext.navmesh', 'settings', '--format', 'json')
+        $m = @($s1.json.areas) | Where-Object { $_.index -eq 3 }; $ag = @($s1.json.agents)[0]
+        Expect ($m.name -eq 'CliTestMud' -and $m.cost -eq 3.5 -and $ag.radius -eq 0.4 -and $ag.height -eq 1.8) "settings after: $(Short $s1.stdout 300)"
+        $e = Invoke-Eval 'nav-api.cs' "var s = UnityEngine.AI.NavMesh.GetSettingsByID($($agent.id)); var ci = System.Globalization.CultureInfo.InvariantCulture; return UnityEngine.AI.NavMesh.GetAreaFromName(`"CliTestMud`") + `"|`" + UnityEngine.AI.NavMesh.GetAreaCost(3).ToString(ci) + `"|`" + s.agentRadius.ToString(ci) + `"|`" + s.agentHeight.ToString(ci);"
+        Expect ($e -eq '3|3.5|0.4|1.8') "NavMesh API: $e"
+    }
+    finally {
+        $ba = Invoke-Cli @('cliext.navmesh', 'set', '--index', '3', '--name', 'none', '--cost', '1', '--format', 'json')
+        $bg = Invoke-Cli @('cliext.navmesh', 'set', '--agent', $agent.name, '--set', "agentRadius=$(([double]$agent.radius).ToString($ci));agentHeight=$(([double]$agent.height).ToString($ci))", '--format', 'json')
+    }
+    Expect ($ba.exit -eq 0 -and $bg.exit -eq 0) "set back: area exit $($ba.exit) $(Short $ba.stderr); agent exit $($bg.exit) $(Short $bg.stderr)"
+    $restored = Expect-SettingsBack $saved $sig0 $git0 'navmesh set'
+    "area 3 CliTestMud cost 3.5, $($agent.name) radius 0.4 height 1.8 (NavMesh API $e); $restored"
+}
+
+Add-Check 'nav.bake-query' $navRow 'in a scratch scene saved in the scratch folder, cliext.navmesh surfaces lists the unbaked surface, bake writes its data next to the scene, surfaces then names it, query finds a path around the wall (NavMesh.CalculatePath agrees) and --sample the nearest point' {
+    $orig = Open-NavScene 'CliTestNav'
+    $data = "$scratchRel/CliTestNav/NavMesh-CliTestFloor.asset"
+    try {
+        $s = Invoke-Cli @('cliext.navmesh', 'surfaces', '--format', 'json')
+        $rec = @($s.json) | Where-Object { $_.gameObject -eq 'CliTestFloor' }
+        Expect ($s.exit -eq 0 -and $rec -and $null -eq $rec.data -and $rec.collect -eq 'Children' -and $rec.agent -eq 'Humanoid') "surfaces before: exit $($s.exit): $(Short ($s.stdout + $s.stderr))"
+        $b = Invoke-NavBake
+        Expect ($b.json.surface -eq 'CliTestFloor' -and $b.json.data -eq $data) "bake reply: $(Short $b.stdout)"
+        Expect (Test-Path (Join-Path $projectPath ($data -replace '/', '\'))) "no data asset at $data"
+        $s2 = Invoke-Cli @('cliext.navmesh', 'surfaces', '--format', 'json')
+        Expect ((@($s2.json) | Where-Object { $_.gameObject -eq 'CliTestFloor' }).data -eq $data) "surfaces after: $(Short $s2.stdout)"
+        $q = Invoke-Cli @('cliext.navmesh', 'query', '--from', '[-5,0,-5]', '--to', '[-5,0,5]', '--format', 'json')
+        Expect ($q.exit -eq 0 -and $q.json.status -eq 'PathComplete' -and @($q.json.corners).Count -gt 2 -and $q.json.length -gt 12) "query: exit $($q.exit): $(Short ($q.stdout + $q.stderr))"
+        $e = Invoke-Eval 'nav-path.cs' 'var p = new UnityEngine.AI.NavMeshPath(); UnityEngine.AI.NavMeshHit a, b; UnityEngine.AI.NavMesh.SamplePosition(new UnityEngine.Vector3(-5, 0, -5), out a, 2, -1); UnityEngine.AI.NavMesh.SamplePosition(new UnityEngine.Vector3(-5, 0, 5), out b, 2, -1); UnityEngine.AI.NavMesh.CalculatePath(a.position, b.position, -1, p); return p.status + "|" + p.corners.Length;'
+        Expect ($e -eq "PathComplete|$(@($q.json.corners).Count)") "NavMesh.CalculatePath: $e, query had $(@($q.json.corners).Count) corners"
+        $w = Invoke-Cli @('cliext.navmesh', 'query', '--from', '[-5,0,-5]', '--to', '[5,0,-5]', '--agent', 'Humanoid', '--areas', 'Walkable', '--format', 'json')
+        Expect ($w.exit -eq 0 -and $w.json.status -eq 'PathComplete' -and @($w.json.corners).Count -eq 2) "straight query with agent and areas: exit $($w.exit): $(Short ($w.stdout + $w.stderr))"
+        $sm = Invoke-Cli @('cliext.navmesh', 'query', '--sample', '[3,1,3]', '--format', 'json')
+        Expect ($sm.exit -eq 0 -and $sm.json.found -eq $true -and $sm.json.area -eq 'Walkable' -and $sm.json.distance -lt 1.1) "sample: exit $($sm.exit): $(Short ($sm.stdout + $sm.stderr))"
+    }
+    finally { $closed = Close-P3Scene $orig }
+    Expect ("$closed" -match "^`"?$([regex]::Escape($orig))\|False\|1") "after closing the scratch scene: $(Short $closed)"
+    "baked to $data; path around the wall $($q.json.length) long, $(@($q.json.corners).Count) corners (CalculatePath $e); sample $($sm.json.position)"
+}
+
+Add-Check 'nav.errors' $navRow 'cliext.navmesh query with no NavMesh, points off it, a partial path, unknown areas and agents and bad arguments; set with bad indexes, names, costs, agents, settings and values and changes that do nothing; bake of an unknown surface, a bad timeout and an unsaved scene exit 13, 2 or 6 with the fix, and change nothing' {
+    $seen = @()
+    # An untitled scene with a surface: nothing baked, and a bake would put its data in Assets/.
+    $orig = Open-P3Scene
+    try {
+        [void](Invoke-Eval 'nav-untitled.cs' 'var f = UnityEngine.GameObject.CreatePrimitive(UnityEngine.PrimitiveType.Plane); f.name = "CliTestFloor"; f.AddComponent<Unity.AI.Navigation.NavMeshSurface>(); return "ok";')
+        $assets0 = @(Get-ChildItem (Join-Path $projectPath 'Assets') -File -Filter 'NavMesh*' | ForEach-Object { $_.Name })
+        $seen += Test-SettingsFailures 'cliext.navmesh' @(
+            @(@('query', '--sample', '[0,0,0]'), 'no baked NavMesh: bake one with cliext\.navmesh bake', 13, 'query with no NavMesh'),
+            @(@('bake'), "'CliTestFloor' is in an unsaved scene: save the scene first", 6, 'bake in an unsaved scene')
+        )
+        $assets1 = @(Get-ChildItem (Join-Path $projectPath 'Assets') -File -Filter 'NavMesh*' | ForEach-Object { $_.Name })
+        Expect (($assets1 -join ',') -eq ($assets0 -join ',')) "a refused bake wrote to Assets/: $($assets1 -join ', ')"
+    }
+    finally { $closed = Close-P3Scene $orig }
+    Expect ("$closed" -match "^`"?$([regex]::Escape($orig))\|False\|1") "after closing the untitled scene: $(Short $closed)"
+    $orig = Open-NavScene 'CliTestNavErr'
+    try {
+        [void](Invoke-NavBake)
+        $seen += Test-SettingsFailures 'cliext.navmesh' @(
+            @(@('query', '--from', '[100,0,100]', '--to', '[0,0,-5]'), '--from \[100,0,100\] isn''t within 2 of the NavMesh: move it onto the NavMesh \(cliext\.navmesh query --sample', 13, 'a path from a point off the NavMesh'),
+            @(@('query', '--from', '[-5,0,-5]', '--to', '[0,9,-5]'), '--to \[0,9,-5\] isn''t within 2', 13, 'a path to a point above the NavMesh'),
+            @(@('query', '--sample', '[100,0,100]'), 'No NavMesh within 2 of \[100,0,100\]: raise --distance', 13, 'a sample far from the NavMesh'),
+            @(@('query', '--sample', '[0,0,-5]', '--areas', 'Jump'), 'No NavMesh within 2 of .*or allow more --areas', 13, 'a sample in an area with no NavMesh'),
+            @(@('query', '--from', '[-5,0,-5]', '--to', '[40,0,0]'), 'Only a partial path: the NavMesh doesn''t connect', 6, 'a path to an unconnected island'),
+            @(@('query', '--from', '[0,0,-5]', '--to', '[0,0,5]', '--areas', 'Walkabel'), "--areas: no area 'Walkabel'\. Did you mean: Walkable\? Areas: Walkable, Not Walkable, Jump\. cliext\.navmesh settings", 2, 'a misspelled area'),
+            @(@('query', '--sample', '[0,0,-5]', '--agent', 'Humanod'), "No agent type 'Humanod'\. Did you mean: Humanoid\? Agent types: Humanoid", 2, 'a misspelled agent'),
+            @(@('query', '--sample', '[0,0,-5]', '--agent', '12345'), "No agent type '12345'\..*Agent types: Humanoid\. cliext\.navmesh settings", 2, 'an unknown agent id'),
+            @(@('query', '--sample', '[0,0]'), "--sample: Expected 3 numbers, got '\[0,0\]'", 2, 'a bad sample point'),
+            @(@('query', '--from', '[0,0,-5]'), 'A path needs both ends: pass --to too', 2, 'a path without --to'),
+            @(@('query'), 'Pass --from and --to for a path, or --sample', 2, 'query with nothing'),
+            @(@('query', '--sample', '[0,0,-5]', '--from', '[0,0,-5]', '--to', '[0,0,5]'), 'Give --sample, or --from and --to, not both', 2, 'query with --sample and a path'),
+            @(@('query', '--sample', '[0,0,-5]', '--distance', '0'), '--distance 0: give more than 0', 2, 'query with distance 0'),
+            @(@('set', '--index', '1', '--name', 'CliTestX'), 'Areas 0-2 are built in .*their names can''t change', 2, 'renaming a built-in area'),
+            @(@('set', '--index', '40', '--cost', '2'), '--index 40: areas are 0-31', 2, 'an area index out of range'),
+            @(@('set', '--index', '3', '--cost', '0.5'), '--cost 0\.5: area costs are 1 or more', 2, 'a cost under 1'),
+            @(@('set', '--index', '3', '--name', 'Jump'), "Area 2 is already named 'Jump': pick another name", 2, 'a name another area has'),
+            @(@('set', '--index', '3'), '--index 3: pass --name or --cost', 2, 'an index with nothing to change'),
+            @(@('set', '--name', 'CliTestX'), '--name and --cost change the area at --index: pass --index', 2, '--name without --index'),
+            @(@('set'), 'Nothing to change: pass --index with --name or --cost, or --agent with --set', 2, 'set with nothing'),
+            @(@('set', '--index', '2', '--cost', '2'), 'Area 2 \(Jump\) already has cost 2: nothing would change', 6, 'an area cost it has'),
+            @(@('set', '--agent', 'Humanod', '--set', 'agentRadius=0.4'), "No agent type 'Humanod'\. Did you mean: Humanoid", 2, 'set a misspelled agent'),
+            @(@('set', '--agent', 'Humanoid'), '--agent Humanoid: pass --set', 2, 'an agent with nothing to set'),
+            @(@('set', '--set', 'agentRadius=0.4'), '--set changes the agent type named by --agent: pass --agent', 2, '--set without --agent'),
+            @(@('set', '--agent', 'Humanoid', '--set', 'agentRadus=0.4'), "No setting 'agentRadus'\. Did you mean: agentRadius\? Settings: agentRadius, agentHeight", 2, 'a misspelled agent setting'),
+            @(@('set', '--agent', 'Humanoid', '--set', 'agentTypeID=5'), "No setting 'agentTypeID'", 2, 'setting the agent id'),
+            @(@('set', '--agent', 'Humanoid', '--set', 'agentRadius=abc'), "agentRadius: 'abc' isn't a Single value: give a number", 2, 'a radius that is not a number'),
+            @(@('set', '--agent', 'Humanoid', '--set', 'agentHeight=1.5;agentRadius=-1'), 'agentRadius -1 is out of range: give more than 0', 2, 'a negative radius (after a good height)'),
+            @(@('set', '--agent', 'Humanoid', '--set', 'agentSlope=75'), 'agentSlope 75 is out of range: give 0 to 60', 2, 'a slope of 75'),
+            @(@('set', '--agent', 'Humanoid', '--set', 'agentRadius'), "'agentRadius' isn't name=value", 2, 'a setting without a value'),
+            @(@('set', '--index', '3', '--name', 'CliTestX', '--agent', 'Humanoid', '--set', 'agentRadius=-1'), 'agentRadius -1 is out of range', 2, 'a good area change with a bad agent value'),
+            @(@('bake', '--surface', 'CliTestFlor'), "No active NavMeshSurface on 'CliTestFlor'\. Did you mean: CliTestFloor\?", 13, 'bake a misspelled surface'),
+            @(@('bake', '--surface', 'Nothing'), "No active NavMeshSurface on 'Nothing'\. Surfaces: CliTestFloor\. cliext\.navmesh surfaces lists them", 13, 'bake an unknown surface')
+        )
+        # --timeout is also the CLI's own wait, which refuses 0 before the command runs (a usage envelope on stdout).
+        $to = Invoke-Cli @('cliext.navmesh', 'bake', '--timeout', '0', '--format', 'json')
+        Expect ($to.exit -eq 2 -and "$($to.stdout)$($to.stderr)" -match 'Timeout must be a positive number') "bake --timeout 0: exit $($to.exit): $(Short ($to.stdout + $to.stderr))"
+        $seen += 'bake with timeout 0 2'
+        $s = Invoke-Cli @('cliext.navmesh', 'surfaces', '--format', 'json')
+        Expect ((@($s.json) | Where-Object { $_.gameObject -eq 'CliTestFloor' }).data -eq "$scratchRel/CliTestNavErr/NavMesh-CliTestFloor.asset") "the surface's data changed: $(Short $s.stdout)"
+        $agentState = Invoke-Cli @('cliext.navmesh', 'settings', '--format', 'json')
+        Expect (-not (@($agentState.json.areas) | Where-Object { $_.index -eq 3 })) "area 3 was named by a failed call: $(Short $agentState.stdout)"
+    }
+    finally { $closed = Close-P3Scene $orig }
+    Expect ("$closed" -match "^`"?$([regex]::Escape($orig))\|False\|1") "after closing the scratch scene: $(Short $closed)"
+    "$($seen.Count) failures with the fix; settings, files and the baked data unchanged"
+}
+
+Add-Check 'nav.bake-play-mode' $navRow 'in Play mode cliext.navmesh bake exits 6 naming editor.playmode stop and bakes nothing; back in Edit mode the scene is clean and no data folder was made next to it' {
+    $scenes = Invoke-Cli @('scene', 'list_open', '--format', 'json')
+    $active = @($scenes.json) | Where-Object { $_.isActive } | Select-Object -First 1
+    Expect ($active -and -not (@($scenes.json) | Where-Object { $_.isDirty })) "no clean saved scene open: $(Short $scenes.stdout)"
+    $dataDir = Join-Path $projectPath (($active.path -replace '\.unity$', '') -replace '/', '\')
+    $hadDir = Test-Path $dataDir
+    $start = Invoke-Cli @('editor.playmode', 'start', '--format', 'json')
+    try {
+        Expect ((Wait-Editor 120) -eq 0) "Play mode didn't start: $(Short ($start.stdout + $start.stderr))"
+        $b = Invoke-Cli @('cliext.navmesh', 'bake', '--format', 'json')
+        Expect-P3Failure $b 'works in Edit mode .*stop Play mode first \(editor\.playmode stop\)' 'bake in Play mode' 6
+        $q = Invoke-Cli @('cliext.navmesh', 'surfaces', '--format', 'json')
+        Expect ($q.exit -eq 0) "surfaces in Play mode: exit $($q.exit)"
+    }
+    finally {
+        [void](Invoke-Cli @('editor.playmode', 'stop', '--format', 'json'))
+        [void](Wait-Editor 120)
+    }
+    $mode = Invoke-Eval 'nav-mode.cs' 'var a = UnityEngine.SceneManagement.SceneManager.GetActiveScene(); return (UnityEditor.EditorApplication.isPlaying ? "playing" : "edit") + "|" + a.isDirty;'
+    Expect ($mode -eq 'edit|False') "after Play mode: $mode"
+    Expect ((Test-Path $dataDir) -eq $hadDir) "a data folder appeared next to $($active.path)"
+    "bake refused in Play mode ($(Short $b.stderr 90)); back in Edit mode, $($active.name) clean"
+}
+
+# --- cliext.physics ---------------------------------------------------------------------------------------------------
+
+# set_matrix changes the project's collision matrix and is put back in a finally. Raycasts run in the untitled scene of
+# Open-P3Scene with a cube (layer Water) over a plane (Default), discarded with it. Materials go in the scratch folder.
+$physRow = 'cliext.physics'
+
+function Add-PhysTargets {
+    [void](Invoke-Eval 'phys-targets.cs' @'
+var box = UnityEngine.GameObject.CreatePrimitive(UnityEngine.PrimitiveType.Cube); box.name = "CliTestBox"; box.transform.position = new UnityEngine.Vector3(0, 0.5f, 0); box.layer = 4;
+var ground = UnityEngine.GameObject.CreatePrimitive(UnityEngine.PrimitiveType.Plane); ground.name = "CliTestGround";
+return "ok";
+'@)
+}
+
+Add-Check 'phys.matrix-set' $physRow 'cliext.physics set_matrix makes Default and Water ignore each other: Physics.GetIgnoreLayerCollision and matrix (both rows) show it; the 2D matrix reads; set back in a finally, the settings and their files are as before' {
+    $saved = Save-SettingsFiles; $sig0 = Get-SettingsSig; $git0 = Get-SettingsGit
+    $before = Invoke-Eval 'phys-ignore0.cs' 'return UnityEngine.Physics.GetIgnoreLayerCollision(0, 4).ToString();'
+    Expect ($before -eq 'False') "Default and Water already ignore each other: $before"
+    try {
+        $r = Invoke-Cli @('cliext.physics', 'set_matrix', '--a', 'Default', '--b', 'Water', '--collide', 'false', '--format', 'json')
+        Expect ($r.exit -eq 0 -and $r.json.a -eq 'Default' -and $r.json.b -eq 'Water' -and $r.json.collide -eq $false) "set_matrix: exit $($r.exit): $(Short ($r.stdout + $r.stderr))"
+        $now = Invoke-Eval 'phys-ignore1.cs' 'return UnityEngine.Physics.GetIgnoreLayerCollision(0, 4) + "|" + UnityEngine.Physics.GetIgnoreLayerCollision(4, 0);'
+        Expect ($now -eq 'True|True') "GetIgnoreLayerCollision(0,4)|(4,0): $now"
+        $m = Invoke-Cli @('cliext.physics', 'matrix', '--format', 'json')
+        $d = @($m.json) | Where-Object { $_.layer -eq 'Default' }; $w = @($m.json) | Where-Object { $_.layer -eq 'Water' }
+        Expect ($m.exit -eq 0 -and (@($d.ignores) -contains 'Water') -and (@($w.ignores) -contains 'Default')) "matrix: $(Short $m.stdout)"
+        $m2 = Invoke-Cli @('cliext.physics', 'matrix', '--2d', 'true', '--format', 'json')
+        Expect ($m2.exit -eq 0 -and @($m2.json).Count -ge 1 -and (@($m2.json) | Where-Object { $_.layer -eq 'Default' })) "matrix --2d: exit $($m2.exit): $(Short ($m2.stdout + $m2.stderr))"
+    }
+    finally { $back = Invoke-Cli @('cliext.physics', 'set_matrix', '--a', 'Default', '--b', 'Water', '--collide', 'true', '--format', 'json') }
+    Expect ($back.exit -eq 0) "set back: exit $($back.exit): $(Short ($back.stdout + $back.stderr))"
+    $restored = Expect-SettingsBack $saved $sig0 $git0 'set_matrix'
+    "Default x Water ignored (GetIgnoreLayerCollision True both ways), matrix shows both rows; $restored"
+}
+
+Add-Check 'phys.material' $physRow 'cliext.physics material creates a 3D material with frictions, bounciness and combines, then changes one field of it, and creates a 2D one; the assets'' fields as loaded show the values' {
+    New-ScratchFolder
+    $p3 = "$scratchRel/CliTestBouncy.physicMaterial"; $p2 = "$scratchRel/CliTestSlide.physicsMaterial2D"
+    $c = Invoke-Cli @('cliext.physics', 'material', '--path', $p3, '--set', 'dynamicFriction=0.2;staticFriction=0.3;bounciness=0.8;frictionCombine=Minimum;bounceCombine=Maximum', '--format', 'json')
+    Expect ($c.exit -eq 0 -and $c.json.created -eq $true -and (@($c.json.set) -join ',') -eq 'dynamicFriction,staticFriction,bounciness,frictionCombine,bounceCombine') "create: exit $($c.exit): $(Short ($c.stdout + $c.stderr))"
+    $read = 'var m = UnityEditor.AssetDatabase.LoadAssetAtPath<UnityEngine.PhysicsMaterial>("{{p}}"); var ci = System.Globalization.CultureInfo.InvariantCulture; return m == null ? "none" : m.dynamicFriction.ToString(ci) + "|" + m.staticFriction.ToString(ci) + "|" + m.bounciness.ToString(ci) + "|" + m.frictionCombine + "|" + m.bounceCombine;'
+    $f1 = Invoke-Eval 'phys-mat1.cs' $read.Replace('{{p}}', $p3)
+    Expect ($f1 -eq '0.2|0.3|0.8|Minimum|Maximum') "the asset after create: $f1"
+    $e = Invoke-Cli @('cliext.physics', 'material', '--path', $p3, '--set', 'bounciness=0.1;frictionCombine=Minimum', '--format', 'json')
+    Expect ($e.exit -eq 0 -and $e.json.created -eq $false -and (@($e.json.set) -join ',') -eq 'bounciness') "change: exit $($e.exit): $(Short ($e.stdout + $e.stderr))"
+    $f2 = Invoke-Eval 'phys-mat2.cs' $read.Replace('{{p}}', $p3)
+    Expect ($f2 -eq '0.2|0.3|0.1|Minimum|Maximum') "the asset after the change: $f2"
+    $d = Invoke-Cli @('cliext.physics', 'material', '--path', $p2, '--2d', 'true', '--set', 'friction=0.05;bounciness=0.5', '--format', 'json')
+    Expect ($d.exit -eq 0 -and $d.json.created -eq $true) "2D create: exit $($d.exit): $(Short ($d.stdout + $d.stderr))"
+    $f3 = Invoke-Eval 'phys-mat3.cs' "var m = UnityEditor.AssetDatabase.LoadAssetAtPath<UnityEngine.PhysicsMaterial2D>(`"$p2`"); return m == null ? `"none`" : m.friction.ToString(System.Globalization.CultureInfo.InvariantCulture) + `"|`" + m.bounciness.ToString(System.Globalization.CultureInfo.InvariantCulture);"
+    Expect ($f3 -eq '0.05|0.5') "the 2D asset: $f3"
+    "3D $f1 -> $f2; 2D $f3"
+}
+
+Add-Check 'phys.raycast' $physRow 'in a scratch scene with a cube (Water) over a plane, cliext.physics raycast down hits the cube first, --all hits both in order, --layers Default skips the cube, --to casts toward a point; Physics.Raycast agrees' {
+    $orig = Open-P3Scene
+    try {
+        Add-PhysTargets
+        $r = Invoke-Cli @('cliext.physics', 'raycast', '--from', '[0,5,0]', '--format', 'json')
+        Expect ($r.exit -eq 0 -and $r.json.gameObject -eq 'CliTestBox' -and $r.json.distance -eq 4 -and $r.json.layer -eq 'Water' -and $r.json.point -eq '[0,1,0]') "down: exit $($r.exit): $(Short ($r.stdout + $r.stderr))"
+        $a = Invoke-Cli @('cliext.physics', 'raycast', '--from', '[0,5,0]', '--direction', '[0,-1,0]', '--all', 'true', '--format', 'json')
+        Expect ($a.exit -eq 0 -and (@($a.json | ForEach-Object { "$($_.gameObject)@$([double]$_.distance)" }) -join ',') -eq 'CliTestBox@4,CliTestGround@5') "--all: exit $($a.exit): $(Short ($a.stdout + $a.stderr))"
+        $l = Invoke-Cli @('cliext.physics', 'raycast', '--from', '[0,5,0]', '--layers', 'Default', '--format', 'json')
+        Expect ($l.exit -eq 0 -and $l.json.gameObject -eq 'CliTestGround' -and $l.json.distance -eq 5) "--layers Default: exit $($l.exit): $(Short ($l.stdout + $l.stderr))"
+        $t = Invoke-Cli @('cliext.physics', 'raycast', '--from', '[-5,0.5,0]', '--to', '[5,0.5,0]', '--format', 'json')
+        Expect ($t.exit -eq 0 -and $t.json.gameObject -eq 'CliTestBox' -and $t.json.distance -eq 4.5 -and $t.json.normal -eq '[-1,0,0]') "--to: exit $($t.exit): $(Short ($t.stdout + $t.stderr))"
+        $e = Invoke-Eval 'phys-ray.cs' 'UnityEngine.Physics.SyncTransforms(); UnityEngine.RaycastHit h; bool ok = UnityEngine.Physics.Raycast(new UnityEngine.Vector3(0, 5, 0), UnityEngine.Vector3.down, out h, 1000f); return ok ? h.collider.name + "@" + h.distance.ToString(System.Globalization.CultureInfo.InvariantCulture) : "none";'
+        Expect ($e -eq 'CliTestBox@4') "Physics.Raycast: $e"
+    }
+    finally { $closed = Close-P3Scene $orig }
+    Expect ("$closed" -match "^`"?$([regex]::Escape($orig))\|False\|1") "after closing the scratch scene: $(Short $closed)"
+    "down: CliTestBox at 4 (Physics.Raycast $e); --all box then ground; --layers Default ground at 5; --to box at 4.5; scratch scene discarded"
+}
+
+Add-Check 'phys.errors' $physRow 'cliext.physics set_matrix, raycast and material with unknown layers, bad vectors, distances and values, a ray that hits nothing, wrong paths and extensions, a missing folder, and changes that would do nothing exit 2, 13 or 6 with the fix, and change and create nothing' {
+    New-ScratchFolder
+    $orig = Open-P3Scene
+    $mat = "$scratchRel/CliTestErr.physicMaterial"
+    try {
+        Add-PhysTargets
+        $mk = Invoke-Cli @('cliext.physics', 'material', '--path', $mat, '--set', 'bounciness=0.3', '--format', 'json')
+        Expect ($mk.exit -eq 0) "make the material: exit $($mk.exit): $(Short ($mk.stdout + $mk.stderr))"
+        $matHash = (Get-FileHash (Join-Path $projectPath ($mat -replace '/', '\'))).Hash
+        $seen = Test-SettingsFailures 'cliext.physics' @(
+            @(@('set_matrix', '--a', 'Defalt', '--b', 'Water', '--collide', 'false'), "--a: no layer 'Defalt'\. Did you mean: Default\? Layers: Default, .*cliext\.physics matrix", 2, 'set_matrix with a misspelled layer'),
+            @(@('set_matrix', '--a', 'Default', '--b', '40', '--collide', 'false'), '--b: layer 40 is outside 0-31', 2, 'set_matrix with layer 40'),
+            @(@('set_matrix', '--a', 'Default', '--b', 'Water', '--collide', 'true'), 'already collide in the 3D matrix: nothing would change', 6, 'set_matrix to what it is'),
+            @(@('set_matrix', '--a', 'Default', '--b', 'Water', '--collide', 'maybe'), 'expects Boolean', 2, 'set_matrix with a non-bool'),
+            @(@('raycast', '--from', '[0,5,0]', '--direction', '[0,1,0]'), 'hit nothing within 1000: aim it at a collider, raise --distance', 13, 'a ray that hits nothing'),
+            @(@('raycast', '--from', '[0,5,0]', '--distance', '2'), 'hit nothing within 2', 13, 'a ray too short to hit'),
+            @(@('raycast', '--from', '[0,5,0]', '--layers', 'UI'), 'hit nothing within 1000 on UI: .*change --layers', 13, 'a ray on a layer with no colliders'),
+            @(@('raycast', '--from', '[0,5]'), "--from: Expected 3 numbers, got '\[0,5\]'", 2, 'raycast from a bad point'),
+            @(@('raycast', '--from', '[0,5,0]', '--to', '[1,x,0]'), "--to: '\[1,x,0\]' isn't a Vector3 value: give a vector", 2, 'raycast to a point that is not numbers'),
+            @(@('raycast', '--from', '[0,5,0]', '--direction', '[0,0,0]'), 'has no direction', 2, 'raycast with a zero direction'),
+            @(@('raycast', '--from', '[0,5,0]', '--to', '[0,5,0]'), '--to is the same point as --from', 2, 'raycast to its own origin'),
+            @(@('raycast', '--from', '[0,5,0]', '--to', '[0,0,0]', '--direction', '[0,-1,0]'), 'Give --direction or --to, not both', 2, 'raycast with --to and --direction'),
+            @(@('raycast', '--from', '[0,5,0]', '--distance', '-1'), '--distance -1: give more than 0', 2, 'raycast with a negative distance'),
+            @(@('raycast', '--from', '[0,5,0]', '--layers', 'Watr'), "--layers: no layer 'Watr'\. Did you mean: Water", 2, 'raycast on a misspelled layer'),
+            @(@('material', '--path', 'C:/CliTest.physicMaterial'), "isn't under Assets/ or Packages/", 2, 'material outside Assets'),
+            @(@('material', '--path', "$scratchRel/CliTest.mat"), 'a physics material ends in \.physicMaterial', 2, 'material with the wrong extension'),
+            @(@('material', '--path', "$scratchRel/CliTest.physicsMaterial2D"), 'for a 2D one, pass --2d true', 2, 'a 2D path without --2d'),
+            @(@('material', '--path', "$scratchRel/CliTest.physicMaterial", '--2d', 'true'), 'ends in \.physicsMaterial2D \(for a 3D one, leave out --2d\)', 2, '--2d with a 3D path'),
+            @(@('material', '--path', "$scratchRel/NoSuchFolder/CliTest.physicMaterial"), "No folder '.*NoSuchFolder' for --path: create it first", 13, 'material in a missing folder'),
+            @(@('material', '--path', "$scratchRel/CliTestNew.physicMaterial", '--set', 'bouncyness=1'), "has no 'bouncyness'\. Did you mean: bounciness\? Settings: dynamicFriction", 2, 'a misspelled material setting'),
+            @(@('material', '--path', "$scratchRel/CliTestNew.physicMaterial", '--set', 'bounciness=2'), 'bounciness 2 is out of range: give 0 to 1', 2, 'bounciness 2'),
+            @(@('material', '--path', "$scratchRel/CliTestNew.physicMaterial", '--set', 'dynamicFriction=abc'), "dynamicFriction: 'abc' isn't a Single value: give a number", 2, 'a friction that is not a number'),
+            @(@('material', '--path', "$scratchRel/CliTestNew.physicMaterial", '--set', 'dynamicFriction=0.5;frictionCombine=Lowest'), "'Lowest' isn't a frictionCombine value\. Use one of: Average, Multiply, Minimum, Maximum", 2, 'an unknown combine (after a good value)'),
+            @(@('material', '--path', "$scratchRel/CliTestNew.physicMaterial", '--set', 'bounciness'), "'bounciness' isn't name=value", 2, 'a setting without a value'),
+            @(@('material', '--path', $mat), 'Nothing to change on .*pass --set', 2, 'an existing material with no --set'),
+            @(@('material', '--path', $mat, '--set', 'bounciness=0.3'), 'already has bounciness 0\.3: nothing would change', 6, 'a material set to what it has')
+        )
+        Expect (-not (Test-Path (Join-Path $scratch 'CliTestNew.physicMaterial')) -and -not (Test-Path (Join-Path $scratch 'CliTest.mat')) -and -not (Test-Path (Join-Path $scratch 'NoSuchFolder')) -and -not (Test-Path (Join-Path $scratch 'CliTest.physicsMaterial2D'))) 'a failed material call created a file'
+        Expect ((Get-FileHash (Join-Path $projectPath ($mat -replace '/', '\'))).Hash -eq $matHash) 'a failed material call changed the existing material'
+    }
+    finally { $closed = Close-P3Scene $orig }
+    Expect ("$closed" -match "^`"?$([regex]::Escape($orig))\|False\|1") "after closing the scratch scene: $(Short $closed)"
+    "$($seen.Count) failures with the fix; settings, files and the material unchanged, nothing created"
+}
+
+# --- cliext.quality ---------------------------------------------------------------------------------------------------
+
+# Quality changes go to the project's QualitySettings and are put back in a finally from what levels read first. The
+# graphics APIs are only read and refused: setting them for real can need an Editor restart, so the checks call the
+# set path only where it would change nothing (exit 6) or is refused before anything changes.
+$qualRow = 'cliext.quality'
+
+Add-Check 'qual.levels-set' $qualRow 'cliext.quality set changes the current level''s shadow distance and anti-aliasing (2 is 2x), another level''s excluded platforms and a platform''s default level; levels and QualitySettings show them; put back in a finally, the settings and their files are as before' {
+    $saved = Save-SettingsFiles; $sig0 = Get-SettingsSig; $git0 = Get-SettingsGit
+    $l0 = Invoke-Cli @('cliext.quality', 'levels', '--format', 'json')
+    Expect ($l0.exit -eq 0 -and @($l0.json.levels).Count -ge 2) "levels: exit $($l0.exit), need 2 levels: $(Short ($l0.stdout + $l0.stderr))"
+    $cur = $l0.json.current
+    $curLevel = @($l0.json.levels) | Where-Object { $_.settings.name -eq $cur }
+    $other = @($l0.json.levels) | Where-Object { $_.settings.name -ne $cur } | Select-Object -First 1
+    $origShadow = $curLevel.settings.shadowDistance; $origAa = $curLevel.settings.antiAliasing
+    $origEx = @($other.excludedPlatforms)
+    $plat = @($l0.json.platformDefaults.PSObject.Properties | Where-Object { $_.Value -ne $cur } | Select-Object -First 1)[0]
+    Expect ($null -ne $plat) 'every platform already defaults to the current level'
+    $newEx = if ($origEx.Count) { 'none' } else { 'WebGL' }
+    $one = Invoke-Cli @('cliext.quality', 'levels', '--level', $other.settings.name, '--format', 'json')
+    Expect ($one.exit -eq 0 -and @($one.json.levels).Count -eq 1 -and $one.json.levels[0].settings.name -eq $other.settings.name) "levels --level $($other.settings.name): $(Short $one.stdout)"
+    try {
+        $s = Invoke-Cli @('cliext.quality', 'set', '--level', $cur, '--set', 'shadowDistance=25.5;antiAliasing=2', '--format', 'json')
+        Expect ($s.exit -eq 0 -and (@($s.json.changes) -join ';') -match 'shadowDistance: .* -> 25\.5;.*antiAliasing: .* -> 2x Multi Sampling') "set: exit $($s.exit): $(Short ($s.stdout + $s.stderr))"
+        $x = Invoke-Cli @('cliext.quality', 'set', '--level', $other.index, '--exclude', $newEx, '--format', 'json')
+        Expect ($x.exit -eq 0) "exclude: exit $($x.exit): $(Short ($x.stdout + $x.stderr))"
+        $d = Invoke-Cli @('cliext.quality', 'set', '--platform', $plat.Name, '--default', $cur, '--format', 'json')
+        Expect ($d.exit -eq 0 -and "$(@($d.json.changes))" -match "$([regex]::Escape($plat.Name)) default: $([regex]::Escape($plat.Value)) -> $([regex]::Escape($cur))") "default: exit $($d.exit): $(Short ($d.stdout + $d.stderr))"
+        $l1 = Invoke-Cli @('cliext.quality', 'levels', '--format', 'json')
+        $c1 = @($l1.json.levels) | Where-Object { $_.settings.name -eq $cur }; $o1 = @($l1.json.levels) | Where-Object { $_.index -eq $other.index }
+        Expect ($c1.settings.shadowDistance -eq '25.5' -and $c1.settings.antiAliasing -eq '2x Multi Sampling') "levels after set: $(Short ($c1.settings | ConvertTo-Json -Compress))"
+        Expect ((@($o1.excludedPlatforms) -join ';') -eq $(if ($newEx -eq 'none') { '' } else { $newEx })) "levels after exclude: $(@($o1.excludedPlatforms) -join ';')"
+        Expect ($l1.json.platformDefaults.($plat.Name) -eq $cur) "levels after default: $($plat.Name) -> $($l1.json.platformDefaults.($plat.Name))"
+        $e = Invoke-Eval 'qual-api.cs' 'return UnityEngine.QualitySettings.names[UnityEngine.QualitySettings.GetQualityLevel()] + "|" + UnityEngine.QualitySettings.shadowDistance.ToString(System.Globalization.CultureInfo.InvariantCulture) + "|" + UnityEngine.QualitySettings.antiAliasing;'
+        Expect ($e -eq "$cur|25.5|2") "QualitySettings: $e"
+    }
+    finally {
+        $b1 = Invoke-Cli @('cliext.quality', 'set', '--level', $cur, '--set', "shadowDistance=$origShadow;antiAliasing=$origAa", '--format', 'json')
+        $b2 = Invoke-Cli @('cliext.quality', 'set', '--level', $other.index, '--exclude', $(if ($origEx.Count) { $origEx -join ';' } else { 'none' }), '--format', 'json')
+        $b3 = Invoke-Cli @('cliext.quality', 'set', '--platform', $plat.Name, '--default', $plat.Value, '--format', 'json')
+    }
+    Expect ($b1.exit -eq 0 -and $b2.exit -eq 0 -and $b3.exit -eq 0) "set back: $($b1.exit) $(Short $b1.stderr 60); $($b2.exit) $(Short $b2.stderr 60); $($b3.exit) $(Short $b3.stderr 60)"
+    $restored = Expect-SettingsBack $saved $sig0 $git0 'quality set'
+    "$cur shadowDistance 25.5, antiAliasing 2x (QualitySettings $e); $($other.settings.name) excluded '$newEx'; $($plat.Name) default $cur; $restored"
+}
+
+Add-Check 'qual.graphics' $qualRow 'cliext.quality graphics reads the active and the Android graphics APIs (PlayerSettings agrees) with the render pipeline assets; --auto on an automatic platform exits 6, and unknown platforms and APIs, a repeated API and --set with --auto exit 2; nothing changes (a real API change is not made: it can need an Editor restart)' {
+    $g = Invoke-Cli @('cliext.quality', 'graphics', '--format', 'json')
+    Expect ($g.exit -eq 0 -and $g.json.platform -and @($g.json.apis).Count -ge 1 -and @($g.json.qualityOverrides).Count -ge 1) "graphics: exit $($g.exit): $(Short ($g.stdout + $g.stderr))"
+    $e = Invoke-Eval 'qual-gfx.cs' 'var t = UnityEditor.EditorUserBuildSettings.activeBuildTarget; return t + "|" + UnityEditor.PlayerSettings.GetUseDefaultGraphicsAPIs(t) + "|" + string.Join(",", UnityEditor.PlayerSettings.GetGraphicsAPIs(t)) + "|" + string.Join(",", UnityEditor.PlayerSettings.GetGraphicsAPIs(UnityEditor.BuildTarget.Android)) + "|" + UnityEngine.QualitySettings.GetRenderPipelineAssetAt(0).name;'
+    Expect ($e -eq "$($g.json.platform)|$($g.json.automatic)|$(@($g.json.apis) -join ',')|$(((Invoke-Cli @('cliext.quality', 'graphics', '--platform', 'android', '--format', 'json')).json.apis) -join ',')|$([IO.Path]::GetFileNameWithoutExtension($g.json.qualityOverrides[0].pipeline))") "PlayerSettings: $e; graphics: $(Short $g.stdout)"
+    $cases = @(
+        @(@('graphics', '--platform', 'Andriod'), "--platform: 'Andriod' isn't a build target\. Did you mean: Android\? Build targets: ", 2, 'a misspelled platform'),
+        @(@('graphics', '--platform', '13'), "'13' isn't a build target", 2, 'a platform as a number'),
+        @(@('graphics', '--platform', 'Android', '--set', 'Vulkn'), "--set: 'Vulkn' isn't a graphics API\. Did you mean: Vulkan\?", 2, 'a misspelled API'),
+        @(@('graphics', '--platform', 'Android', '--set', 'Vulkan;OpenGLES3;Vulkan'), '--set lists Vulkan twice', 2, 'an API listed twice'),
+        @(@('graphics', '--platform', 'Android', '--set', 'Vulkan', '--auto', 'true'), 'Give --set or --auto true, not both', 2, '--set with --auto'),
+        @(@('graphics', '--auto', 'maybe'), 'expects Boolean', 2, '--auto not a bool')
+    )
+    if ($g.json.automatic) { $cases += , @(@('graphics', '--auto', 'true'), "$($g.json.platform) already uses Unity's default graphics APIs: nothing would change", 6, '--auto on an automatic platform') }
+    else { $cases += , @(@('graphics', '--set', (@($g.json.apis) -join ';')), "already uses .*: nothing would change", 6, '--set the list it uses') }
+    $seen = Test-SettingsFailures 'cliext.quality' $cases
+    "$($g.json.platform): $(@($g.json.apis) -join ', ') (automatic $($g.json.automatic)); PlayerSettings agrees; $($seen.Count) refusals, nothing changed"
+}
+
+Add-Check 'qual.errors' $qualRow 'cliext.quality levels and set with unknown levels, settings and platforms, bad numbers, enums and assets, missing pairs of arguments, nothing to change and values the level has exit 2, 13 or 6 with the fix, and change nothing' {
+    $l0 = Invoke-Cli @('cliext.quality', 'levels', '--format', 'json')
+    $cur = $l0.json.current
+    $c0 = @($l0.json.levels) | Where-Object { $_.settings.name -eq $cur }
+    $seen = Test-SettingsFailures 'cliext.quality' @(
+        @(@('levels', '--level', 'Ultra'), "--level: no quality level 'Ultra'\..* Levels: .*cliext\.quality levels lists them", 2, 'levels of an unknown level'),
+        @(@('levels', '--level', '9'), "no quality level '9'.*Indexes are 0-", 2, 'levels of an index out of range'),
+        @(@('set', '--level', ($cur + 'x'), '--set', 'shadowDistance=10'), "no quality level '$([regex]::Escape($cur))x'\. Did you mean: $([regex]::Escape($cur))\?", 2, 'set a misspelled level'),
+        @(@('set', '--level', $cur, '--set', 'shadowDistnce=10'), "No setting 'shadowDistnce'\. Did you mean: shadowDistance\? Settings: ", 2, 'a misspelled setting'),
+        @(@('set', '--level', $cur, '--set', 'shadowDistance=far'), "shadowDistance: 'far' isn't a Single value: give a number", 2, 'a distance that is not a number'),
+        @(@('set', '--level', $cur, '--set', 'shadowDistance=10;antiAliasing=3'), "antiAliasing: '3' isn't one of: Disabled, 2x Multi Sampling", 2, 'an anti-aliasing value that does not exist (after a good distance)'),
+        @(@('set', '--level', $cur, '--set', 'vSyncCount=Sometimes'), "vSyncCount: 'Sometimes' isn't one of: Don't Sync", 2, 'an unknown vSync name'),
+        @(@('set', '--level', $cur, '--set', 'softParticles=maybe'), "softParticles: 'maybe' isn't a Boolean value: give true or false", 2, 'a bool that is not one'),
+        @(@('set', '--level', $cur, '--set', 'customRenderPipeline=Assets/Settings/NoSuch.asset'), "customRenderPipeline: No asset at 'Assets/Settings/NoSuch\.asset'", 13, 'a render pipeline asset that is missing'),
+        @(@('set', '--level', $cur, '--set', 'customRenderPipeline=Assets/Scenes/TestLevel.unity'), "customRenderPipeline: 'Assets/Scenes/TestLevel\.unity' is a SceneAsset, which customRenderPipeline can't hold", 2, 'a scene as the render pipeline'),
+        @(@('set', '--level', $cur, '--set', 'excludedTargetPlatforms=Android'), "No setting 'excludedTargetPlatforms'", 2, 'excluded platforms through --set'),
+        @(@('set', '--level', $cur, '--set', 'textureMipmapLimitSettings=1'), "No setting|Can't set textureMipmapLimitSettings \(a list\)", 2, 'a list setting from text'),
+        @(@('set', '--level', $cur, '--set', 'shadowDistance'), "'shadowDistance' isn't name=value", 2, 'a setting without a value'),
+        @(@('set', '--level', $cur, '--exclude', 'Androd'), "--exclude: no platform 'Androd'\. Did you mean: Android\? Platforms: ", 2, 'exclude a misspelled platform'),
+        @(@('set', '--platform', 'Androd', '--default', $cur), "--platform: no platform 'Androd'\. Did you mean: Android", 2, 'default on a misspelled platform'),
+        @(@('set', '--platform', 'Android', '--default', 'Ultra'), "--default: no quality level 'Ultra'", 2, 'an unknown default level'),
+        @(@('set', '--platform', 'Android'), '--platform needs --default', 2, '--platform without --default'),
+        @(@('set', '--default', $cur), '--default needs --platform', 2, '--default without --platform'),
+        @(@('set', '--set', 'shadowDistance=10'), '--set and --exclude change the level named by --level: pass --level', 2, '--set without --level'),
+        @(@('set', '--level', $cur), "--level ${cur}: pass --set or --exclude", 2, 'a level with nothing to change'),
+        @(@('set'), 'Nothing to change: pass --level with --set or --exclude, or --platform with --default', 2, 'set with nothing'),
+        @(@('set', '--level', $cur, '--set', "shadowDistance=$($c0.settings.shadowDistance)"), 'already have those values: nothing would change', 6, 'a value the level has'),
+        @(@('set', '--level', $cur, '--exclude', $(if (@($c0.excludedPlatforms).Count) { @($c0.excludedPlatforms) -join ';' } else { 'none' })), 'nothing would change', 6, 'the exclusions it has')
+    )
+    "$($seen.Count) failures with the fix; settings and their files unchanged"
+}
+
 # --- Cross-cutting ----------------------------------------------------------------------------------------------------
 
 $batchEdits = @(
@@ -3184,6 +3677,7 @@ if (-not $T3Ready) {
         'cliext.input' = '^cliext\.input '; 'cliext.uitk' = '^cliext\.uitk '
         # P3 rows
         'cliext.cinemachine' = '^cliext\.cinemachine '; 'cliext.splines' = '^cliext\.splines '
+        'cliext.navmesh' = '^cliext\.navmesh '; 'cliext.physics' = '^cliext\.physics '; 'cliext.quality' = '^cliext\.quality '
     }
     $q = Invoke-Cli @('--query', 'cliext', '--format', 'json') 60
     $all = @()

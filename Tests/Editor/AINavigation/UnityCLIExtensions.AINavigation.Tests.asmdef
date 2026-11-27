@@ -1,0 +1,34 @@
+{
+    "name": "UnityCLIExtensions.AINavigation.Tests",
+    "rootNamespace": "UnityCLIExtensions.AINavigation.Tests",
+    "references": [
+        "UnityCLIExtensions.AINavigation",
+        "UnityCLIExtensions.Editor",
+        "Unity.Pipeline.Attributes",
+        "Unity.AI.Navigation",
+        "UnityEngine.TestRunner",
+        "UnityEditor.TestRunner"
+    ],
+    "includePlatforms": [
+        "Editor"
+    ],
+    "excludePlatforms": [],
+    "allowUnsafeCode": false,
+    "overrideReferences": true,
+    "precompiledReferences": [
+        "nunit.framework.dll"
+    ],
+    "autoReferenced": false,
+    "defineConstraints": [
+        "UNITY_INCLUDE_TESTS",
+        "CLIEXT_AI_NAVIGATION"
+    ],
+    "versionDefines": [
+        {
+            "name": "com.unity.ai.navigation",
+            "expression": "2.0.0",
+            "define": "CLIEXT_AI_NAVIGATION"
+        }
+    ],
+    "noEngineReferences": false
+}

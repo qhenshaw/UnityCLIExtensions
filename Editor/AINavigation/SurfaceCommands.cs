@@ -5,6 +5,7 @@ using System.Threading.Tasks;
 using Unity.AI.Navigation;
 using Unity.AI.Navigation.Editor;
 using Unity.Pipeline.Commands;
+using UnityCLIExtensions.Animation;
 using UnityEditor;
 using UnityEngine;
 using UnityEngine.AI;
@@ -35,17 +36,56 @@ namespace UnityCLIExtensions.AINavigation
             return ExitCode.Success;
         }
 
-        [CliGroupCommand("cliext.navmesh", "Bake NavMeshSurfaces (--surface a GameObject name, or all) the way the Bake button does, saving each surface's data next to its scene, and wait for it.",
+        /// <summary>
+        /// The active surfaces <paramref name="surface"/> names (a GameObject name, or all), or null with the error:
+        /// none in the open scenes or an unknown name is not found (13, with "Did you mean" and the surfaces); a surface in
+        /// an unsaved scene is a failure (6), since its data would be saved straight into Assets/.
+        /// </summary>
+        internal static NavMeshSurface[] Resolve(string surface, out string error, out ExitCode code)
+        {
+            error = null; code = ExitCode.Success;
+            string name = string.IsNullOrWhiteSpace(surface) ? "all" : surface.Trim();
+            var all = UnityEngine.Object.FindObjectsByType<NavMeshSurface>(FindObjectsInactive.Exclude);
+            if (all.Length == 0)
+            {
+                error = "The open scenes have no active NavMeshSurface: add one to the floor (a NavMeshSurface component), then bake.";
+                code = ExitCode.NotFound;
+                return null;
+            }
+            var surfaces = string.Equals(name, "all", StringComparison.OrdinalIgnoreCase) ? all : all.Where(s => string.Equals(s.name, name, StringComparison.OrdinalIgnoreCase)).ToArray();
+            if (surfaces.Length == 0)
+            {
+                error = $"No active NavMeshSurface on '{name}'." + AnimationErrors.Hint(name, all.Select(s => s.name), "Surfaces", "cliext.navmesh surfaces") + " --surface all bakes every one.";
+                code = ExitCode.NotFound;
+                return null;
+            }
+            var unsaved = surfaces.FirstOrDefault(s => string.IsNullOrEmpty(s.gameObject.scene.path));
+            if (unsaved != null)
+            {
+                error = $"'{unsaved.name}' is in an unsaved scene: save the scene first (the baked data goes in a folder next to it; unsaved, it would land in Assets/).";
+                code = ExitCode.Failed;
+                return null;
+            }
+            return surfaces;
+        }
+
+        [CliGroupCommand("cliext.navmesh", "Bake NavMeshSurfaces (--surface a GameObject name, or all) the way the Bake button does, saving each surface's data next to its scene " +
+                                           "(Assets/Scenes/Level.unity -> Assets/Scenes/Level/NavMesh-<surface>.asset), and wait for it. Edit mode only: in Play mode it exits 6 (editor.playmode stop). " +
+                                           "No surface of that name exits 13 (cliext.navmesh surfaces lists them); a surface in an unsaved scene exits 6 (save the scene first).",
             Name = "bake", Tags = new[] { "cliext", "navmesh" }, MainThreadRequired = true, Effect = CommandEffect.Destructive)]
         internal static async Task<ExitCode> Bake(
             CommandContext cmd,
             [CliArg("surface", "The surface's GameObject, or all")] string surface = "all",
             [CliArg("timeout", "Seconds to wait")] double timeoutInSeconds = 300)
         {
-            if (EditorApplication.isPlayingOrWillChangePlaymode) { cmd.Fail("Stop Play mode first."); return ExitCode.Failed; }
-            var all = UnityEngine.Object.FindObjectsByType<NavMeshSurface>(FindObjectsInactive.Exclude);
-            var surfaces = surface == "all" ? all : all.Where(s => string.Equals(s.name, surface, StringComparison.OrdinalIgnoreCase)).ToArray();
-            if (surfaces.Length == 0) { cmd.Fail($"No active NavMeshSurface '{surface}'. Surfaces: {string.Join(", ", all.Select(s => s.name))}"); return ExitCode.NotFound; }
+            if (EditorApplication.isPlayingOrWillChangePlaymode)
+            {
+                cmd.Fail("cliext.navmesh bake works in Edit mode (the baked data is saved as an asset): stop Play mode first (editor.playmode stop).");
+                return ExitCode.Failed;
+            }
+            if (!(timeoutInSeconds > 0)) { cmd.Fail($"--timeout {timeoutInSeconds}: give more than 0 seconds."); return ExitCode.InvalidUsage; }
+            var surfaces = Resolve(surface, out string error, out ExitCode code);
+            if (surfaces == null) { cmd.Fail(error); return code; }
             var clock = Stopwatch.StartNew();
             // Started on a surface whose data asset is still referenced, the bake writes a second asset
             // ("NavMesh-Room 1.asset") and leaves the old one behind. Clear first, as Clear then Bake does.

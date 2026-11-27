@@ -8,3 +8,5 @@ using System.Runtime.CompilerServices;
 // So do the Cinemachine and Splines commands.
 [assembly: InternalsVisibleTo("UnityCLIExtensions.Cinemachine")]
 [assembly: InternalsVisibleTo("UnityCLIExtensions.Splines")]
+// So do the AI Navigation commands.
+[assembly: InternalsVisibleTo("UnityCLIExtensions.AINavigation")]

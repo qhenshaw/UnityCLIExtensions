@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.Linq;
+using UnityCLIExtensions.Animation;
 using UnityEditor;
 using UnityEngine;
 
@@ -37,32 +38,55 @@ namespace UnityCLIExtensions
             }
         }
 
+        /// <summary>
+        /// Sets <paramref name="p"/> from text. A value of the wrong form is invalid usage (exit 2) with a one-line
+        /// message naming the form; an asset path with nothing there is not found (exit 13).
+        /// </summary>
         public static void Write(SerializedProperty p, string text)
         {
             string t = (text ?? "").Trim();
-            switch (p.propertyType)
+            try
             {
-                case SerializedPropertyType.Integer:
-                case SerializedPropertyType.LayerMask: p.longValue = long.Parse(t, CultureInfo.InvariantCulture); break;
-                case SerializedPropertyType.Boolean: p.boolValue = t == "1" || bool.Parse(t); break;
-                case SerializedPropertyType.Float: p.floatValue = float.Parse(t, CultureInfo.InvariantCulture); break;
-                case SerializedPropertyType.String: p.stringValue = text ?? ""; break;
-                case SerializedPropertyType.Enum:
+                switch (p.propertyType)
                 {
-                    int i = Array.FindIndex(p.enumNames, n => string.Equals(n, t, StringComparison.OrdinalIgnoreCase));
-                    if (i < 0 && int.TryParse(t, out int n2)) i = n2;
-                    if (i < 0) throw new ArgumentException($"'{t}' isn't one of {string.Join(", ", p.enumNames)}.");
-                    p.enumValueIndex = i;
-                    break;
+                    case SerializedPropertyType.Integer:
+                    case SerializedPropertyType.LayerMask: p.longValue = (long)ValueText.Parse(t, typeof(long)); break;
+                    case SerializedPropertyType.Boolean: p.boolValue = (bool)ValueText.Parse(t, typeof(bool)); break;
+                    case SerializedPropertyType.Float: p.floatValue = (float)ValueText.Parse(t, typeof(float)); break;
+                    case SerializedPropertyType.String: p.stringValue = text ?? ""; break;
+                    case SerializedPropertyType.Enum:
+                    {
+                        // A name (as listed, or as shown in the Inspector), or the stored number (antiAliasing=2 is 2x,
+                        // not the third name).
+                        int i = Array.FindIndex(p.enumNames, n => string.Equals(n, t, StringComparison.OrdinalIgnoreCase));
+                        if (i < 0) i = Array.FindIndex(p.enumDisplayNames, n => string.Equals(n, t, StringComparison.OrdinalIgnoreCase));
+                        if (i >= 0) { p.enumValueIndex = i; break; }
+                        int old = p.intValue;
+                        if (int.TryParse(t, NumberStyles.Integer, CultureInfo.InvariantCulture, out int n2))
+                        {
+                            p.intValue = n2;
+                            if (p.enumValueIndex >= 0) break;
+                            p.intValue = old;
+                        }
+                        throw new AnimUsageException($"'{t}' isn't one of: {string.Join(", ", p.enumNames)}.");
+                    }
+                    case SerializedPropertyType.ObjectReference:
+                    {
+                        if (t == "" || t == "null" || t == "none") { p.objectReferenceValue = null; break; }
+                        string path = AnimationErrors.AssetPath(t);
+                        var asset = AssetDatabase.LoadMainAssetAtPath(path) ?? throw new AnimNotFoundException($"No asset at '{t}'. Check the path (asset find lists assets).");
+                        p.objectReferenceValue = asset;
+                        if (p.objectReferenceValue != asset)
+                            throw new AnimUsageException($"'{t}' is {AnimationErrors.A(asset.GetType().Name)}, which {p.name} can't hold.");
+                        break;
+                    }
+                    case SerializedPropertyType.Vector2: p.vector2Value = (Vector2)ValueText.Parse(t, typeof(Vector2)); break;
+                    case SerializedPropertyType.Vector3: p.vector3Value = (Vector3)ValueText.Parse(t, typeof(Vector3)); break;
+                    case SerializedPropertyType.Color: p.colorValue = (Color)ValueText.Parse(t, typeof(Color)); break;
+                    default: throw new AnimUsageException($"Can't set {p.name} ({(p.isArray ? "a list" : p.propertyType.ToString())}) from text.");
                 }
-                case SerializedPropertyType.ObjectReference:
-                    p.objectReferenceValue = t == "" || t == "null" || t == "none" ? null : AssetDatabase.LoadMainAssetAtPath(t) ?? throw new ArgumentException($"No asset at '{t}'.");
-                    break;
-                case SerializedPropertyType.Vector2: p.vector2Value = (Vector2)ValueText.Parse(t, typeof(Vector2)); break;
-                case SerializedPropertyType.Vector3: p.vector3Value = (Vector3)ValueText.Parse(t, typeof(Vector3)); break;
-                case SerializedPropertyType.Color: p.colorValue = (Color)ValueText.Parse(t, typeof(Color)); break;
-                default: throw new ArgumentException($"Can't set {p.propertyPath} ({p.propertyType}) from text.");
             }
+            catch (ArgumentException e) when (!(e is AnimUsageException) && !(e is AnimNotFoundException)) { throw new AnimUsageException(e.Message); }
         }
 
         /// <summary>The simple properties directly under <paramref name="parent"/>, as name -> text.</summary>
@@ -81,20 +105,35 @@ namespace UnityCLIExtensions
             return result;
         }
 
-        /// <summary>Sets "name=value;..." on fields under <paramref name="parent"/>; returns "name: old -> new" for each change.</summary>
-        public static List<string> SetFields(SerializedProperty parent, string pairs)
+        /// <summary>
+        /// Sets "name=value;..." on fields under <paramref name="parent"/> (not applied: the caller applies the
+        /// SerializedObject, so an error leaves the asset as it was). Returns "name: old -> new" for each field whose
+        /// value changed. An unknown or <paramref name="readOnly"/> name, a pair without '=', or a bad value is invalid
+        /// usage (exit 2), naming the field and, for an unknown one, the close names and every settable one.
+        /// </summary>
+        public static List<string> SetFields(SerializedProperty parent, string pairs, params string[] readOnly)
         {
             var changes = new List<string>();
+            var settable = Fields(parent).Keys.Where(k => !readOnly.Contains(k)).ToList();
             foreach (string pair in (pairs ?? "").Split(new[] { ';' }, StringSplitOptions.RemoveEmptyEntries))
             {
+                if (pair.Trim().Length == 0) continue;
                 int eq = pair.IndexOf('=');
-                if (eq <= 0) throw new ArgumentException($"'{pair}' isn't name=value.");
+                if (eq <= 0) throw new AnimUsageException($"'{pair.Trim()}' isn't name=value.");
                 string name = pair.Substring(0, eq).Trim();
-                var p = parent.FindPropertyRelative(name) ?? parent.FindPropertyRelative("m_" + char.ToUpperInvariant(name[0]) + name.Substring(1))
-                        ?? throw new ArgumentException($"No setting '{name}'. Settings: {string.Join(", ", Fields(parent).Keys)}");
+                var p = readOnly.Contains(name, StringComparer.OrdinalIgnoreCase) ? null
+                    : parent.FindPropertyRelative(name) ?? parent.FindPropertyRelative("m_" + char.ToUpperInvariant(name[0]) + name.Substring(1));
+                if (p == null || readOnly.Contains(p.name))
+                {
+                    var close = AnimationErrors.Close(name, settable);
+                    throw new AnimUsageException($"No setting '{name}'.{(close.Count > 0 ? $" Did you mean: {string.Join(", ", close)}?" : "")} Settings: {string.Join(", ", settable)}.");
+                }
                 string before = Read(p);
-                Write(p, pair.Substring(eq + 1));
-                changes.Add($"{p.name}: {before} -> {Read(p)}");
+                try { Write(p, pair.Substring(eq + 1)); }
+                catch (AnimUsageException e) { throw new AnimUsageException($"{p.name}: {e.Message}"); }
+                catch (AnimNotFoundException e) { throw new AnimNotFoundException($"{p.name}: {e.Message}"); }
+                string after = Read(p);
+                if (before != after) changes.Add($"{p.name}: {before} -> {after}");
             }
             return changes;
         }
