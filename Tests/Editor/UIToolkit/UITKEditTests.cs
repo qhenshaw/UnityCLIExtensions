@@ -191,5 +191,21 @@ namespace UnityCLIExtensions.Tests
             var e = Assert.Throws<UnityCLIExtensions.Animation.AnimNotFoundException>(() => UITKCommands.Resolve($"{Folder}/None.uss"));
             StringAssert.Contains("Create > UI Toolkit > Style Sheet", e.Message);
         }
+
+        [Test]
+        public void AnAmbiguousLiveSelector_IsNamedWithItsMatches_ASingleMatchIsNot()
+        {
+            var root = new VisualElement();
+            var menu = new VisualElement { name = "menu" };
+            root.Add(menu);
+            var a = new Slider { name = "music" };
+            var b = new Slider { name = "effects" };
+            menu.Add(a);
+            menu.Add(b);
+            string w = UITKCommands.AmbiguityWarning("Slider", new VisualElement[] { a, b }, "set");
+            StringAssert.Contains("'Slider' matched 2 elements; only the first was set", w);
+            StringAssert.Contains("VisualElement#menu > Slider#music; VisualElement#menu > Slider#effects", w);
+            Assert.IsNull(UITKCommands.AmbiguityWarning("#music", new VisualElement[] { a }, "set"));
+        }
     }
 }

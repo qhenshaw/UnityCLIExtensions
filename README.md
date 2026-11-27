@@ -725,6 +725,8 @@ UXML ops: `add` (no selector adds at the top level), `remove`, `move`, `set_attr
 - `click --selector "#start"`: clicks a button the way a navigation submit does, so its `clicked` handlers run once.
 - `set_value --selector "#volume" --value 0.5`: sets a field's value (TextField, Toggle, Slider, DropdownField, ...;
   its change event fires) or a label's text.
+- `click` and `set_value` act on the first match and return `matches`; when the selector matches more than one, they
+  warn naming the matches, so narrow it (`#name`, or a parent) to pick the one meant.
 
 ## Splines
 With the Splines package in the project, `cliext.splines` works with the SplineContainers in the open scenes:
@@ -940,7 +942,7 @@ All under `unity command --project-path <project>`:
 | `cliext.cinemachine list` / `create` / `set` / `blend` | Cinemachine cameras, the live camera and blends. |
 | `cliext.timeline inspect` / `edit` / `bind` / `director [--read objs] [--keep-pose true]` | Timeline clips, tracks, markers, bindings and scrubbing (Edit-mode scrubs put the bound objects back; the active clip per track). |
 | `cliext.uitk inspect` / `edit --path <uxml or uss>` | Read and edit UXML and USS, checked by the importer. |
-| `cliext.uitk tree` / `query` / `click` / `set_value` | The live visual tree, clicking and setting values. |
+| `cliext.uitk tree` / `query` / `click` / `set_value` | The live visual tree, clicking and setting values (`matches`, and a warning for an ambiguous selector). |
 | `cliext.splines list` / `inspect` / `create` / `edit` / `sample` | SplineContainers, knots, and sampling. |
 | `cliext.addressables status` / `init` / `entries` / `edit` / `build` / `analyze` | Addressables groups, entries, builds and Analyze. |
 | `cliext.import batch --folder <f> --set "k=v;..."` | Import settings across many assets. |

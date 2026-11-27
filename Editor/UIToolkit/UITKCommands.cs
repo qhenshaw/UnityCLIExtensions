@@ -618,6 +618,24 @@ namespace UnityCLIExtensions.UIToolkit
             more = depth <= 0 && e.childCount > 0 ? (int?)e.childCount : null
         };
 
+        /// <summary>
+        /// "The selector matched N elements; only the first was …", naming them (up to 5), or null for one match: an
+        /// ambiguous selector acts on the first match only, which may not be the element meant.
+        /// </summary>
+        internal static string AmbiguityWarning(string selector, IList<VisualElement> matches, string verb)
+        {
+            if (matches.Count <= 1) return null;
+            var shown = matches.Take(5).Select(PathOf).ToList();
+            return $"'{selector}' matched {matches.Count} elements; only the first was {verb}: {string.Join("; ", shown)}{(matches.Count > 5 ? "; ..." : "")}. " +
+                   "Narrow the selector (#name, or a parent: \"#menu > Slider\") to pick one.";
+        }
+
+        private static void WarnIfAmbiguous(CommandContext cmd, string selector, List<(string doc, VisualElement e)> match, string verb)
+        {
+            string w = AmbiguityWarning(selector, match.Select(m => m.e).ToList(), verb);
+            if (w != null) cmd.Log.Warning(w);
+        }
+
         /// <summary>The live elements matching <paramref name="selector"/>; not found, saying which part the tree lacks, when none do.</summary>
         private static List<(string doc, VisualElement e)> QueryLive(string document, string selector)
         {
@@ -752,6 +770,7 @@ namespace UnityCLIExtensions.UIToolkit
                 }
                 using (var submit = NavigationSubmitEvent.GetPooled()) { submit.target = target; target.SendEvent(submit); }
                 using (var click = ClickEvent.GetPooled()) { click.target = target; target.SendEvent(click); }
+                WarnIfAmbiguous(cmd, selector, match, "clicked");
                 cmd.Result.Write(new { clicked = PathOf(target), matches = match.Count });
                 return ExitCode.Success;
             }
@@ -759,7 +778,7 @@ namespace UnityCLIExtensions.UIToolkit
         }
 
         [CliGroupCommand(Group, "Set the value of the first matching field (TextField, Toggle, Slider, DropdownField, ... anything with a value) or a Label's text; the field sends its change event. " +
-                                "Fails on an element with no value (use click for a Button), a value the field can't take (out of a slider's range, not a dropdown choice), a disabled field, or the value it already has. Use in Play mode.",
+                                "Fails on an element with no value (use click for a Button), a value the field can't take (out of a slider's range, not a dropdown choice), a disabled field, or the value it already has. Returns matches (how many elements the selector matched) and warns, naming them, when it is more than one. Use in Play mode.",
             Name = "set_value", Tags = new[] { "cliext", "ui" }, Effect = CommandEffect.Destructive)]
         internal static ExitCode SetValue(
             CommandContext cmd,
@@ -799,7 +818,8 @@ namespace UnityCLIExtensions.UIToolkit
                     cmd.Fail($"{PathOf(e)} didn't take '{value}': it still reads {before}.");
                     return ExitCode.Failed;
                 }
-                cmd.Result.Write(new { element = PathOf(e), before, value = after });
+                WarnIfAmbiguous(cmd, selector, match, "set");
+                cmd.Result.Write(new { element = PathOf(e), before, value = after, matches = match.Count });
                 return ExitCode.Success;
             }
             catch (Exception e) when (e is ArgumentException || e is FormatException || e is TargetInvocationException)

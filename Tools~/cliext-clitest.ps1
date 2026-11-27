@@ -2758,6 +2758,12 @@ return UnityEngine.UIElements.UQueryExtensions.Q<UnityEngine.UIElements.Toggle>(
         Expect ((Get-UiStatus) -eq 'ready') "a failed call changed the label: '$(Get-UiStatus)'"
         $vals2 = Invoke-Cli @('script', 'eval', '--file', (Write-WorkFile 'ui-read2.cs' $readValues), '--format', 'json')
         Expect ($vals2.stdout -eq $vals.stdout) "a failed call changed a field: $(Short $vals2.stdout)"
+        # Every field has the class unity-base-field: an ambiguous selector sets the first (TextField#player) and says so.
+        $amb = Invoke-Cli (@('cliext.uitk', 'set_value', '--selector', '.unity-base-field', '--value', 'Cid') + $D + @('--format', 'json'))
+        Expect ($amb.exit -eq 0 -and $amb.json.matches -ge 4 -and $amb.json.element -match 'TextField#player$') "set_value on an ambiguous selector: exit $($amb.exit): $(Short ($amb.stdout + $amb.stderr))"
+        Expect ("$($amb.stderr)" -match "matched $($amb.json.matches) elements; only the first was set: .*TextField#player; .*Toggle#sound") "no warning naming the matches: $(Short $amb.stderr 300)"
+        $one = Invoke-Cli (@('cliext.uitk', 'set_value', '--selector', '#player', '--value', 'Dee') + $D + @('--format', 'json'))
+        Expect ($one.exit -eq 0 -and $one.json.matches -eq 1 -and "$($one.stderr)" -notmatch 'matched') "set_value on one match: exit $($one.exit): $(Short ($one.stdout + $one.stderr))"
         [void](Invoke-Cli @('script', 'eval', '--file', (Write-WorkFile 'ui-disable.cs' $disable), '--format', 'json'))
         $dc = Invoke-Cli (@('cliext.uitk', 'click', '--selector', '#start') + $D + @('--format', 'json'))
         Expect-UiFailure $dc "is disabled: a player can't click it" '' 'click on a disabled Button'
