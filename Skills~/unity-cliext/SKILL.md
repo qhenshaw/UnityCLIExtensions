@@ -66,8 +66,9 @@ scripts named below are in `{{cliext-tools}}` (`cliext-wait.ps1`, `cliext-run.ps
   compile errors in snippets: use `GetEntityId`, `EditorUtility.EntityIdToObject` and `objectReferenceEntityIdValue`.
 - An area with its own skill: load it before the first command in that area. Each is installed when the project has
   its package: `unity-cliext-vfx` (VFX Graph), `unity-cliext-shadergraph` (Shader Graph), `unity-cliext-animation`
-  (Animator, clips, avatar masks, Timeline), `unity-cliext-input` (Input Actions and testing input in Play mode),
+  (Animator, clips, avatar masks, Timeline), `unity-cliext-input` (Input Actions, input in Play mode, PlayMode input tests),
   `unity-cliext-uitk` (UXML, USS, the live UI), `unity-cliext-import` (import settings, presets, .unitypackage files),
+  `unity-cliext-asset-packs` (a few assets from a large art pack, materials converted),
   `unity-cliext-addressables` (groups, entries, analyze, build).
 - Import a `.unitypackage` only with `cliext.package import` (`--dry-run true` first). `AssetDatabase.ImportPackage` opens
   a blocking "Missing signature" dialog for an unsigned package even with `interactive` false, and unpacking the

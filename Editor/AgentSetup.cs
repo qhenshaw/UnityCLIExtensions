@@ -38,14 +38,21 @@ namespace UnityCLIExtensions
             { "unity-cliext-addressables", "com.unity.addressables" },
         };
 
+        /// <summary>
+        /// Skills that aren't about the Editor (always installed, not named in the CLAUDE.md block: their own
+        /// description says when they apply).
+        /// </summary>
+        public static readonly IReadOnlyCollection<string> GeneralSkills = new[] { "clarify" };
+
         /// <summary>What each area skill is for, as the CLAUDE.md block names it ("Before ..., also load ...").</summary>
         public static readonly IReadOnlyDictionary<string, string> SkillPurposes = new Dictionary<string, string>
         {
             { VfxSkillName, "creating or editing a VFX Graph" },
             { "unity-cliext-shadergraph", "creating or editing a Shader Graph" },
             { "unity-cliext-animation", "editing Animator controllers, animation clips, avatar masks or Timelines" },
-            { "unity-cliext-input", "editing Input Actions or testing input in Play mode" },
+            { "unity-cliext-input", "editing Input Actions, testing input in Play mode or writing PlayMode input tests" },
             { "unity-cliext-uitk", "editing UXML or USS or driving the live UI" },
+            { "unity-cliext-asset-packs", "taking a few assets from a large .unitypackage art pack" },
             { "unity-cliext-import", "changing import settings or presets, or importing a .unitypackage" },
             { "unity-cliext-addressables", "changing Addressables groups or building them" },
         };

@@ -28,7 +28,7 @@ namespace UnityCLIExtensions.Tests
             foreach (string dir in System.IO.Directory.GetDirectories(root))
             {
                 string skill = System.IO.Path.GetFileName(dir);
-                if (skill == AgentSetup.SkillName) continue;
+                if (skill == AgentSetup.SkillName || System.Linq.Enumerable.Contains(AgentSetup.GeneralSkills, skill)) continue;
                 Assert.IsTrue(AgentSetup.SkillPurposes.ContainsKey(skill), $"{skill} has no SkillPurposes entry");
             }
             var areas = new[] { "unity-cliext-shadergraph", "unity-cliext-input", "unity-cliext-addressables" };
