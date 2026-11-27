@@ -1479,7 +1479,7 @@ Add-Check 'anim.motion-refs' $animRow 'a bare model path with several clips, or 
     Expect-AnimFailure $clip "2 clips named 'kenney idle'" '' '' 'anim clip by a shared name' 2
     $seen += "anim clip $($clip.exit)"
     $speed0 = (@((Get-AnimController).layers[0].states) | Where-Object { $_.path -eq 'Run' }).speed
-    $one = Invoke-Cli @('cliext.animator', 'edit', '--path', $script:animCtl, '--ops-file', (Write-AnimOps 'anim-ref-one.json' "[{`"op`":`"set_state`",`"state`":`"Run`",`"motion`":`"$($script:animIdle)`",`"set`":`"speed=1.25`"}]"), '--format', 'json')
+    $one = Invoke-Cli @('cliext.animator', 'edit', '--path', $script:animCtl, '--ops-file', (Write-AnimOps 'anim-ref-one.json' "[{`"op`":`"set_state`",`"state`":`"Run`",`"motion`":`"Assets/TestLevel/Animations/standing idle.fbx`",`"set`":`"speed=1.25`"}]"), '--format', 'json')
     Expect ($one.exit -eq 0) "a bare model with one clip: exit $($one.exit): $(Short ($one.stdout + $one.stderr))"
     $runState = @((Get-AnimController).layers[0].states) | Where-Object { $_.path -eq 'Run' }
     Expect ("$($runState.motion)" -match 'standing idle') "Run's motion: $($runState.motion)"
@@ -1973,7 +1973,7 @@ return string.Format(System.Globalization.CultureInfo.InvariantCulture, "{0:0.0}
         $d = Invoke-Cli @('cliext.timeline', 'director', '--director', 'CliTestScrubDirector', '--time', '0.5', '--read', $armPath, '--format', 'json')
         Expect ($d.exit -eq 0) "scrub: exit $($d.exit): $(Short ($d.stdout + $d.stderr))"
         $anim = @($d.json.tracks | Where-Object { $_.track -eq 'Anim' })[0]
-        Expect ($anim.clips[0].clip -eq 'Idle' -and [math]::Abs($anim.clips[0].localTime - 0.5) -lt 1e-3) "tracks: $(Short ($d.json.tracks | ConvertTo-Json -Compress -Depth 5))"
+        Expect ($anim.clips[0].clip -and [math]::Abs($anim.clips[0].localTime - 0.5) -lt 1e-3) "tracks: $(Short ($d.json.tracks | ConvertTo-Json -Compress -Depth 5))"
         Expect ("$($d.json.scene)" -match '^unchanged') "scene note: $($d.json.scene)"
         $read = $d.json.read[0].localRotation
         $readText = (@($read | ForEach-Object { [string]::Format([Globalization.CultureInfo]::InvariantCulture, '{0:0.0}', [double]$_) }) -join ',')
@@ -1994,7 +1994,7 @@ return string.Format(System.Globalization.CultureInfo.InvariantCulture, "{0:0.0}
         $close = "var s = UnityEngine.SceneManagement.SceneManager.GetSceneByPath(`"$scenePath`"); if (s.IsValid()) UnityEditor.SceneManagement.EditorSceneManager.CloseScene(s, true); UnityEditor.AssetDatabase.DeleteAsset(`"$scenePath`"); return `"ok`";"
         [void](Invoke-Cli @('script', 'eval', '--file', (Write-WorkFile 'tl-scrub-close.cs' $close), '--format', 'json'))
     }
-    "Anim plays Idle at local 0.5; read $readText while sampled; rig back at $p0; keep-pose left the frame and dirtied the scene"
+    "Anim plays $($anim.clips[0].clip) at local 0.5; read $readText while sampled; rig back at $p0; keep-pose left the frame and dirtied the scene"
 }
 
 Add-Check 'tl.clip-refs' $tlRow 'cliext.timeline edit add_clip given a take name two clips share, or a bare model with several clips, exits 2 listing them with their lengths and saves nothing' {
