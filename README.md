@@ -852,9 +852,11 @@ powershell -NoProfile -ExecutionPolicy Bypass -File <package>/Tools~/cliext-clit
 It checks setup, compile errors and edit batches, test runs, the dialog journal and the watchdog, snippets with
 placeholders, exit codes (a reply dropped by a domain reload is exit 6 with `EDITOR_CONNECTION_LOST`; a real failure
 is exit 6 with its reason on stderr), reply shapes, misspelled and either/or parameters on every batch edit, that the
-installed skills match `Skills~/`, and how Windows PowerShell 5.1 passes quoted arguments. It prints one line per check
-and exits 0 when all pass, 1 when one fails, 2 when no Editor answers. Scratch files go in `Assets/_CliextTests/CliTest`
-and are removed at the end (`-Keep` leaves them).
+installed skills match `Skills~/`, and how Windows PowerShell 5.1 passes quoted arguments. It prints one line per check,
+then T1 coverage (for each core-loop group, the commands this run called and the ones it didn't), and exits 0 when all
+pass, 1 when one fails, 2 when no Editor answers. Scratch files go in `Assets/_CliextTests/CliTest` and are removed at
+the end (`-Keep` leaves them). `-T3Ready` runs only an environment check for agent scenario runs: setup checks applied,
+agent mode on, the watchdog running, and the installed skills current.
 
 ## Commands
 All under `unity command --project-path <project>`:
