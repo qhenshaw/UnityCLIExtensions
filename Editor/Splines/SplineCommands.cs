@@ -372,7 +372,8 @@ namespace UnityCLIExtensions.Splines
             math.all(math.abs(a.TangentOut - b.TangentOut) < 1e-5f) && Quaternion.Angle(a.Rotation, b.Rotation) < 1e-3f;
 
         [CliGroupCommand(Group, "Sample a spline in world space: at --t (0-1 along it) or --distance (world units from the start), the position, tangent (direction) and up; " +
-                                "or with --near [x,y,z], the nearest point on the spline to that world point, its t and the distance; or with none of them, --count evenly spaced samples (default 5). " +
+                                "or with --near [x,y,z], the nearest point on the spline to that world point, its t and the distance; or with none of them, --count N evenly spaced samples (default 5): on an open spline t = k/(N-1), so both ends are included; " +
+                                "on a closed spline t = k/N (k = 0 to N-1), N different points, as t = 1 is the start again. " +
                                 "Give only one of --t, --distance, --near and --count. An unknown object or spline exits 13; a --t outside 0-1, a --distance past the end, a bad --near or --count exits 2.",
             Name = "sample", Tags = new[] { "cliext", "splines" }, Effect = CommandEffect.ReadOnly)]
         internal static ExitCode Sample(
@@ -422,11 +423,17 @@ namespace UnityCLIExtensions.Splines
                     useT = true;
                 }
                 if (useT) { cmd.Result.Write(At(t)); return ExitCode.Success; }
-                int n = count == 0 ? 5 : count;
-                for (int i = 0; i < n; i++) cmd.Result.WriteRecord(At(i / (float)(n - 1)));
+                foreach (float st in SampleTs(count == 0 ? 5 : count, s.Closed)) cmd.Result.WriteRecord(At(st));
                 return ExitCode.Success;
             }
             catch (ArgumentException e) { cmd.Fail(e.Message); return AnimationErrors.Exit(e); }
         }
+
+        /// <summary>
+        /// The t of <paramref name="n"/> evenly spaced samples: k/(n-1) on an open spline (both ends included), k/n on a
+        /// closed one (t = 1 is the start again, so it is left out and the n points are all different).
+        /// </summary>
+        internal static float[] SampleTs(int n, bool closed) =>
+            Enumerable.Range(0, n).Select(k => closed ? k / (float)n : k / (float)(n - 1)).ToArray();
     }
 }

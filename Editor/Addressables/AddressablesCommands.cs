@@ -547,6 +547,13 @@ namespace UnityCLIExtensions.Addressables
             return assets.Where(a => a != null).Select(AssetDatabase.GetAssetPath).Where(p => p.StartsWith("Assets/", StringComparison.Ordinal)).Distinct().ToList();
         }
 
+        /// <summary>
+        /// A rule's "nothing found" result, which isn't an issue: severity None and a name ending in "No issues found"
+        /// (the base rule's plain "No issues found", or the bundle rules' "&lt;rule&gt; - No issues found.").
+        /// </summary>
+        internal static bool IsNoIssues(AnalyzeRule.AnalyzeResult r) =>
+            r != null && r.severity == MessageType.None && (r.resultName ?? "").Trim().TrimEnd('.').EndsWith("No issues found", StringComparison.OrdinalIgnoreCase);
+
         [CliGroupCommand(Group, "Run the Addressables Analyze rules (duplicate bundle dependencies, duplicate scene and Resources dependencies, the bundle layout; --rule narrows to one by part of its name) " +
                                 "and return each result with its severity. Nothing is fixed or changed: the render pipeline assets that the bundle rules' content build rewrites (URP's shader prefiltering) are put back after. Exit 6 when a rule reports errors or fails to run. A --rule no rule's name contains exits 13 with the rule names; " +
                                 "--limit below 1 exits 2; no settings, or an open scene with unsaved changes (the rules would stop at Unity's save dialog), exits 6.",
@@ -575,7 +582,7 @@ namespace UnityCLIExtensions.Addressables
                     try { found = r.RefreshAnalysis(s); }
                     catch (Exception e) { cmd.Result.WriteRecord(new { rule = r.ruleName, error = AnimationErrors.Message(e) }); failed.Add(r.ruleName); continue; }
                     finally { try { r.ClearAnalysis(); } catch { } }
-                    var real = found.Where(x => x.resultName != "No issues found").ToList();
+                    var real = found.Where(x => !IsNoIssues(x)).ToList();
                     errors += real.Count(x => x.severity == MessageType.Error);
                     cmd.Result.WriteRecord(new
                     {
