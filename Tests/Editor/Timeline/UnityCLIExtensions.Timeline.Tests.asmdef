@@ -1,0 +1,33 @@
+{
+    "name": "UnityCLIExtensions.Timeline.Tests",
+    "rootNamespace": "UnityCLIExtensions.Timeline.Tests",
+    "references": [
+        "UnityCLIExtensions.Timeline",
+        "UnityCLIExtensions.Editor",
+        "Unity.Timeline",
+        "UnityEngine.TestRunner",
+        "UnityEditor.TestRunner"
+    ],
+    "includePlatforms": [
+        "Editor"
+    ],
+    "excludePlatforms": [],
+    "allowUnsafeCode": false,
+    "overrideReferences": true,
+    "precompiledReferences": [
+        "nunit.framework.dll"
+    ],
+    "autoReferenced": false,
+    "defineConstraints": [
+        "UNITY_INCLUDE_TESTS",
+        "CLIEXT_TIMELINE"
+    ],
+    "versionDefines": [
+        {
+            "name": "com.unity.timeline",
+            "expression": "",
+            "define": "CLIEXT_TIMELINE"
+        }
+    ],
+    "noEngineReferences": false
+}

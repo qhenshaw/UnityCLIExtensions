@@ -1529,6 +1529,329 @@ Add-Check 'anim.play-mode' $animRow 'cliext.animator live and drive refuse Edit 
     "Edit mode refused (6); live read Speed 0.8 and Grounded; drive --state reached Locomotion; $($seen -join ', '); edit kept; scene clean"
 }
 
+# --- cliext.timeline --------------------------------------------------------------------------------------------------
+
+# A scratch .playable (Anim with Idle and Run from the TestLevel models, Audio with bookClose, Group/Sub, Act) and a
+# SignalAsset, made once by Need-TlAssets. The committed clips and sound are only referenced. Directors live in an
+# untitled additive scene that Close-TlScene discards, or are made in Play mode, so no saved scene changes.
+$script:tlPath = "$scratchRel/CliTestTimeline.playable"
+$script:tlSignal = "$scratchRel/CliTestSignal.signal"
+$script:tlReady = $false
+$tlRow = 'cliext.timeline'
+
+function Need-TlAssets {
+    if ($script:tlReady) { return }
+    $code = @'
+string dir = "{{dir}}";
+if (!UnityEditor.AssetDatabase.IsValidFolder("Assets/_CliextTests")) UnityEditor.AssetDatabase.CreateFolder("Assets", "_CliextTests");
+if (!UnityEditor.AssetDatabase.IsValidFolder(dir)) UnityEditor.AssetDatabase.CreateFolder("Assets/_CliextTests", "CliTest");
+UnityEditor.AssetDatabase.DeleteAsset("{{path}}"); UnityEditor.AssetDatabase.DeleteAsset("{{signal}}");
+var t = UnityEngine.ScriptableObject.CreateInstance<UnityEngine.Timeline.TimelineAsset>();
+UnityEditor.AssetDatabase.CreateAsset(t, "{{path}}");
+UnityEditor.AssetDatabase.CreateAsset(UnityEngine.ScriptableObject.CreateInstance<UnityEngine.Timeline.SignalAsset>(), "{{signal}}");
+System.Func<string, UnityEngine.AnimationClip> take = p => UnityEditor.AssetDatabase.LoadAllAssetsAtPath(p).OfType<UnityEngine.AnimationClip>().First(x => !x.name.StartsWith("__preview__"));
+var anim = t.CreateTrack<UnityEngine.Timeline.AnimationTrack>(null, "Anim");
+var idle = anim.CreateClip(take("Assets/TestLevel/Animations/kenney idle.fbx")); idle.start = 0; idle.duration = 1; idle.displayName = "Idle";
+var run = anim.CreateClip(take("Assets/TestLevel/Animations/kenney run.fbx")); run.start = 1; run.duration = 1; run.displayName = "Run";
+var audio = t.CreateTrack<UnityEngine.Timeline.AudioTrack>(null, "Audio");
+var book = audio.CreateClip(UnityEditor.AssetDatabase.LoadAssetAtPath<UnityEngine.AudioClip>("Assets/TestLevel/Audio/bookClose.ogg")); book.start = 0.5; book.displayName = "Book";
+var grp = t.CreateTrack<UnityEngine.Timeline.GroupTrack>(null, "Group");
+t.CreateTrack<UnityEngine.Timeline.AnimationTrack>(grp, "Sub");
+var act = t.CreateTrack<UnityEngine.Timeline.ActivationTrack>(null, "Act");
+var on = act.CreateDefaultClip(); on.start = 0; on.duration = 2;
+UnityEditor.EditorUtility.SetDirty(t);
+UnityEditor.AssetDatabase.SaveAssets();
+return "ok";
+'@
+    $code = $code.Replace('{{dir}}', $scratchRel).Replace('{{path}}', $script:tlPath).Replace('{{signal}}', $script:tlSignal)
+    $r = Invoke-Cli @('script', 'eval', '--file', (Write-WorkFile 'tl-setup.cs' $code), '--timeout', '120', '--format', 'json') 180
+    Expect ($r.exit -eq 0 -and "$($r.stdout)" -match 'ok') "scratch timeline: exit $($r.exit): $(Short ($r.stdout + $r.stderr))"
+    $script:tlReady = $true
+}
+function Get-TlHash { (Get-FileHash (Join-Path $projectPath ($script:tlPath -replace '/', '\'))).Hash }
+function Get-TlInspect([string[]]$extra = @('--path', $script:tlPath)) {
+    $r = Invoke-Cli (@('cliext.timeline', 'inspect') + $extra + @('--format', 'json'))
+    Expect ($r.exit -eq 0) "inspect: exit $($r.exit): $(Short ($r.stdout + $r.stderr))"
+    $r.json
+}
+function Get-TlTrack($tl, [string]$path) { @($tl.tracks) | Where-Object { $_.path -eq $path } | Select-Object -First 1 }
+function Get-TlMemory {
+    # The timeline as the Editor holds it in memory (not reloaded from disk): tracks with mute/lock, clips with timing,
+    # markers and child tracks, the timeline's own markers, and how many objects the .playable holds.
+    $code = @'
+var ci = System.Globalization.CultureInfo.InvariantCulture;
+var t = UnityEditor.AssetDatabase.LoadAssetAtPath<UnityEngine.Timeline.TimelineAsset>("{{path}}");
+System.Func<UnityEngine.Timeline.TrackAsset, string> d = null;
+d = tr => tr.name + (tr.muted ? "!m" : "") + (tr.locked ? "!l" : "")
+    + "[" + string.Join(",", tr.GetClips().Select(c => c.displayName + "@" + c.start.ToString(ci) + "+" + c.duration.ToString("0.####", ci) + (c.asset == null ? "!noasset" : ""))) + "]"
+    + "{" + string.Join(",", tr.GetMarkers().Select(m => m.time.ToString(ci))) + "}"
+    + "(" + string.Join(",", tr.GetChildTracks().Select(c => d(c))) + ")";
+return string.Join(";", t.GetRootTracks().Where(r => r != t.markerTrack).Select(r => d(r)))
+    + "|markers{" + (t.markerTrack == null ? "" : string.Join(",", t.markerTrack.GetMarkers().Select(m => m.time.ToString(ci)))) + "}"
+    + "|objects " + UnityEditor.AssetDatabase.LoadAllAssetsAtPath("{{path}}").Length;
+'@
+    $r = Invoke-Cli @('script', 'eval', '--file', (Write-WorkFile 'tl-mem.cs' $code.Replace('{{path}}', $script:tlPath)), '--format', 'json')
+    Expect ($r.exit -eq 0) "script eval: exit $($r.exit): $(Short ($r.stdout + $r.stderr))"
+    $r.stdout.Trim().Trim('"')
+}
+function Expect-TlFailure($r, [string]$hint, [string]$before, [string]$what, [int]$exit = 6) {
+    Expect ($r.exit -ne 124) "${what}: timed out"
+    Expect ($r.exit -eq $exit) "${what}: exit $($r.exit), expected ${exit}: $(Short ($r.stdout + $r.stderr))"
+    Expect ("$($r.stderr)" -match $hint) "${what}: the error doesn't say '$hint': $(Short $r.stderr)"
+    Expect ("$($r.stderr)" -notmatch '   at |Exception:') "${what}: a stack trace instead of a message: $(Short $r.stderr)"
+    if ($before) { Expect ((Get-TlHash) -eq $before) "${what}: the .playable changed on disk" }
+}
+function Open-TlScene {
+    # An untitled additive scene with a director playing the scratch timeline and objects to bind; never saved.
+    $code = @'
+var scene = UnityEditor.SceneManagement.EditorSceneManager.NewScene(UnityEditor.SceneManagement.NewSceneSetup.EmptyScene, UnityEditor.SceneManagement.NewSceneMode.Additive);
+System.Func<string, UnityEngine.GameObject> make = n => { var g = new UnityEngine.GameObject(n); UnityEngine.SceneManagement.SceneManager.MoveGameObjectToScene(g, scene); return g; };
+var d = make("CliTestDirector").AddComponent<UnityEngine.Playables.PlayableDirector>();
+d.playableAsset = UnityEditor.AssetDatabase.LoadAssetAtPath<UnityEngine.Timeline.TimelineAsset>("{{path}}"); d.playOnAwake = false;
+make("CliTestActor").AddComponent<UnityEngine.Animator>();
+make("CliTestSpeaker").AddComponent<UnityEngine.AudioSource>();
+var rig = new UnityEngine.GameObject("CliTestRig"); rig.transform.SetParent(make("CliTestPlain").transform); rig.AddComponent<UnityEngine.Animator>();
+make("CliTestNoTimeline").AddComponent<UnityEngine.Playables.PlayableDirector>();
+return "ok " + UnityEngine.SceneManagement.SceneManager.sceneCount;
+'@
+    $r = Invoke-Cli @('script', 'eval', '--file', (Write-WorkFile 'tl-scene.cs' $code.Replace('{{path}}', $script:tlPath)), '--format', 'json')
+    Expect ($r.exit -eq 0 -and "$($r.stdout)" -match 'ok') "scratch scene: exit $($r.exit): $(Short ($r.stdout + $r.stderr))"
+}
+function Close-TlScene {
+    # Discards every untitled scene (unsaved) and returns the active scene's path and dirty flag.
+    $code = @'
+for (int i = UnityEngine.SceneManagement.SceneManager.sceneCount - 1; i >= 0; i--)
+{
+    var s = UnityEngine.SceneManagement.SceneManager.GetSceneAt(i);
+    if (string.IsNullOrEmpty(s.path) && UnityEngine.SceneManagement.SceneManager.sceneCount > 1) UnityEditor.SceneManagement.EditorSceneManager.CloseScene(s, true);
+}
+var a = UnityEngine.SceneManagement.SceneManager.GetActiveScene();
+return a.path + "|" + a.isDirty + "|" + UnityEngine.SceneManagement.SceneManager.sceneCount;
+'@
+    (Invoke-Cli @('script', 'eval', '--file', (Write-WorkFile 'tl-close.cs' $code), '--format', 'json')).stdout
+}
+function Get-TlDirectorTime([string]$name) {
+    $code = "var d = UnityEngine.Object.FindObjectsByType<UnityEngine.Playables.PlayableDirector>(UnityEngine.FindObjectsInactive.Include).First(x => x.name == `"$name`"); return d.time.ToString(System.Globalization.CultureInfo.InvariantCulture) + `"|`" + d.state;"
+    $r = Invoke-Cli @('script', 'eval', '--file', (Write-WorkFile 'tl-dtime.cs' $code), '--format', 'json')
+    Expect ($r.exit -eq 0) "reading $name's time: $(Short ($r.stdout + $r.stderr))"
+    $r.stdout.Trim().Trim('"')
+}
+
+Add-Check 'tl.inspect' $tlRow 'cliext.timeline inspect describes every track by path with its clips; a missing .playable exits 13 naming animation.timeline create, another asset type, a path outside Assets/ and no path exit 2' {
+    Need-TlAssets
+    $tl = Get-TlInspect
+    Expect ((@($tl.tracks | ForEach-Object { $_.path }) -join ',') -eq 'Anim,Audio,Group,Group/Sub,Act') "tracks: $(@($tl.tracks | ForEach-Object { $_.path }) -join ',')"
+    $anim = Get-TlTrack $tl 'Anim'
+    Expect ($anim.type -eq 'AnimationTrack' -and (@($anim.clips | ForEach-Object { "$($_.name)@$([double]$_.start)" }) -join ',') -eq 'Idle@0,Run@1') "Anim: $(Short ($anim | ConvertTo-Json -Compress -Depth 4))"
+    Expect ((Get-TlTrack $tl 'Audio').clips[0].name -eq 'Book' -and $tl.duration -gt 1.9) "Audio clip or duration: $(Short ($tl | ConvertTo-Json -Compress -Depth 4))"
+    $cases = @(
+        @(@('--path', "$scratchRel/NoSuch.playable"), 'No TimelineAsset at.*animation\.timeline create --path', 13, 'missing .playable'),
+        @(@('--path', 'Assets/TestLevel/Audio/bookClose.ogg'), 'is an AudioClip, not a TimelineAsset', 2, 'an AudioClip as the timeline'),
+        @(@('--path', 'NotAssets/CliTest.playable'), "isn't under Assets/ or Packages/", 2, 'path outside Assets'),
+        @(@(), 'Pass --path.*or --director', 2, 'no path or director'),
+        @(@('--director', 'NoSuchDirector'), "No PlayableDirector on 'NoSuchDirector'", 13, 'unknown director')
+    )
+    $seen = @()
+    foreach ($c in $cases) {
+        $x = Invoke-Cli (@('cliext.timeline', 'inspect') + $c[0] + @('--format', 'json'))
+        Expect-TlFailure $x $c[1] '' $c[3] $c[2]
+        $seen += "$($c[3]) $($x.exit)"
+    }
+    "5 tracks, Anim Idle@0 Run@1; $($seen -join ', ')"
+}
+
+Add-Check 'tl.edit' $tlRow 'cliext.timeline edit sets clip timing and names, moves a clip into a group''s track, adds an audio clip, renames and mutes tracks and adds markers in one call; inspect and the timeline in memory show them all' {
+    Need-TlAssets
+    $ops = @"
+[{"op":"set_clip","track":"Anim","clip":"Idle","set":"duration=0.8;easeOut=0.2","name":"IdleIn"},
+ {"op":"move_clip","track":"Anim","clip":"Run","to":"Group/Sub"},
+ {"op":"add_clip","track":"Audio","clip":"Assets/TestLevel/Audio/bookClose.ogg","time":1.5,"name":"Book2"},
+ {"op":"rename_track","track":"Act","name":"Active"},
+ {"op":"mute_track","track":"Audio","value":"true"},
+ {"op":"add_marker","time":0.25,"signal":"$($script:tlSignal)"},
+ {"op":"add_marker","track":"Anim","time":0.5}]
+"@
+    $r = Invoke-Cli @('cliext.timeline', 'edit', '--path', $script:tlPath, '--ops-file', (Write-WorkFile 'tl-edit.json' $ops), '--format', 'json')
+    Expect ($r.exit -eq 0 -and $r.json.applied -eq 7) "exit $($r.exit): $(Short ($r.stdout + $r.stderr))"
+    $tl = Get-TlInspect
+    Expect ((@($tl.tracks | ForEach-Object { $_.path }) -join ',') -eq 'Anim,Audio,Group,Group/Sub,Active') "tracks: $(@($tl.tracks | ForEach-Object { $_.path }) -join ',')"
+    $idle = @((Get-TlTrack $tl 'Anim').clips)
+    Expect ($idle.Count -eq 1 -and $idle[0].name -eq 'IdleIn' -and $idle[0].duration -eq 0.8 -and $idle[0].easeOut -eq 0.2) "Anim clips: $(Short ($idle | ConvertTo-Json -Compress))"
+    $sub = @((Get-TlTrack $tl 'Group/Sub').clips)
+    Expect ($sub.Count -eq 1 -and $sub[0].name -eq 'Run' -and $sub[0].start -eq 1) "Group/Sub clips: $(Short ($sub | ConvertTo-Json -Compress))"
+    $audio = Get-TlTrack $tl 'Audio'
+    Expect ($audio.muted -eq $true -and (@($audio.clips | ForEach-Object { "$($_.name)@$([double]$_.start)" }) -join ',') -eq 'Book@0.5,Book2@1.5') "Audio: $(Short ($audio | ConvertTo-Json -Compress -Depth 4))"
+    Expect (@($tl.markers).Count -eq 1 -and $tl.markers[0].time -eq 0.25 -and $tl.markers[0].signal -eq $script:tlSignal) "timeline markers: $(Short ($tl.markers | ConvertTo-Json -Compress))"
+    Expect ((@((Get-TlTrack $tl 'Anim').markers | ForEach-Object { [double]$_.time }) -join ',') -eq '0.5') 'Anim has no marker at 0.5'
+    $m = Get-TlMemory
+    Expect ($m -match '^Anim\[IdleIn@0\+0\.8\]\{0\.5\}\(\);Audio!m\[Book@0\.5\+[\d.]+,Book2@1\.5\+[\d.]+\]\{\}\(\);Group\[\]\{\}\(Sub\[Run@1\+1\]\{\}\(\)\);Active\[Active@0\+2\]\{\}\(\)\|markers\{0\.25\}') "in memory: $m"
+    Expect ($m -notmatch 'noasset') "a clip lost its asset: $m"
+    "7 ops in one call; $m"
+}
+
+Add-Check 'tl.edit-errors' $tlRow 'cliext.timeline edit fails (exit 6) with the fix on unknown tracks, clips, ops and settings, bad numbers and bools, clips a track can''t hold, missing clip and signal assets, markers, and ops that would do nothing, saving nothing' {
+    Need-TlAssets
+    $before = Get-TlHash
+    $cases = @(
+        @('[{"op":"remove_track","track":"Anm"}]', 'Did you mean: Anim', 'unknown track, close match'),
+        @('[{"op":"remove_track","track":"Zzqx"}]', 'Tracks: .*cliext\.timeline inspect', 'unknown track, no match'),
+        @('[{"op":"remove_track"}]', 'Name a track', 'no track'),
+        @('[{"op":"remove_clip","track":"Anim","clip":"IdleI"}]', 'Did you mean: IdleIn', 'unknown clip, close match'),
+        @('[{"op":"remove_clip","track":"Anim","clip":"7"}]', 'No clip 7 on Anim.*Clips: IdleIn', 'clip index out of range'),
+        @('[{"op":"set_clip","track":"Anim","clip":"IdleIn"}]', 'set_clip needs set.*change nothing', 'set_clip that changes nothing'),
+        @('[{"op":"set_clip","track":"Anim","clip":"IdleIn","set":"duration=-1"}]', 'duration must be more than 0', 'negative duration'),
+        @('[{"op":"set_clip","track":"Anim","clip":"IdleIn","set":"start=abc"}]', "'abc' isn't a Double value: give a number", 'non-numeric start'),
+        @('[{"op":"set_clip","track":"Anim","clip":"IdleIn","set":"durtion=2"}]', "Unknown clip setting 'durtion'. Did you mean: duration", 'misspelled setting'),
+        @('[{"op":"mute_track","track":"Audio","value":"true"}]', 'already muted', 'mute a muted track'),
+        @('[{"op":"lock_track","track":"Anim","value":"maybe"}]', 'true or false', 'non-boolean value'),
+        @('[{"op":"rename_track","track":"Anim"}]', 'rename_track needs a name', 'rename without a name'),
+        @('[{"op":"move_clip","track":"Anim","clip":"IdleIn","to":"Audio"}]', "Audio \(AudioTrack\) can't hold IdleIn", 'move to a track of another kind'),
+        @('[{"op":"move_clip","track":"Anim","clip":"IdleIn","to":"Anim"}]', 'already on Anim', 'move to the same track'),
+        @('[{"op":"add_clip","track":"Group"}]', 'GroupTrack: it holds tracks, not clips', 'clip on a group'),
+        @('[{"op":"add_clip","track":"Anim","clip":"Assets/_CliextTests/CliTest/NoSuch.anim"}]', 'nothing is there.*cliext\.anim takes', 'missing clip asset'),
+        @('[{"op":"add_clip","track":"Audio","clip":"Assets/TestLevel/Animations/kenney idle.fbx"}]', 'with no AudioClip', 'a model on an audio track'),
+        @('[{"op":"add_marker"}]', 'add_marker needs a time', 'marker without a time'),
+        @('[{"op":"add_marker","time":1,"signal":"Assets/_CliextTests/CliTest/NoSuch.signal"}]', 'No SignalAsset at.*Create one', 'missing signal'),
+        @('[{"op":"add_marker","time":0.25}]', 'already has a marker at 0.25s', 'second marker at the same time'),
+        @('[{"op":"remove_marker","time":3}]', 'No marker at 3s.*at: 0\.25s', 'remove a marker that isn''t there'),
+        @('[{"op":"add_clips","track":"Anim"}]', 'Did you mean: add_clip', 'misspelled op'),
+        @('[{"op":"frob"}]', 'Unknown op .frob.*Ops: add_clip, set_clip', 'unknown op')
+    )
+    $seen = @()
+    $i = 0
+    foreach ($c in $cases) {
+        $i++
+        $r = Invoke-Cli @('cliext.timeline', 'edit', '--path', $script:tlPath, '--ops-file', (Write-WorkFile "tl-fail-$i.json" $c[0]), '--format', 'json')
+        Expect-TlFailure $r $c[1] $before $c[2]
+        Expect ($r.json.saved -eq $false -and $r.json.failedAt -eq 0) "$($c[2]): reply $(Short $r.stdout)"
+        $seen += $c[2]
+    }
+    $json = Invoke-Cli @('cliext.timeline', 'edit', '--path', $script:tlPath, '--ops-file', (Write-WorkFile 'tl-badjson.json' '[{"op":'), '--format', 'json')
+    Expect-TlFailure $json "aren't valid JSON" $before 'broken JSON' 2
+    "$($seen.Count) failures exit 6 with the fix, broken JSON 2, file unchanged"
+}
+
+Add-Check 'tl.edit-rollback' $tlRow 'a timeline edit batch with removed tracks and clips, a new clip, a marker and a rename, then one bad op, saves nothing, on disk or in memory, and the next good edit saves only its own change' {
+    Need-TlAssets
+    $before = Get-TlHash
+    $m0 = Get-TlMemory
+    $ops = '[{"op":"remove_track","track":"Group"},{"op":"remove_clip","track":"Audio","clip":"Book"},{"op":"add_clip","track":"Anim","clip":"Assets/TestLevel/Animations/kenney run.fbx","time":2,"name":"Extra"},{"op":"add_marker","time":1.25},{"op":"rename_track","track":"Anim","name":"Renamed"},{"op":"set_clip","track":"Active","clip":"0","set":"duration=5"},{"op":"remove_track","track":"NoSuchTrack"}]'
+    $r = Invoke-Cli @('cliext.timeline', 'edit', '--path', $script:tlPath, '--ops-file', (Write-WorkFile 'tl-bad-batch.json' $ops), '--format', 'json')
+    Expect-TlFailure $r 'Op 6 \(remove_track\) failed.*Nothing was saved' $before 'bad batch'
+    Expect ($r.json.saved -eq $false -and $r.json.failedAt -eq 6 -and $r.json.applied -eq 0) "reply: $(Short $r.stdout)"
+    $m1 = Get-TlMemory
+    Expect ($m1 -eq $m0) "in memory: '$m0' -> '$m1'"
+    $good = Invoke-Cli @('cliext.timeline', 'edit', '--path', $script:tlPath, '--ops-file', (Write-WorkFile 'tl-good.json' '[{"op":"lock_track","track":"Anim","value":"true"}]'), '--format', 'json')
+    Expect ($good.exit -eq 0) "good edit: exit $($good.exit): $(Short ($good.stdout + $good.stderr))"
+    $m2 = Get-TlMemory
+    $want = $m0 -replace '^Anim\[', 'Anim!l['
+    Expect ($m2 -eq $want) "after the good edit: expected '$want', got '$m2'"
+    $text = Get-Content (Join-Path $projectPath ($script:tlPath -replace '/', '\')) -Raw
+    foreach ($n in 'Group', 'Sub', 'Anim') { Expect ($text -match "m_Name: $n\r?\n") "the file on disk lost the $n track" }
+    Expect ($text -notmatch 'm_Name: Renamed|m_DisplayName: Extra') 'the file on disk has the failed batch''s rename or clip'
+    $tl = Get-TlInspect
+    Expect ((Get-TlTrack $tl 'Anim').locked -eq $true -and @($tl.markers).Count -eq 1 -and (Get-TlTrack $tl 'Active').clips[0].duration -eq 2) "inspect after the good edit: $(Short ($tl | ConvertTo-Json -Compress -Depth 4))"
+    "failed at op 6, file and memory unchanged ($m1); next edit saved only Anim's lock"
+}
+
+Add-Check 'tl.missing-asset' $tlRow 'cliext.timeline edit given a .playable that does not exist exits 13 at once naming animation.timeline create; another asset type and a path outside Assets/ exit 2; nothing is created' {
+    Need-TlAssets
+    $f = Write-WorkFile 'tl-one.json' '[{"op":"mute_track","track":"Anim"}]'
+    $cases = @(
+        @("$scratchRel/NoSuch.playable", 'animation\.timeline create --path', 13),
+        @($script:tlSignal, 'is a SignalAsset, not a TimelineAsset', 2),
+        @('NotAssets/CliTest.playable', "isn't under Assets/ or Packages/", 2)
+    )
+    $bad = @()
+    foreach ($c in $cases) {
+        $r = Invoke-Cli @('cliext.timeline', 'edit', '--path', $c[0], '--ops-file', $f, '--format', 'json') 60
+        if ($r.exit -ne $c[2] -or "$($r.stderr)" -notmatch $c[1] -or $r.ms -gt 30000) { $bad += "$($c[0]): exit $($r.exit) in $($r.ms) ms ($(Short $r.stderr 80))" }
+    }
+    Expect ($bad.Count -eq 0) ($bad -join '; ')
+    Expect (-not (Test-Path (Join-Path $scratch 'NoSuch.playable')) -and -not (Test-Path (Join-Path $projectPath 'NotAssets'))) 'a failed call created a file'
+    'missing 13 naming animation.timeline create; a SignalAsset 2; outside Assets 2'
+}
+
+Add-Check 'tl.bind-director' $tlRow 'in an unsaved scratch scene, cliext.timeline bind binds tracks to an Animator and an AudioSource and director scrubs; wrong-type targets, group tracks, unknown names, bad times and actions, and play in Edit mode fail with the fix and change nothing' {
+    Need-TlAssets
+    $scenes = Invoke-Cli @('scene', 'list_open', '--format', 'json')
+    Expect (-not (@($scenes.json) | Where-Object { $_.isDirty })) "an open scene has unsaved changes: $(Short $scenes.stdout)"
+    $before = Get-TlHash
+    Open-TlScene
+    try {
+        $a = Invoke-Cli @('cliext.timeline', 'bind', '--director', 'CliTestDirector', '--track', 'Anim', '--object', 'CliTestActor', '--format', 'json')
+        Expect ($a.exit -eq 0 -and $a.json.boundTo -eq 'CliTestActor (Animator)') "bind Anim: exit $($a.exit): $(Short ($a.stdout + $a.stderr))"
+        $s = Invoke-Cli @('cliext.timeline', 'bind', '--director', 'CliTestDirector', '--track', 'Audio', '--object', 'CliTestSpeaker', '--format', 'json')
+        Expect ($s.exit -eq 0) "bind Audio: exit $($s.exit): $(Short ($s.stdout + $s.stderr))"
+        $tl = Get-TlInspect @('--director', 'CliTestDirector')
+        Expect ($tl.path -eq $script:tlPath -and (Get-TlTrack $tl 'Anim').boundTo -eq 'CliTestActor (Animator)' -and (Get-TlTrack $tl 'Audio').boundTo -eq 'CliTestSpeaker (AudioSource)') "inspect --director: $(Short ($tl.tracks | Select-Object path, boundTo | ConvertTo-Json -Compress))"
+        $cases = @(
+            @(@('bind', '--director', 'CliTestDirector', '--track', 'Anim', '--object', 'CliTestPlain'), "CliTestPlain has no Animator.*--object CliTestRig", 2, 'bind to an object without an Animator'),
+            @(@('bind', '--director', 'CliTestDirector', '--track', 'Group', '--object', 'CliTestActor'), 'GroupTrack, which has no binding', 2, 'bind a group track'),
+            @(@('bind', '--director', 'CliTestDirector', '--track', 'Anm', '--object', 'CliTestActor'), 'Did you mean: Anim', 13, 'misspelled track'),
+            @(@('bind', '--director', 'CliTestDirector', '--track', 'Anim', '--object', 'NoSuchObject'), "No GameObject 'NoSuchObject'.*scene get_hierarchy", 13, 'unknown object'),
+            @(@('bind', '--director', 'CliTestDirectr', '--track', 'Anim', '--object', 'CliTestActor'), 'Did you mean: CliTestDirector', 13, 'misspelled director'),
+            @(@('bind', '--director', 'CliTestActor', '--track', 'Anim', '--object', 'CliTestActor'), "'CliTestActor' has no PlayableDirector", 13, 'an object without a director'),
+            @(@('bind', '--director', 'CliTestNoTimeline', '--track', 'Anim', '--object', 'CliTestActor'), "doesn't play a timeline.*Playable Asset", 6, 'a director with no timeline'),
+            @(@('director', '--director', 'CliTestDirector', '--action', 'play'), 'enter Play mode first \(editor\.playmode start\)', 6, 'play in Edit mode'),
+            @(@('director', '--director', 'CliTestDirector', '--action', 'jump'), 'Use one of: play, pause, resume, stop', 2, 'unknown action'),
+            @(@('director', '--director', 'CliTestDirector', '--time', '-5'), '--time must be 0 or more', 2, 'negative time'),
+            @(@('director', '--director', 'CliTestDirector', '--time', '99'), 'past the end of CliTestTimeline', 2, 'time past the end'),
+            @(@('director', '--director', 'NoSuchDirector'), "No PlayableDirector on 'NoSuchDirector'", 13, 'unknown director'),
+            @(@('director', '--director', 'CliTestNoTimeline', '--time', '1'), 'no Playable Asset to scrub', 6, 'scrub a director with no timeline')
+        )
+        $seen = @()
+        foreach ($c in $cases) {
+            $x = Invoke-Cli (@('cliext.timeline') + $c[0] + @('--format', 'json'))
+            Expect-TlFailure $x $c[1] $before $c[3] $c[2]
+            $seen += "$($c[3]) $($x.exit)"
+        }
+        $tl2 = Get-TlInspect @('--director', 'CliTestDirector')
+        Expect ((Get-TlTrack $tl2 'Anim').boundTo -eq 'CliTestActor (Animator)' -and -not (Get-TlTrack $tl2 'Group').boundTo) "a failed bind changed the bindings: $(Short ($tl2.tracks | Select-Object path, boundTo | ConvertTo-Json -Compress))"
+        $d = Invoke-Cli @('cliext.timeline', 'director', '--director', 'CliTestDirector', '--time', '0.75', '--format', 'json')
+        Expect ($d.exit -eq 0 -and $d.json.time -eq 0.75 -and $d.json.timeline -eq $script:tlPath) "scrub: exit $($d.exit): $(Short ($d.stdout + $d.stderr))"
+        $t = Get-TlDirectorTime 'CliTestDirector'
+        Expect ($t -match '^0\.75\|') "the director's time after the scrub: $t"
+        $read = Invoke-Cli @('cliext.timeline', 'director', '--director', 'CliTestDirector', '--format', 'json')
+        Expect ($read.exit -eq 0 -and $read.json.time -eq 0.75) "read: exit $($read.exit): $(Short ($read.stdout + $read.stderr))"
+        $none = Invoke-Cli @('cliext.timeline', 'bind', '--director', 'CliTestDirector', '--track', 'Audio', '--object', 'none', '--format', 'json')
+        Expect ($none.exit -eq 0 -and -not (Get-TlTrack (Get-TlInspect @('--director', 'CliTestDirector')) 'Audio').boundTo) "bind none: exit $($none.exit): $(Short ($none.stdout + $none.stderr))"
+        Expect ((Get-TlHash) -eq $before) 'binding or scrubbing changed the .playable'
+    }
+    finally { $closed = Close-TlScene }
+    Expect ("$closed" -match '^"?Assets/Scenes/[^|]+\|False\|1') "after closing the scratch scene: $(Short $closed)"
+    "Anim -> Animator, Audio -> AudioSource; scrubbed to 0.75; $($seen -join ', '); scratch scene discarded"
+}
+
+Add-Check 'tl.play-mode' $tlRow 'in Play mode, cliext.timeline director plays a director made there, its time advances, pause and stop work; leaving Play mode leaves the scene clean' {
+    Need-TlAssets
+    $scenes = Invoke-Cli @('scene', 'list_open', '--format', 'json')
+    Expect (-not (@($scenes.json) | Where-Object { $_.isDirty })) "an open scene has unsaved changes: $(Short $scenes.stdout)"
+    $make = Write-WorkFile 'tl-play-make.cs' ("var d = new UnityEngine.GameObject(`"CliTestPlayDirector`").AddComponent<UnityEngine.Playables.PlayableDirector>(); d.playOnAwake = false; d.extrapolationMode = UnityEngine.Playables.DirectorWrapMode.Hold; d.playableAsset = UnityEditor.AssetDatabase.LoadAssetAtPath<UnityEngine.Timeline.TimelineAsset>(`"$($script:tlPath)`"); return `"ok`";")
+    $start = Invoke-Cli @('editor.playmode', 'start', '--format', 'json')
+    try {
+        Expect ((Wait-Editor 120) -eq 0) "Play mode didn't start: $(Short ($start.stdout + $start.stderr))"
+        $mk = Invoke-Cli @('script', 'eval', '--file', $make, '--format', 'json')
+        Expect ($mk.exit -eq 0 -and "$($mk.stdout)" -match 'ok') "making the director: $(Short ($mk.stdout + $mk.stderr))"
+        $p = Invoke-Cli @('cliext.timeline', 'director', '--director', 'CliTestPlayDirector', '--action', 'play', '--format', 'json')
+        Expect ($p.exit -eq 0 -and $p.json.state -eq 'Playing') "play: exit $($p.exit): $(Short ($p.stdout + $p.stderr))"
+        $t = Get-TlDirectorTime 'CliTestPlayDirector'
+        $later = Invoke-Cli @('cliext.timeline', 'director', '--director', 'CliTestPlayDirector', '--format', 'json')
+        Expect ($later.exit -eq 0 -and $later.json.time -gt 0 -and $later.json.state -eq 'Playing') "the time didn't advance: $t, then $(Short $later.stdout)"
+        $pa = Invoke-Cli @('cliext.timeline', 'director', '--director', 'CliTestPlayDirector', '--action', 'pause', '--time', '0.5', '--format', 'json')
+        Expect ($pa.exit -eq 0 -and $pa.json.state -eq 'Paused' -and $pa.json.time -eq 0.5) "pause at 0.5: exit $($pa.exit): $(Short ($pa.stdout + $pa.stderr))"
+        $st = Invoke-Cli @('cliext.timeline', 'director', '--director', 'CliTestPlayDirector', '--action', 'stop', '--format', 'json')
+        Expect ($st.exit -eq 0 -and $st.json.time -eq 0) "stop: exit $($st.exit): $(Short ($st.stdout + $st.stderr))"
+    }
+    finally {
+        [void](Invoke-Cli @('editor.playmode', 'stop', '--format', 'json'))
+        [void](Wait-Editor 120)
+    }
+    $mode = Invoke-Cli @('script', 'eval', '--file', (Write-WorkFile 'tl-mode.cs' 'var a = UnityEngine.SceneManagement.SceneManager.GetActiveScene(); return (UnityEditor.EditorApplication.isPlaying ? "playing" : "edit") + "|" + a.isDirty;'), '--format', 'json')
+    Expect ("$($mode.stdout)" -match 'edit\|False') "after Play mode: $(Short $mode.stdout)"
+    "played (time $($later.json.time)s), paused at 0.5, stopped; back in Edit mode, scene clean"
+}
+
 # --- Cross-cutting ----------------------------------------------------------------------------------------------------
 
 $batchEdits = @(

@@ -51,6 +51,27 @@ namespace UnityCLIExtensions.Tests
         }
 
         [Test]
+        public void RollbackWithRevertUndo_DestroysSubAssetsAddedWithoutUndo()
+        {
+            string path = Folder + "/RevertUndo.controller";
+            AnimatorController.CreateAnimatorControllerAtPath(path);
+            AssetDatabase.SaveAssets();
+            int subAssetsBefore = AssetDatabase.LoadAllAssetsAtPath(path).Length;
+
+            using (var rollback = AssetRollback.Begin(new[] { path }, revertUndo: true))
+            {
+                // Added the way an editing API that records no Undo for it would (a TimelineAsset's marker track).
+                var extra = new AnimationClip { name = "Unrecorded" };
+                AssetDatabase.AddObjectToAsset(extra, path);
+                rollback.Rollback();
+            }
+
+            Assert.AreEqual(subAssetsBefore, AssetDatabase.LoadAllAssetsAtPath(path).Length, "The unrecorded sub-asset is gone from memory.");
+            AssetDatabase.SaveAssets();
+            Assert.IsFalse(File.ReadAllText(path).Contains("Unrecorded"), "The next save doesn't write it.");
+        }
+
+        [Test]
         public void Rollback_KeepsChangesMadeBeforeTheBatch()
         {
             string path = Folder + "/Before.controller";

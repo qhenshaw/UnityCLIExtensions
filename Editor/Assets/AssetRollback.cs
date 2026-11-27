@@ -24,6 +24,7 @@ namespace UnityCLIExtensions
         private readonly List<string> _folders = new List<string>();
         private readonly HashSet<string> _existingInFolders = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         private int _undoGroup = -1;
+        private readonly HashSet<string> _idsAtBegin = new HashSet<string>(); // "path:localId" of every object in the files at Begin
 
         private AssetRollback(string backupDir) { _backupDir = backupDir; }
 
@@ -75,6 +76,7 @@ namespace UnityCLIExtensions
                 r._undoGroup = Undo.GetCurrentGroup();
                 foreach (var p in paths) AssetDatabase.LoadAllAssetsAtPath(p);
                 var objects = Loaded(paths);
+                foreach (var o in objects) r._idsAtBegin.Add(LocalId(o));
                 if (objects.Length > 0) Undo.RegisterCompleteObjectUndo(objects, "cliext batch");
             }
             return r;
@@ -92,6 +94,11 @@ namespace UnityCLIExtensions
                 Undo.RevertAllDownToGroup(_undoGroup);
                 _undoGroup = -1;
                 reverted = true;
+                // Sub-assets the batch added without recording their creation (a TimelineAsset's marker track) are
+                // left in the file by the revert, unreferenced, and the next save would write them: destroy them.
+                foreach (var o in Loaded(_files.Keys))
+                    if (!(o is AssetImporter) && !AssetDatabase.IsMainAsset(o) && !_idsAtBegin.Contains(LocalId(o)))
+                        UnityEngine.Object.DestroyImmediate(o, true);
                 foreach (var o in Loaded(_files.Keys)) EditorUtility.ClearDirty(o);
             }
 
@@ -159,6 +166,9 @@ namespace UnityCLIExtensions
                 .Where(o => EditorUtility.IsPersistent(o) && set.Contains(AssetDatabase.GetAssetPath(o)))
                 .ToArray();
         }
+
+        private static string LocalId(UnityEngine.Object o) =>
+            AssetDatabase.TryGetGUIDAndLocalFileIdentifier(o, out string guid, out long id) ? guid + ":" + id : "entity:" + o.GetEntityId();
 
         private static bool SameBytes(string a, string b)
         {
