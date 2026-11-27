@@ -1,0 +1,34 @@
+{
+    "name": "UnityCLIExtensions.Addressables.Tests",
+    "rootNamespace": "UnityCLIExtensions.Addressables.Tests",
+    "references": [
+        "UnityCLIExtensions.Addressables",
+        "UnityCLIExtensions.Editor",
+        "Unity.Addressables",
+        "Unity.Addressables.Editor",
+        "UnityEngine.TestRunner",
+        "UnityEditor.TestRunner"
+    ],
+    "includePlatforms": [
+        "Editor"
+    ],
+    "excludePlatforms": [],
+    "allowUnsafeCode": false,
+    "overrideReferences": true,
+    "precompiledReferences": [
+        "nunit.framework.dll"
+    ],
+    "autoReferenced": false,
+    "defineConstraints": [
+        "UNITY_INCLUDE_TESTS",
+        "CLIEXT_ADDRESSABLES"
+    ],
+    "versionDefines": [
+        {
+            "name": "com.unity.addressables",
+            "expression": "",
+            "define": "CLIEXT_ADDRESSABLES"
+        }
+    ],
+    "noEngineReferences": false
+}

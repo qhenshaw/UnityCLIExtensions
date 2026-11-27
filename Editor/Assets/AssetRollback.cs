@@ -135,7 +135,10 @@ namespace UnityCLIExtensions
                 AssetDatabase.Refresh(ImportAssetOptions.ForceSynchronousImport);
                 foreach (var p in restored)
                     AssetDatabase.ImportAsset(p, ImportAssetOptions.ForceUpdate | ImportAssetOptions.ForceSynchronousImport);
-                Unload(restored);
+                // Postprocessors that ran during the refresh (Addressables' does) may have reloaded the other watched
+                // assets while a restored file was still missing, and kept that view (a settings asset whose group
+                // reference was null): unload them all again, so each reloads from the restored files.
+                Unload(reverted ? restored : (IEnumerable<string>)_files.Keys);
             }
         }
 

@@ -10,3 +10,5 @@ using System.Runtime.CompilerServices;
 [assembly: InternalsVisibleTo("UnityCLIExtensions.Splines")]
 // So do the AI Navigation commands.
 [assembly: InternalsVisibleTo("UnityCLIExtensions.AINavigation")]
+// So do the Addressables commands.
+[assembly: InternalsVisibleTo("UnityCLIExtensions.Addressables")]

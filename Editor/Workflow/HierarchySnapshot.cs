@@ -80,13 +80,44 @@ namespace UnityCLIExtensions
         }
 
         /// <summary>Takes a snapshot of a scene (.unity) or prefab (.prefab) and saves it under <paramref name="name"/> (default: the path).</summary>
-        public static Snapshot Take(string assetPath, string name = null)
+        public static Snapshot Take(string assetPath, string name = null) => Save(Capture(assetPath), name);
+
+        /// <summary>Saves a captured snapshot under <paramref name="name"/> (default: its path).</summary>
+        public static Snapshot Save(Snapshot snapshot, string name = null)
         {
-            Snapshot snapshot = Capture(assetPath);
-            snapshot.name = string.IsNullOrEmpty(name) ? assetPath : name;
+            snapshot.name = string.IsNullOrEmpty(name) ? snapshot.assetPath : name;
             File.WriteAllText(FileFor(snapshot.name), JsonUtility.ToJson(snapshot));
             return snapshot;
         }
+
+        /// <summary>
+        /// Normalizes a --path for <see cref="Capture"/>: a usage error for a path outside Assets/ and Packages/ or an
+        /// asset that isn't a scene or prefab, a not-found error for a missing scene or prefab.
+        /// </summary>
+        internal static string ResolvePath(string path)
+        {
+            string p = Animation.AnimationErrors.AssetPath(path);
+            if (!p.StartsWith("Assets/", StringComparison.Ordinal) && !p.StartsWith("Packages/", StringComparison.Ordinal))
+                throw new Animation.AnimUsageException($"--path '{path}' isn't under Assets/ or Packages/: give a scene or prefab path such as Assets/Scenes/Main.unity.");
+            bool scene = p.EndsWith(".unity", StringComparison.OrdinalIgnoreCase), prefab = p.EndsWith(".prefab", StringComparison.OrdinalIgnoreCase);
+            var main = AssetDatabase.LoadMainAssetAtPath(p);
+            if (!scene && !prefab)
+            {
+                if (main == null && !AssetDatabase.IsValidFolder(p))
+                    throw new Animation.AnimUsageException($"--path '{p}' isn't a scene (.unity) or prefab (.prefab) path.");
+                string what = AssetDatabase.IsValidFolder(p) ? "a folder" : Animation.AnimationErrors.A(main.GetType().Name);
+                throw new Animation.AnimUsageException($"--path '{p}' is {what}, not a scene (.unity) or prefab (.prefab).");
+            }
+            if (main == null)
+                throw new Animation.AnimNotFoundException(scene
+                    ? $"--path: no scene at '{p}'. Check the path (asset find --type Scene lists the scenes)."
+                    : $"--path: no prefab at '{p}'. Check the path (asset find --type Prefab lists the prefabs).");
+            return p;
+        }
+
+        /// <summary>The error for an unknown snapshot name, with close names or the list.</summary>
+        internal static string NoSnapshot(string name) =>
+            $"No snapshot named '{name}'.{Animation.AnimationErrors.Hint(name, All().Select(s => s.name), "Snapshots", "cliext.diff list")} Take one with cliext.diff snapshot.";
 
         /// <summary>Loads a saved snapshot, or null.</summary>
         public static Snapshot Load(string name)
@@ -123,8 +154,11 @@ namespace UnityCLIExtensions
         /// <summary>Compares the saved snapshot <paramref name="name"/> with the asset's current state.</summary>
         public static List<Change> CompareWithCurrent(string name, out Snapshot before, out Snapshot after)
         {
-            before = Load(name) ?? throw new ArgumentException($"No snapshot named '{name}'. Take one with cliext.diff snapshot.");
+            before = Load(name) ?? throw new Animation.AnimNotFoundException(NoSnapshot(name));
+            if (AssetDatabase.LoadMainAssetAtPath(before.assetPath) == null)
+                throw new Animation.AnimNotFoundException($"Snapshot '{name}' is of '{before.assetPath}', which is gone: it can't be compared. Delete it with cliext.diff delete --name \"{name}\".");
             after = Capture(before.assetPath);
+            after.name = before.name;
             return Diff(before, after);
         }
 
@@ -142,7 +176,7 @@ namespace UnityCLIExtensions
                 bool openedHere = false;
                 if (!scene.IsValid() || !scene.isLoaded)
                 {
-                    if (AssetDatabase.LoadAssetAtPath<SceneAsset>(assetPath) == null) throw new ArgumentException($"No scene at '{assetPath}'.");
+                    if (AssetDatabase.LoadAssetAtPath<SceneAsset>(assetPath) == null) throw new Animation.AnimNotFoundException($"No scene at '{assetPath}'. Check the path (asset find --type Scene lists the scenes).");
                     scene = EditorSceneManager.OpenScene(assetPath, OpenSceneMode.Additive);
                     openedHere = true;
                 }
@@ -159,12 +193,12 @@ namespace UnityCLIExtensions
             {
                 snapshot.kind = "prefab";
                 var root = AssetDatabase.LoadAssetAtPath<GameObject>(assetPath);
-                if (root == null) throw new ArgumentException($"No prefab at '{assetPath}'.");
+                if (root == null) throw new Animation.AnimNotFoundException($"No prefab at '{assetPath}'. Check the path (asset find --type Prefab lists the prefabs).");
                 Walk(root, root.name, snapshot.objects, persistent: true);
             }
             else
             {
-                throw new ArgumentException($"'{assetPath}' is not a scene (.unity) or prefab (.prefab).");
+                throw new Animation.AnimUsageException($"'{assetPath}' is not a scene (.unity) or prefab (.prefab).");
             }
             return snapshot;
         }
@@ -174,14 +208,16 @@ namespace UnityCLIExtensions
             var snap = new ObjectSnap { id = IdOf(go, persistent), hierarchyPath = path };
             snap.components.Add(CaptureComponent(go, "GameObject", 0, IdOf(go, persistent)));
             var counts = new Dictionary<string, int>();
-            foreach (Component component in go.GetComponents<Component>())
+            Component[] components = go.GetComponents<Component>();
+            bool driven = components.Any(IsCinemachineBrain);
+            foreach (Component component in components)
             {
                 string type = component == null ? "MissingScript" : component.GetType().Name;
                 counts.TryGetValue(type, out int index);
                 counts[type] = index + 1;
                 snap.components.Add(component == null
                     ? new ComponentSnap { id = "", type = type, index = index }
-                    : CaptureComponent(component, type, index, IdOf(component, persistent)));
+                    : CaptureComponent(component, type, index, IdOf(component, persistent), driven ? DrivenByBrain(component) : null));
             }
             into.Add(snap);
 
@@ -203,7 +239,27 @@ namespace UnityCLIExtensions
             return id.targetObjectId == 0 ? "" : id.targetObjectId + ":" + id.targetPrefabId;
         }
 
-        private static ComponentSnap CaptureComponent(Object target, string type, int index, string id)
+        // A CinemachineBrain (matched by name, so the package needn't be installed) writes its camera's transform and
+        // lens every frame it updates, in Edit mode too, without dirtying the scene: a snapshot taken after an update
+        // and one taken after the scene is reopened differ there though nobody changed anything.
+        private static bool IsCinemachineBrain(Component c) =>
+            c is Behaviour b && b.enabled && c.GetType().Name == "CinemachineBrain";
+
+        private static readonly string[] s_BrainCameraProperties =
+        {
+            "field of view", "orthographic size", "near clip plane", "far clip plane", "orthographic", "m_FocalLength", "m_SensorSize", "m_LensShift",
+            "m_GateFitMode", "m_Iso", "m_ShutterSpeed", "m_Aperture", "m_FocusDistance", "m_BladeCount", "m_Curvature", "m_BarrelClipping", "m_Anamorphism"
+        };
+
+        /// <summary>The properties of <paramref name="c"/> that a CinemachineBrain on its GameObject sets, or null.</summary>
+        internal static Func<string, bool> DrivenByBrain(Component c)
+        {
+            if (c is Transform) return p => p.StartsWith("m_LocalPosition", StringComparison.Ordinal) || p.StartsWith("m_LocalRotation", StringComparison.Ordinal);
+            if (c is Camera) return p => s_BrainCameraProperties.Any(x => p == x || p.StartsWith(x + ".", StringComparison.Ordinal));
+            return null;
+        }
+
+        private static ComponentSnap CaptureComponent(Object target, string type, int index, string id, Func<string, bool> skip = null)
         {
             var snap = new ComponentSnap { id = id, type = type, index = index };
             using var so = new SerializedObject(target);
@@ -213,6 +269,7 @@ namespace UnityCLIExtensions
             {
                 enter = true;
                 if (it.propertyPath == "m_Script" || it.propertyPath.StartsWith("m_Component", StringComparison.Ordinal)) { enter = false; continue; }
+                if (skip != null && skip(it.propertyPath)) { enter = false; continue; }
                 if (it.propertyType == SerializedPropertyType.String) { enter = false; snap.properties.Add(new Property { path = it.propertyPath, value = Clip(it.stringValue) }); continue; }
                 if (it.hasVisibleChildren && it.propertyType != SerializedPropertyType.ObjectReference) continue;
                 snap.properties.Add(new Property { path = it.propertyPath, value = Clip(ValueOf(it)) });
@@ -264,12 +321,16 @@ namespace UnityCLIExtensions
         {
             var changes = new List<Change>();
             var pairs = Match(before.objects, after.objects, o => o.id, o => o.hierarchyPath);
+            // Where each object's path went, so a renamed or moved parent is one change, not one per descendant, and
+            // a reference described by the path of an object that moved isn't reported as changed.
+            var moved = new Dictionary<string, string>();
+            foreach (var (b, a) in pairs) if (b != null && a != null) moved[b.hierarchyPath] = a.hierarchyPath;
 
             foreach (var (b, a) in pairs)
             {
                 if (a == null) { changes.Add(new Change { change = "object-removed", @object = b.hierarchyPath }); continue; }
                 if (b == null) { changes.Add(new Change { change = "object-added", @object = a.hierarchyPath }); continue; }
-                if (b.hierarchyPath != a.hierarchyPath)
+                if (b.hierarchyPath != a.hierarchyPath && !FollowsItsParent(b.hierarchyPath, a.hierarchyPath, moved))
                     changes.Add(new Change { change = "object-renamed", @object = a.hierarchyPath, before = b.hierarchyPath, after = a.hierarchyPath });
 
                 var componentPairs = Match(b.components, a.components, c => c.id, c => c.type + "#" + c.index);
@@ -286,11 +347,36 @@ namespace UnityCLIExtensions
                         if (old == now) continue;
                         // Renaming an object changes its own m_Name; the object-renamed line already says so.
                         if (ac.type == "GameObject" && path == "m_Name" && b.hierarchyPath != a.hierarchyPath) continue;
+                        if (old != null && now != null && MovedReference(old, moved) == now) continue;
                         changes.Add(new Change { change = "property-changed", @object = a.hierarchyPath, component = ac.type, property = path, before = old, after = now });
                     }
                 }
             }
             return changes;
+        }
+
+        private static string ParentOf(string path)
+        {
+            int slash = path.LastIndexOf('/');
+            return slash < 0 ? null : path.Substring(0, slash);
+        }
+
+        private static string LeafOf(string path) => path.Substring(path.LastIndexOf('/') + 1);
+
+        // True when the object kept its name and parent, and only its parent's path changed.
+        private static bool FollowsItsParent(string before, string after, Dictionary<string, string> moved)
+        {
+            string pb = ParentOf(before), pa = ParentOf(after);
+            return pb != null && pa != null && LeafOf(before) == LeafOf(after) && moved.TryGetValue(pb, out string to) && to == pa;
+        }
+
+        // A scene object reference ("Path/To/Object" or "Path/To/Object (Type)") with the path of where that object is now.
+        private static string MovedReference(string value, Dictionary<string, string> moved)
+        {
+            if (moved.TryGetValue(value, out string to)) return to;
+            int i = value.LastIndexOf(" (", StringComparison.Ordinal);
+            if (i > 0 && value.EndsWith(")", StringComparison.Ordinal) && moved.TryGetValue(value.Substring(0, i), out to)) return to + value.Substring(i);
+            return value;
         }
 
         // Pairs items by id first, then the leftovers by a fallback key (an object created since the snapshot has no id

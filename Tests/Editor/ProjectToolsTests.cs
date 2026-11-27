@@ -56,6 +56,86 @@ namespace UnityCLIExtensions.Tests
             var after = Snap(Obj("42:0", "New Thing", Comp("43:0", "Transform", 0, ("m_LocalScale.x", "1"))));
             Assert.IsEmpty(HierarchySnapshot.Diff(before, after), "Saving the scene gave the object an id; it is still the same object.");
         }
+
+        [Test]
+        public void Diff_ARenamedParentIsOneChange_AndReferencesToWhatMovedWithItAreUnchanged()
+        {
+            var before = Snap(
+                Obj("1", "Player"),
+                Obj("2", "Player/Root"),
+                Obj("3", "Player/Root/Hips"),
+                Obj("4", "Player/Body", Comp("41", "SkinnedMeshRenderer", 0, ("m_RootBone", "Player/Root/Hips (Transform)"), ("m_Target", "Player/Root"))),
+                Obj("5", "Camera", Comp("51", "Follow", 0, ("target", "Player/Root/Hips (Transform)"))));
+            var after = Snap(
+                Obj("1", "Hero"),
+                Obj("2", "Hero/Root"),
+                Obj("3", "Hero/Root/Hips"),
+                Obj("4", "Hero/Body", Comp("41", "SkinnedMeshRenderer", 0, ("m_RootBone", "Hero/Root/Hips (Transform)"), ("m_Target", "Hero/Root"))),
+                Obj("5", "Camera", Comp("51", "Follow", 0, ("target", "Hero/Root (Transform)"))));
+
+            var changes = HierarchySnapshot.Diff(before, after);
+            string[] lines = changes.Select(c => $"{c.change} {c.@object} {c.component} {c.property} {c.before}->{c.after}".Trim()).ToArray();
+
+            CollectionAssert.AreEquivalent(new[]
+            {
+                "object-renamed Hero   Player->Hero",
+                // A reference that now points at another object is still a change.
+                "property-changed Camera Follow target Player/Root/Hips (Transform)->Hero/Root (Transform)"
+            }, lines);
+        }
+
+        [Test]
+        public void Diff_AChildRenamedOrMovedUnderARenamedParentIsStillReported()
+        {
+            var before = Snap(Obj("1", "Player"), Obj("2", "Player/Root"), Obj("3", "Player/Gun"), Obj("4", "Other"));
+            var after = Snap(Obj("1", "Hero"), Obj("2", "Hero/Base"), Obj("3", "Other/Gun"), Obj("4", "Other"));
+
+            string[] lines = HierarchySnapshot.Diff(before, after).Select(c => $"{c.change} {c.before}->{c.after}").ToArray();
+
+            CollectionAssert.AreEquivalent(new[] { "object-renamed Player->Hero", "object-renamed Player/Root->Hero/Base", "object-renamed Player/Gun->Other/Gun" }, lines);
+        }
+
+        [Test]
+        public void DrivenByBrain_LeavesOutTheTransformPoseAndTheLens_NotTheRest()
+        {
+            var go = new UnityEngine.GameObject("DrivenCamera");
+            try
+            {
+                var t = HierarchySnapshot.DrivenByBrain(go.transform);
+                Assert.IsTrue(t("m_LocalPosition") && t("m_LocalRotation.w"));
+                Assert.IsFalse(t("m_LocalScale"), "The brain doesn't scale the camera.");
+                var cam = HierarchySnapshot.DrivenByBrain(go.AddComponent<UnityEngine.Camera>());
+                Assert.IsTrue(cam("field of view") && cam("near clip plane") && cam("m_LensShift.x"));
+                Assert.IsFalse(cam("m_CullingMask") || cam("m_ClearFlags"), "Settings the brain doesn't touch are compared.");
+                Assert.IsNull(HierarchySnapshot.DrivenByBrain(go.AddComponent<UnityEngine.BoxCollider>()));
+            }
+            finally { UnityEngine.Object.DestroyImmediate(go); }
+        }
+
+        [Test]
+        public void ResolvePath_NamesWhatIsWrong()
+        {
+            Assert.Throws<Animation.AnimUsageException>(() => HierarchySnapshot.ResolvePath("C:/Scenes/Main.unity"));
+            Assert.Throws<Animation.AnimUsageException>(() => HierarchySnapshot.ResolvePath("Packages/com.qhenshaw.unitycliextensions/package.json"));
+            Assert.Throws<Animation.AnimUsageException>(() => HierarchySnapshot.ResolvePath("Assets"));
+            StringAssert.Contains("asset find --type Scene", Assert.Throws<Animation.AnimNotFoundException>(() => HierarchySnapshot.ResolvePath("Assets/NoSuchScene.unity")).Message);
+            StringAssert.Contains("asset find --type Prefab", Assert.Throws<Animation.AnimNotFoundException>(() => HierarchySnapshot.ResolvePath("Assets/NoSuch.prefab")).Message);
+        }
+    }
+
+    public class AssetDependencyArgTests
+    {
+        [Test]
+        public void ResolveArg_AcceptsAPathOrGuid_AndNamesWhatIsWrong()
+        {
+            const string manifest = "Packages/com.qhenshaw.unitycliextensions/package.json";
+            Assert.AreEqual(manifest, AssetDependencies.ResolveArg(manifest));
+            Assert.AreEqual(manifest, AssetDependencies.ResolveArg(UnityEditor.AssetDatabase.AssetPathToGUID(manifest)));
+            Assert.Throws<Animation.AnimUsageException>(() => AssetDependencies.ResolveArg("C:/Windows/notepad.exe"));
+            StringAssert.Contains("is a folder", Assert.Throws<Animation.AnimUsageException>(() => AssetDependencies.ResolveArg("Packages/com.qhenshaw.unitycliextensions/Editor")).Message);
+            StringAssert.Contains("asset find", Assert.Throws<Animation.AnimNotFoundException>(() => AssetDependencies.ResolveArg("Assets/NoSuch.mat")).Message);
+            Assert.Throws<Animation.AnimNotFoundException>(() => AssetDependencies.ResolveArg("0123456789abcdef0123456789abcdef"));
+        }
     }
 
     public class AffectedTestsTests

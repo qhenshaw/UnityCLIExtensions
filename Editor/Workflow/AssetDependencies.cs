@@ -53,6 +53,29 @@ namespace UnityCLIExtensions
         }
 
         /// <summary>
+        /// Resolves a command's --path (an asset path or GUID) to an asset path. Throws a not-found error for a missing
+        /// asset or GUID, and a usage error for a folder or a path outside Assets/ and Packages/.
+        /// </summary>
+        internal static string ResolveArg(string pathOrGuid)
+        {
+            string s = (pathOrGuid ?? "").Trim().Replace('\\', '/');
+            if (s.Length == 32 && s.All(Uri.IsHexDigit))
+            {
+                string fromGuid = AssetDatabase.GUIDToAssetPath(s);
+                if (string.IsNullOrEmpty(fromGuid) || string.IsNullOrEmpty(AssetDatabase.AssetPathToGUID(fromGuid, AssetPathToGUIDOptions.OnlyExistingAssets)))
+                    throw new Animation.AnimNotFoundException($"--path: no asset has the GUID {s}. Check it, or give the asset's path (asset find lists assets).");
+                s = fromGuid;
+            }
+            if (!s.StartsWith("Assets/", StringComparison.Ordinal) && !s.StartsWith("Packages/", StringComparison.Ordinal))
+                throw new Animation.AnimUsageException($"--path '{pathOrGuid}' isn't under Assets/ or Packages/: give a project path such as Assets/Materials/Player.mat, or a GUID.");
+            if (AssetDatabase.IsValidFolder(s))
+                throw new Animation.AnimUsageException($"--path '{s}' is a folder: give an asset in it (asset find --search-in {s} lists them).");
+            if (string.IsNullOrEmpty(AssetDatabase.AssetPathToGUID(s, AssetPathToGUIDOptions.OnlyExistingAssets)))
+                throw new Animation.AnimNotFoundException($"--path: no asset at '{s}'. Check the path (asset find --name <name> lists assets).");
+            return s;
+        }
+
+        /// <summary>
         /// The assets <paramref name="path"/> uses (directly, or through others with <paramref name="recursive"/>), without
         /// itself. Editor-only scripts are left out unless <paramref name="includeEditorScripts"/>: they are tooling
         /// metadata, such as the AssetVersion script HDRP attaches to every material, not something the asset needs at runtime.
@@ -97,6 +120,8 @@ namespace UnityCLIExtensions
                 if (!index.TryGetValue(current, out List<string> users)) continue;
                 foreach (string user in users)
                 {
+                    // The index may have been built with packages for an earlier call: leave them out unless asked.
+                    if (!includePackages && !user.StartsWith("Assets/", StringComparison.Ordinal)) continue;
                     if (user == path || !found.Add(user)) continue;
                     if (recursive) queue.Enqueue(user);
                 }

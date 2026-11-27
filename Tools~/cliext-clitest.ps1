@@ -3876,6 +3876,569 @@ Add-Check 'pkg.errors' $pkgRow 'cliext.package import of a missing file, a folde
     "$($seen.Count) refusals with the fix; nothing written, no dialog"
 }
 
+# --- cliext.asset, cliext.diff ----------------------------------------------------------------------------------------
+
+# Dependencies are checked on the committed TestLevel: its Player wears PlayerSkin.mat, which uses skaterMaleA.png. Each
+# answer is compared with AssetDatabase.GetDependencies (and, for used_by, a scan of every asset under Assets/). Diffs
+# run on TestLevel opened from disk and changed without saving (reopened from disk after), and on a scratch prefab.
+# Snapshots are taken under cliext-test-* names and deleted in a finally; the snapshot folder is compared before and after.
+$depRow = 'cliext.asset, cliext.diff'
+$depScene = 'Assets/Scenes/TestLevel.unity'
+$depMat = 'Assets/TestLevel/Characters/PlayerSkin.mat'
+$depTex = 'Assets/TestLevel/Characters/skaterMaleA.png'
+$snapDir = Join-Path $projectPath 'Library\CLIExtensions\snapshots'
+
+function Get-DepRecords($r) { @(@($r.json) | Where-Object { $_ -ne $null } | ForEach-Object { $_.path }) | Sort-Object }
+function Get-Deps([string]$path, [bool]$recursive) {
+    # AssetDatabase.GetDependencies without the asset itself, sorted, ';'-joined.
+    $code = "var d = UnityEditor.AssetDatabase.GetDependencies(`"$path`", $(if ($recursive) { 'true' } else { 'false' })).Where(p => p != `"$path`").OrderBy(p => p, System.StringComparer.Ordinal); return string.Join(`";`", d);"
+    (@((Invoke-Eval 'dep-deps.cs' $code) -split ';' | Where-Object { $_ } | Sort-Object) -join ';')
+}
+function Get-Users([string]$path, [bool]$recursive) {
+    # Every asset under Assets/ whose GetDependencies (direct, or recursive) holds $path, sorted, ';'-joined.
+    $code = "var all = UnityEditor.AssetDatabase.GetAllAssetPaths().Where(p => p.StartsWith(`"Assets/`") && p != `"$path`" && !UnityEditor.AssetDatabase.IsValidFolder(p)); return string.Join(`";`", all.Where(p => UnityEditor.AssetDatabase.GetDependencies(p, $(if ($recursive) { 'true' } else { 'false' })).Contains(`"$path`")).OrderBy(p => p, System.StringComparer.Ordinal));"
+    (@((Invoke-Eval 'dep-users.cs' $code) -split ';' | Where-Object { $_ } | Sort-Object) -join ';')
+}
+function Get-SnapFiles { if (Test-Path $snapDir) { (@(Get-ChildItem $snapDir -File | Sort-Object Name | ForEach-Object { "$($_.Name)=$((Get-FileHash $_.FullName).Hash)" }) -join ';') } else { '' } }
+function Open-DepScene {
+    # TestLevel from disk, as the active scene; returns the scene that was open.
+    $scenes = Invoke-Cli @('scene', 'list_open', '--format', 'json')
+    Expect (-not (@($scenes.json) | Where-Object { $_.isDirty })) "an open scene has unsaved changes: $(Short $scenes.stdout)"
+    $code = "string before = UnityEngine.SceneManagement.SceneManager.GetActiveScene().path; UnityEditor.SceneManagement.EditorSceneManager.OpenScene(`"$depScene`", UnityEditor.SceneManagement.OpenSceneMode.Single); return before;"
+    Invoke-Eval 'dep-open.cs' $code
+}
+function Get-DiffLines($r) {
+    @(@($r.json) | Where-Object { $_ -ne $null } | ForEach-Object { ("$($_.change) $($_.object) $($_.component) $($_.property) $($_.before)->$($_.after)" -replace '\s+', ' ').Trim() }) | Sort-Object
+}
+
+Add-Check 'dep.uses' $depRow 'cliext.asset uses lists exactly what AssetDatabase.GetDependencies gives for PlayerSkin.mat (skaterMaleA.png and the Lit shader; URP''s Editor-only AssetVersion.cs only with --include-editor-scripts), directly and --recursive, by path and by GUID, and for TestLevel' {
+    $u = Invoke-Cli @('cliext.asset', 'uses', '--path', $depMat, '--format', 'json')
+    Expect ($u.exit -eq 0) "uses: exit $($u.exit): $(Short ($u.stdout + $u.stderr))"
+    $got = (Get-DepRecords $u) -join ';'
+    $all = Get-Deps $depMat $false
+    # Editor-only scripts (URP's AssetVersion.cs on every material) are left out unless --include-editor-scripts.
+    $want = (@($all -split ';' | Where-Object { $_ -and $_ -notmatch '/Editor/.*\.cs$' }) -join ';')
+    Expect ($got -eq $want -and $got -like "*$depTex*") "uses $depMat`: $got; GetDependencies without Editor scripts: $want"
+    $ue = Invoke-Cli @('cliext.asset', 'uses', '--path', $depMat, '--include-editor-scripts', 'true', '--format', 'json')
+    Expect ($ue.exit -eq 0 -and ((Get-DepRecords $ue) -join ';') -eq $all) "uses --include-editor-scripts: $((Get-DepRecords $ue) -join ';'); GetDependencies: $all"
+    Expect ((@($u.json) | Where-Object { $_.path -eq $depTex }).type -eq 'Texture2D') "the texture record: $(Short $u.stdout)"
+    $guid = Invoke-Eval 'dep-guid.cs' "return UnityEditor.AssetDatabase.AssetPathToGUID(`"$depMat`");"
+    $g = Invoke-Cli @('cliext.asset', 'uses', '--path', $guid, '--recursive', 'true', '--include-editor-scripts', 'true', '--format', 'json')
+    $gotR = (Get-DepRecords $g) -join ';'; $wantR = Get-Deps $depMat $true
+    Expect ($g.exit -eq 0 -and $gotR -eq $wantR) "uses --recursive by GUID: exit $($g.exit): $gotR; GetDependencies: $wantR"
+    $s = Invoke-Cli @('cliext.asset', 'uses', '--path', $depScene, '--format', 'json')
+    $gotS = Get-DepRecords $s; $wantS = @((Get-Deps $depScene $false) -split ';' | Where-Object { $_ })
+    Expect ($s.exit -eq 0 -and ($gotS -join ';') -eq ($wantS -join ';') -and $gotS -contains $depMat) "uses $depScene`: $($gotS -join ';'); GetDependencies: $($wantS -join ';')"
+    "$depMat uses $($got -replace '[^;]+/', '') (recursive $(@($g.json).Count)); TestLevel uses $($gotS.Count)"
+}
+
+Add-Check 'dep.used-by' $depRow 'cliext.asset used_by skaterMaleA.png is PlayerSkin.mat, and --recursive adds TestLevel: the same as scanning every asset''s GetDependencies; --include-packages on a URP shader lists package users, and the next call without it lists none' {
+    $d = Invoke-Cli @('cliext.asset', 'used_by', '--path', $depTex, '--format', 'json')
+    $got = (Get-DepRecords $d) -join ';'; $want = Get-Users $depTex $false
+    Expect ($d.exit -eq 0 -and $got -eq $want -and $got -like "*$depMat*") "used_by: exit $($d.exit): $got; scan: $want"
+    $r = Invoke-Cli @('cliext.asset', 'used_by', '--path', $depTex, '--recursive', 'true', '--format', 'json')
+    $gotR = (Get-DepRecords $r) -join ';'; $wantR = Get-Users $depTex $true
+    Expect ($r.exit -eq 0 -and $gotR -eq $wantR -and $gotR -like "*$depScene*") "used_by --recursive: exit $($r.exit): $gotR; scan: $wantR"
+    $lit = 'Packages/com.unity.render-pipelines.universal/Shaders/Lit.shader'
+    $p = Invoke-Cli @('cliext.asset', 'used_by', '--path', $lit, '--include-packages', 'true', '--format', 'json') 120
+    $pkgUsers = @(Get-DepRecords $p | Where-Object { $_ -like 'Packages/*' })
+    Expect ($p.exit -eq 0 -and $pkgUsers.Count -gt 0) "used_by --include-packages: exit $($p.exit), $($pkgUsers.Count) package users"
+    $a = Invoke-Cli @('cliext.asset', 'used_by', '--path', $lit, '--format', 'json')
+    $leak = @(Get-DepRecords $a | Where-Object { $_ -notlike 'Assets/*' })
+    Expect ($a.exit -eq 0 -and $leak.Count -eq 0) "used_by without --include-packages after a call with it listed $($leak.Count) package assets: $(Short ($leak -join ';'))"
+    Expect ((Get-DepRecords $a) -contains $depMat) "used_by Lit.shader leaves out PlayerSkin.mat: $(Short $a.stdout)"
+    "$depTex used by $($got -replace '[^;]+/', ''); recursive: $($gotR -replace '[^;]+/', ''); Lit.shader: $($pkgUsers.Count) package users only with --include-packages"
+}
+
+Add-Check 'dep.asset-errors' $depRow 'cliext.asset uses and used_by with a missing asset or GUID exit 13 naming asset find, and a folder or a path outside the project exit 2' {
+    $seen = @()
+    foreach ($cmd in 'uses', 'used_by') {
+        foreach ($c in @(
+                @('Assets/TestLevel/Characters/NoSuch.mat', "--path: no asset at 'Assets/TestLevel/Characters/NoSuch\.mat'\. Check the path \(asset find", 13, 'a missing asset'),
+                @('0123456789abcdef0123456789abcdef', 'no asset has the GUID 0123456789abcdef0123456789abcdef.*asset find', 13, 'an unknown GUID'),
+                @('Assets/TestLevel/Characters', "is a folder: give an asset in it \(asset find --search-in", 2, 'a folder'),
+                @('C:/Windows/notepad.exe', "isn't under Assets/ or Packages/", 2, 'a path outside the project'))) {
+            $x = Invoke-Cli @('cliext.asset', $cmd, '--path', $c[0], '--format', 'json')
+            Expect-P3Failure $x $c[1] "$cmd $($c[3])" $c[2]
+            Expect ("$($x.stdout)".Trim() -eq '') "$cmd $($c[3]): records on stdout: $(Short $x.stdout)"
+            $seen += "$cmd $($c[3]) $($x.exit)"
+        }
+    }
+    "$($seen.Count) refusals with the fix"
+}
+
+Add-Check 'dep.diff-scene' $depRow 'cliext.diff snapshot of TestLevel opened from disk, then unsaved changes (light moved, Player renamed, a collider added, CamB deleted, an object added): compare lists exactly those 5, list shows the snapshot, --update then compare is empty, reopened from disk compare lists them reversed; deleted after' {
+    $snap0 = Get-SnapFiles
+    $was = Open-DepScene
+    $name = 'cliext-test-scene'
+    try {
+        $s = Invoke-Cli @('cliext.diff', 'snapshot', '--path', $depScene, '--name', $name, '--format', 'json')
+        Expect ($s.exit -eq 0 -and $s.json.name -eq $name -and $s.json.kind -eq 'scene' -and $s.json.objects -gt 10) "snapshot: exit $($s.exit): $(Short ($s.stdout + $s.stderr))"
+        $c0 = Invoke-Cli @('cliext.diff', 'compare', '--name', $name, '--format', 'json')
+        Expect ($c0.exit -eq 0 -and "$($c0.stdout)".Trim() -eq '') "compare with nothing changed: exit $($c0.exit): $(Short $c0.stdout 300)"
+        $code = @'
+var light = UnityEngine.GameObject.Find("Directional Light");
+light.transform.localPosition += new UnityEngine.Vector3(1.5f, 0, 0);
+UnityEngine.GameObject.Find("Player").name = "CliPlayer";
+UnityEngine.GameObject.Find("Floor").AddComponent<UnityEngine.BoxCollider>();
+UnityEngine.Object.DestroyImmediate(UnityEngine.GameObject.Find("CamB"));
+new UnityEngine.GameObject("CliDiffAdded");
+UnityEditor.SceneManagement.EditorSceneManager.MarkSceneDirty(light.scene);
+return light.transform.localPosition.x.ToString(System.Globalization.CultureInfo.InvariantCulture);
+'@
+        $lx = Invoke-Eval 'dep-change.cs' $code
+        $l = Invoke-Cli @('cliext.diff', 'list', '--format', 'json')
+        Expect ($l.exit -eq 0 -and @(@($l.json) | Where-Object { $_.name -eq $name -and $_.assetPath -eq $depScene }).Count -eq 1) "list: $(Short $l.stdout)"
+        $c = Invoke-Cli @('cliext.diff', 'compare', '--name', $name, '--format', 'json')
+        $lines = Get-DiffLines $c
+        $x0 = [double]$lx - 1.5
+        $fmt = { param($v) ([double]$v).ToString('0.#####', [Globalization.CultureInfo]::InvariantCulture) }
+        $want = @(
+            'component-added Floor BoxCollider ->',
+            "object-removed CamB ->",
+            'object-added CliDiffAdded ->',
+            'object-renamed CliPlayer Player->CliPlayer',
+            "property-changed Directional Light Transform m_LocalPosition.x $(& $fmt $x0)->$(& $fmt $lx)") | Sort-Object
+        Expect ($c.exit -eq 0 -and ($lines -join "`n") -eq ($want -join "`n")) "compare: exit $($c.exit): got $($lines.Count): $(Short ($lines -join ' | ') 600); want: $($want -join ' | ')"
+        $u = Invoke-Cli @('cliext.diff', 'compare', '--name', $name, '--update', 'true', '--format', 'json')
+        Expect ($u.exit -eq 0 -and @(Get-DiffLines $u).Count -eq 5) "compare --update: exit $($u.exit): $(Short $u.stdout)"
+        $e = Invoke-Cli @('cliext.diff', 'compare', '--name', $name, '--format', 'json')
+        Expect ($e.exit -eq 0 -and "$($e.stdout)".Trim() -eq '') "compare after --update: $(Short $e.stdout 300)"
+        $back = Close-P3Scene $depScene
+        Expect ($back -match '\|False\|') "reopen from disk: $back"
+        $r = Invoke-Cli @('cliext.diff', 'compare', '--name', $name, '--format', 'json')
+        $rl = Get-DiffLines $r
+        Expect ($r.exit -eq 0 -and $rl.Count -eq 5 -and ($rl -join '|') -match 'component-removed Floor BoxCollider' -and ($rl -join '|') -match 'object-added CamB' -and ($rl -join '|') -match 'object-renamed Player CliPlayer->Player') "compare after reopening: $(Short ($rl -join ' | ') 500)"
+    }
+    finally {
+        $dl = Invoke-Cli @('cliext.diff', 'delete', '--name', $name, '--format', 'json')
+        [void](Close-P3Scene $was)
+    }
+    Expect ($dl.exit -eq 0 -and $dl.json.deleted -eq 1) "delete: exit $($dl.exit): $(Short ($dl.stdout + $dl.stderr))"
+    Expect ((Get-SnapFiles) -eq $snap0) 'the snapshot folder is not as it was'
+    $open = Invoke-Cli @('scene', 'list_open', '--format', 'json')
+    Expect (-not (@($open.json) | Where-Object { $_.isDirty })) "a scene was left dirty: $(Short $open.stdout)"
+    "5 changes, exactly; --update then none; reversed after reopening; snapshot deleted"
+}
+
+Add-Check 'dep.diff-prefab' $depRow 'cliext.diff snapshot of a scratch prefab, then the prefab saved with a child added, a property changed and a component removed: compare lists exactly those 3; delete removes the snapshot' {
+    New-ScratchFolder
+    $prefab = "$scratchRel/CliDiff.prefab"
+    $code = @'
+var go = new UnityEngine.GameObject("CliDiff");
+go.AddComponent<UnityEngine.BoxCollider>();
+go.AddComponent<UnityEngine.SphereCollider>().radius = 0.5f;
+new UnityEngine.GameObject("Child").transform.SetParent(go.transform, false);
+UnityEditor.PrefabUtility.SaveAsPrefabAsset(go, "{{p}}", out bool ok);
+UnityEngine.Object.DestroyImmediate(go);
+return ok ? "ok" : "failed";
+'@
+    Expect ((Invoke-Eval 'dep-prefab.cs' $code.Replace('{{p}}', $prefab)) -eq 'ok') 'scratch prefab'
+    $name = 'cliext-test-prefab'
+    $snap0 = Get-SnapFiles
+    try {
+        $s = Invoke-Cli @('cliext.diff', 'snapshot', '--path', $prefab, '--name', $name, '--format', 'json')
+        Expect ($s.exit -eq 0 -and $s.json.kind -eq 'prefab' -and $s.json.objects -eq 2 -and $s.json.components -eq 4) "snapshot: exit $($s.exit): $(Short ($s.stdout + $s.stderr))"
+        $edit = @'
+var root = UnityEditor.PrefabUtility.LoadPrefabContents("{{p}}");
+new UnityEngine.GameObject("Added").transform.SetParent(root.transform, false);
+root.GetComponent<UnityEngine.SphereCollider>().radius = 2f;
+UnityEngine.Object.DestroyImmediate(root.GetComponent<UnityEngine.BoxCollider>());
+UnityEditor.PrefabUtility.SaveAsPrefabAsset(root, "{{p}}");
+UnityEditor.PrefabUtility.UnloadPrefabContents(root);
+return "ok";
+'@
+        [void](Invoke-Eval 'dep-prefab-edit.cs' $edit.Replace('{{p}}', $prefab))
+        $c = Invoke-Cli @('cliext.diff', 'compare', '--name', $name, '--format', 'json')
+        $lines = Get-DiffLines $c
+        $want = @('component-removed CliDiff BoxCollider ->', 'object-added CliDiff/Added ->', 'property-changed CliDiff SphereCollider m_Radius 0.5->2') | Sort-Object
+        Expect ($c.exit -eq 0 -and ($lines -join "`n") -eq ($want -join "`n")) "compare: exit $($c.exit): $(Short ($lines -join ' | ') 500)"
+    }
+    finally { $dl = Invoke-Cli @('cliext.diff', 'delete', '--name', $name, '--format', 'json') }
+    Expect ($dl.exit -eq 0) "delete: exit $($dl.exit): $(Short $dl.stderr)"
+    $again = Invoke-Cli @('cliext.diff', 'delete', '--name', $name, '--format', 'json')
+    Expect-P3Failure $again "No snapshot named 'cliext-test-prefab'.*cliext.diff (list|snapshot)" 'delete twice' 13
+    Expect ((Get-SnapFiles) -eq $snap0) 'the snapshot folder is not as it was'
+    "3 changes, exactly; deleted; delete again exit 13"
+}
+
+Add-Check 'dep.diff-errors' $depRow 'cliext.diff snapshot of a missing scene or prefab exits 13 naming asset find; a material, a folder or a path outside the project exits 2; compare of an unknown snapshot exits 13 with Did you mean, and of one whose prefab is gone 13; delete with neither or both of --name and --all exits 2; nothing is written' {
+    New-ScratchFolder
+    $prefab = "$scratchRel/CliGone.prefab"
+    $code = "var go = new UnityEngine.GameObject(`"CliGone`"); UnityEditor.PrefabUtility.SaveAsPrefabAsset(go, `"$prefab`"); UnityEngine.Object.DestroyImmediate(go); return `"ok`";"
+    [void](Invoke-Eval 'dep-gone.cs' $code)
+    $snap0 = Get-SnapFiles
+    $name = 'cliext-test-gone'
+    $s = Invoke-Cli @('cliext.diff', 'snapshot', '--path', $prefab, '--name', $name, '--format', 'json')
+    Expect ($s.exit -eq 0) "snapshot: exit $($s.exit): $(Short $s.stderr)"
+    try {
+        [void](Invoke-Eval 'dep-gone-rm.cs' "UnityEditor.AssetDatabase.DeleteAsset(`"$prefab`"); return `"ok`";")
+        $snap1 = Get-SnapFiles
+        $seen = @()
+        foreach ($c in @(
+                @(@('snapshot', '--path', 'Assets/Scenes/NoSuch.unity'), "--path: no scene at 'Assets/Scenes/NoSuch\.unity'\. Check the path \(asset find --type Scene", 13, 'snapshot of a missing scene'),
+                @(@('snapshot', '--path', 'Assets/NoSuch.prefab'), "--path: no prefab at 'Assets/NoSuch\.prefab'\. Check the path \(asset find --type Prefab", 13, 'snapshot of a missing prefab'),
+                @(@('snapshot', '--path', $depMat), "is a Material, not a scene \(\.unity\) or prefab \(\.prefab\)", 2, 'snapshot of a material'),
+                @(@('snapshot', '--path', 'Assets/Scenes'), "is a folder, not a scene", 2, 'snapshot of a folder'),
+                @(@('snapshot', '--path', 'C:/Temp/Level.unity'), "isn't under Assets/ or Packages/", 2, 'snapshot outside the project'),
+                @(@('compare', '--name', 'cliext-test-gnoe'), "No snapshot named 'cliext-test-gnoe'\. Did you mean: cliext-test-gone\?", 13, 'compare of a misspelled snapshot'),
+                @(@('compare', '--name', $name), "is of '.*CliGone\.prefab', which is gone.*cliext\.diff delete", 13, 'compare after the prefab was deleted'),
+                @(@('compare', '--name', $name, '--update', 'true'), 'which is gone', 13, 'compare --update after the prefab was deleted'),
+                @(@('delete'), 'Pass --name \(cliext\.diff list lists the snapshots\), or --all true', 2, 'delete with neither'),
+                @(@('delete', '--name', $name, '--all', 'true'), 'not both', 2, 'delete with both'),
+                @(@('delete', '--name', 'cliext-test-nope'), "No snapshot named 'cliext-test-nope'", 13, 'delete of an unknown snapshot'))) {
+            $x = Invoke-Cli (@('cliext.diff') + $c[0] + @('--format', 'json'))
+            Expect-P3Failure $x $c[1] $c[3] $c[2]
+            $seen += "$($c[3]) $($x.exit)"
+        }
+        Expect ((Get-SnapFiles) -eq $snap1) 'a failed cliext.diff call wrote or deleted a snapshot'
+    }
+    finally { $dl = Invoke-Cli @('cliext.diff', 'delete', '--name', $name, '--format', 'json') }
+    Expect ($dl.exit -eq 0 -and (Get-SnapFiles) -eq $snap0) "delete: exit $($dl.exit); the snapshot folder is not as it was"
+    "$($seen.Count) refusals with the fix; nothing written"
+}
+
+# --- cliext.addressables ----------------------------------------------------------------------------------------------
+
+# The committed project has no Addressables data. Each check that needs it runs inside Use-Addr: it saves every file of
+# ProjectSettings, runs cliext.addressables init, and in a finally unregisters the settings
+# (EditorBuildSettings.RemoveConfigObject), deletes Assets/AddressableAssetsData with AssetDatabase.DeleteAsset, removes
+# ServerData if the check made it, writes back the ProjectSettings bytes and checks git status of those paths. Entries
+# are copies of committed textures in the scratch folder (Addr/A.png, B.png, C.png). Get-AddrSig reads the settings as
+# the Editor holds them (labels, groups with their packing, entries with address and labels).
+$addrRow = 'cliext.addressables'
+$addrData = 'Assets/AddressableAssetsData'
+$addrRel = "$scratchRel/Addr"
+$addrPaths = @('Assets/AddressableAssetsData', 'Assets/AddressableAssetsData.meta', 'ProjectSettings', 'ServerData', 'Assets/StreamingAssets')
+
+function Get-AddrGit {
+    if (-not (Test-Path (Join-Path $projectPath '.git'))) { return '(no git)' }
+    $ErrorActionPreference = 'Continue'
+    "$(& git -C $projectPath status --porcelain -- $addrPaths 2>$null)"
+}
+function Save-ProjectSettingsAll {
+    $h = @{}
+    foreach ($f in Get-ChildItem (Join-Path $projectPath 'ProjectSettings') -File) { $h[$f.Name] = [IO.File]::ReadAllBytes($f.FullName) }
+    $h
+}
+function Restore-ProjectSettingsAll($saved) {
+    # Writes back changed files, deletes new ones; returns what it did.
+    $put = @()
+    $dir = Join-Path $projectPath 'ProjectSettings'
+    foreach ($f in Get-ChildItem $dir -File) {
+        if (-not $saved.ContainsKey($f.Name)) { Remove-Item $f.FullName -Force; $put += "-$($f.Name)"; continue }
+        if ([Convert]::ToBase64String([IO.File]::ReadAllBytes($f.FullName)) -ne [Convert]::ToBase64String($saved[$f.Name])) { [IO.File]::WriteAllBytes($f.FullName, $saved[$f.Name]); $put += $f.Name }
+    }
+    foreach ($k in $saved.Keys) { $p = Join-Path $dir $k; if (-not (Test-Path $p)) { [IO.File]::WriteAllBytes($p, $saved[$k]); $put += "+$k" } }
+    , $put
+}
+function Get-AddrSig {
+    $code = @'
+var s = UnityEditor.AddressableAssets.AddressableAssetSettingsDefaultObject.GetSettings(false);
+if (s == null) return "none";
+var sb = new System.Text.StringBuilder();
+sb.Append("labels=").Append(string.Join(",", s.GetLabels().OrderBy(x => x, System.StringComparer.Ordinal))).Append(" |");
+foreach (var g in s.groups.Where(g => g != null).OrderBy(g => g.Name, System.StringComparer.Ordinal))
+{
+    var b = g.GetSchema<UnityEditor.AddressableAssets.Settings.GroupSchemas.BundledAssetGroupSchema>();
+    sb.Append(' ').Append(g.Name).Append(g.Default ? "*" : "").Append('[').Append(b == null ? "-" : b.BundleMode + "," + b.Compression + "," + g.IncludeInBuild).Append("]{");
+    foreach (var e in g.entries.OrderBy(e => e.AssetPath, System.StringComparer.Ordinal))
+        sb.Append(System.IO.Path.GetFileName(e.AssetPath)).Append('=').Append(e.address).Append(':').Append(string.Join(",", e.labels.OrderBy(x => x, System.StringComparer.Ordinal))).Append(';');
+    sb.Append('}');
+}
+return sb.ToString().Replace('"', '\'');
+'@
+    Invoke-Eval 'addr-sig.cs' $code
+}
+function Get-AddrFiles {
+    $d = Join-Path $projectPath 'Assets\AddressableAssetsData'
+    if (-not (Test-Path $d)) { return '' }
+    (@(Get-ChildItem $d -Recurse -File | Sort-Object FullName | ForEach-Object { "$($_.FullName.Substring($d.Length))=$((Get-FileHash $_.FullName).Hash)" }) -join ';')
+}
+function Remove-Addr {
+    $code = @'
+UnityEditor.EditorBuildSettings.RemoveConfigObject("com.unity.addressableassets");
+bool had = UnityEditor.AssetDatabase.IsValidFolder("Assets/AddressableAssetsData");
+if (had) UnityEditor.AssetDatabase.DeleteAsset("Assets/AddressableAssetsData");
+UnityEditor.AssetDatabase.SaveAssets();
+return had + "|" + (UnityEditor.AddressableAssets.AddressableAssetSettingsDefaultObject.GetSettings(false) == null);
+'@
+    Invoke-Eval 'addr-remove.cs' $code
+}
+function New-AddrTextures {
+    New-ScratchFolder
+    $code = @'
+string root = "Assets/_CliextTests/CliTest";
+UnityEditor.AssetDatabase.DeleteAsset(root + "/Addr");
+UnityEditor.AssetDatabase.CreateFolder(root, "Addr");
+string src = "{{pack}}/";
+bool ok = UnityEditor.AssetDatabase.CopyAsset(src + "Tx_Burst_directional_01.png", root + "/Addr/A.png")
+    & UnityEditor.AssetDatabase.CopyAsset(src + "Tx_Burst_directional_02.png", root + "/Addr/B.png")
+    & UnityEditor.AssetDatabase.CopyAsset(src + "Tx_Burst_radial_01.png", root + "/Addr/C.png");
+return ok ? "ok" : "copy failed";
+'@
+    $r = Invoke-Eval 'addr-tex.cs' $code.Replace('{{pack}}', $impPack)
+    Expect ($r -eq 'ok') "scratch textures: $r"
+}
+function Invoke-AddrEdit([string]$name, [string]$ops) { Invoke-Cli @('cliext.addressables', 'edit', '--ops-file', (Write-WorkFile $name $ops), '--timeout', '120', '--format', 'json') 150 }
+function Use-Addr([scriptblock]$body) {
+    # Runs $body with fresh Addressables settings, then removes every trace of them; returns the body's detail.
+    $st = Invoke-Cli @('cliext.addressables', 'status', '--format', 'json')
+    Expect ($st.exit -eq 0 -and $st.json.initialized -eq $false) "the project has Addressables settings before the check (a run that didn't clean up?): $(Short $st.stdout)"
+    $git0 = Get-AddrGit
+    $serverData = Test-Path (Join-Path $projectPath 'ServerData')
+    $saved = Save-ProjectSettingsAll
+    # A content build runs URP's build preprocessing, which rewrites the shader prefiltering of the pipeline assets.
+    $rp = @{}; foreach ($f in Get-ChildItem (Join-Path $projectPath 'Assets\Settings') -Filter '*.asset' -ErrorAction SilentlyContinue) { $rp[$f.FullName] = [IO.File]::ReadAllBytes($f.FullName) }
+    New-AddrTextures
+    try {
+        $i = Invoke-Cli @('cliext.addressables', 'init', '--format', 'json') 120
+        Expect ($i.exit -eq 0 -and $i.json.created -eq $true -and $i.json.settings -eq "$addrData/AddressableAssetSettings.asset") "init: exit $($i.exit): $(Short ($i.stdout + $i.stderr))"
+        $detail = & $body
+    }
+    finally {
+        $rm = Remove-Addr
+        if (-not $serverData -and (Test-Path (Join-Path $projectPath 'ServerData'))) { Remove-Item (Join-Path $projectPath 'ServerData') -Recurse -Force }
+        $put = Restore-ProjectSettingsAll $saved
+        foreach ($k in @($rp.Keys)) {
+            if ([Convert]::ToBase64String([IO.File]::ReadAllBytes($k)) -eq [Convert]::ToBase64String($rp[$k])) { continue }
+            [IO.File]::WriteAllBytes($k, $rp[$k])
+            $rel = 'Assets/Settings/' + (Split-Path $k -Leaf)
+            [void](Invoke-Eval 'addr-rp.cs' "UnityEditor.AssetDatabase.ImportAsset(`"$rel`", UnityEditor.ImportAssetOptions.ForceUpdate); return `"ok`";")
+            $put += $rel
+        }
+    }
+    Expect ($rm -eq 'True|True') "removing the Addressables data: $rm"
+    Expect (-not (Test-Path (Join-Path $projectPath 'Assets\AddressableAssetsData')) -and -not (Test-Path (Join-Path $projectPath 'Assets\AddressableAssetsData.meta'))) 'Assets/AddressableAssetsData is still there'
+    $git1 = Get-AddrGit
+    Expect ($git1 -eq $git0) "git status of the Addressables paths changed: '$git0' -> '$git1'"
+    "$detail; cleaned up$(if ($put.Count) { " (written back: $($put -join ', '))" })"
+}
+
+Add-Check 'addr.before-init' $addrRow 'before cliext.addressables init: status says initialized false (exit 0); entries, edit, build and analyze exit 6 naming init; nothing is created (no AddressableAssetsData, ProjectSettings unchanged)' {
+    $git0 = Get-AddrGit; $saved = Save-ProjectSettingsAll
+    $st = Invoke-Cli @('cliext.addressables', 'status', '--format', 'json')
+    Expect ($st.exit -eq 0 -and $st.json.initialized -eq $false -and $st.json.next -eq 'cliext.addressables init') "status: exit $($st.exit): $(Short ($st.stdout + $st.stderr))"
+    $ops = Write-WorkFile 'addr-pre.json' '[{"op":"add_label","name":"cli"}]'
+    $seen = @()
+    foreach ($c in @(@('entries'), @('edit', '--ops-file', $ops), @('build', '--timeout', '60'), @('analyze', '--timeout', '60'))) {
+        $x = Invoke-Cli (@('cliext.addressables') + $c + @('--format', 'json')) 90
+        Expect-P3Failure $x 'no Addressables settings yet: run cliext\.addressables init first' "$($c[0]) before init" 6
+        $seen += "$($c[0]) $($x.exit)"
+    }
+    Expect (-not (Test-Path (Join-Path $projectPath 'Assets\AddressableAssetsData'))) 'a command before init created Assets/AddressableAssetsData'
+    $put = Restore-ProjectSettingsAll $saved
+    Expect ($put.Count -eq 0) "a command before init wrote $($put -join ', ')"
+    Expect ((Get-AddrGit) -eq $git0) 'git status changed'
+    "status initialized false; $($seen -join ', '); nothing created"
+}
+
+Add-Check 'addr.init-status' $addrRow 'cliext.addressables init creates the settings (AddressableAssetSettingsDefaultObject and the asset on disk), status lists its groups, profile and labels, init again exits 6; everything it made is removed after' {
+    Use-Addr {
+        $e = Invoke-Eval 'addr-init.cs' 'var s = UnityEditor.AddressableAssets.AddressableAssetSettingsDefaultObject.GetSettings(false); return s == null ? "none" : UnityEditor.AssetDatabase.GetAssetPath(s) + "|" + s.DefaultGroup.Name + "|" + s.groups.Count(g => g != null);'
+        Expect ($e -match "^$addrData/AddressableAssetSettings\.asset\|([^|]+)\|(\d+)$") "AddressableAssetSettings after init: $e"
+        $default = $Matches[1]; $count = [int]$Matches[2]
+        Expect (Test-Path (Join-Path $projectPath 'Assets\AddressableAssetsData\AddressableAssetSettings.asset')) 'the settings asset is not on disk'
+        $st = Invoke-Cli @('cliext.addressables', 'status', '--format', 'json')
+        Expect ($st.exit -eq 0 -and $st.json.initialized -eq $true -and @($st.json.groups).Count -eq $count -and @(@($st.json.groups) | Where-Object { $_.name -eq $default -and $_.isDefault }).Count -eq 1 -and $st.json.profile) "status: exit $($st.exit): $(Short $st.stdout 300)"
+        $again = Invoke-Cli @('cliext.addressables', 'init', '--format', 'json')
+        Expect-P3Failure $again "settings exist already at 'Assets/AddressableAssetsData/AddressableAssetSettings\.asset': nothing would change" 'init twice' 6
+        Expect ((Get-AddrSig) -match [regex]::Escape("$default*")) "init twice changed the settings: $(Get-AddrSig)"
+        "settings with $count group(s), default '$default', profile $($st.json.profile); init again exit 6"
+    }
+}
+
+Add-Check 'addr.edit' $addrRow 'cliext.addressables edit: a batch adds a group (PackSeparately, LZ4), two entries with addresses and labels and a label; a second moves, relabels, renames, sets includeInBuild, removes an entry and a label; entries (--group, --label, --filter) and the settings in memory and on disk show each change' {
+    Use-Addr {
+        $a = "$addrRel/A.png"; $b = "$addrRel/B.png"
+        $default = (Invoke-Cli @('cliext.addressables', 'status', '--format', 'json')).json.groups | Where-Object { $_.isDefault } | ForEach-Object { $_.name }
+        $ops1 = @"
+[{"op":"add_group","name":"CliTest Group","set":"bundleMode=PackSeparately;compression=LZ4"},
+ {"op":"add_entry","path":"$a","group":"CliTest Group","address":"cli/a","labels":"cliA;shared"},
+ {"op":"add_entry","path":"$b","labels":"shared"},
+ {"op":"set_address","path":"$b","address":"cli/b"},
+ {"op":"add_label","name":"extra"}]
+"@
+        $r1 = Invoke-AddrEdit 'addr-edit1.json' $ops1
+        Expect ($r1.exit -eq 0 -and $r1.json.applied -eq 5 -and $r1.json.saved -eq $true) "batch 1: exit $($r1.exit): $(Short ($r1.stdout + $r1.stderr))"
+        $sig1 = Get-AddrSig
+        Expect ($sig1 -like 'labels=cliA,default,extra,shared |*' -or $sig1 -like 'labels=cliA,extra,shared |*') "labels after batch 1: $sig1"
+        Expect ($sig1 -like '* CliTest Group`[PackSeparately,LZ4,True`]{A.png=cli/a:cliA,shared;}*') "the new group after batch 1: $sig1"
+        Expect ($sig1 -like "* $default*{B.png=cli/b:shared;}*") "the default group after batch 1: $sig1"
+        Expect (@(Get-ChildItem (Join-Path $projectPath 'Assets\AddressableAssetsData\AssetGroups') -Filter 'CliTest Group.asset').Count -eq 1) 'the new group asset is not on disk'
+        Expect ((Get-Content (Join-Path $projectPath 'Assets\AddressableAssetsData\AssetGroups\CliTest Group.asset') -Raw) -match 'm_Address: cli/a') 'the saved group file lacks the entry'
+        $eg = Invoke-Cli @('cliext.addressables', 'entries', '--group', 'clitest group', '--format', 'json')
+        Expect ($eg.exit -eq 0 -and @($eg.json).Count -eq 1 -and @($eg.json)[0].address -eq 'cli/a' -and @($eg.json)[0].path -eq $a -and (@(@($eg.json)[0].labels) -join ',') -eq 'cliA,shared') "entries --group: $(Short $eg.stdout)"
+        $el = Invoke-Cli @('cliext.addressables', 'entries', '--label', 'shared', '--format', 'json')
+        Expect ($el.exit -eq 0 -and (@(@($el.json) | ForEach-Object { $_.address } | Sort-Object) -join ',') -eq 'cli/a,cli/b') "entries --label: $(Short $el.stdout)"
+        $ef = Invoke-Cli @('cliext.addressables', 'entries', '--filter', 'B.png', '--format', 'json')
+        Expect ($ef.exit -eq 0 -and @($ef.json).Count -eq 1 -and @($ef.json)[0].group -eq $default) "entries --filter: $(Short $ef.stdout)"
+        $none = Invoke-Cli @('cliext.addressables', 'entries', '--filter', 'no-such-entry', '--format', 'json')
+        Expect ($none.exit -eq 0 -and "$($none.stdout)".Trim() -eq '') "entries --filter with no match: exit $($none.exit): $(Short $none.stdout)"
+        $ops2 = @"
+[{"op":"move_entry","path":"$b","group":"CliTest Group"},
+ {"op":"set_labels","path":"$a","labels":"cliA"},
+ {"op":"remove_label","name":"extra"},
+ {"op":"rename_group","group":"CliTest Group","name":"CliTest Renamed"},
+ {"op":"set_group","group":"CliTest Renamed","set":"includeInBuild=false;compression=LZMA"},
+ {"op":"remove_entry","path":"$a"}]
+"@
+        $r2 = Invoke-AddrEdit 'addr-edit2.json' $ops2
+        Expect ($r2.exit -eq 0 -and $r2.json.applied -eq 6) "batch 2: exit $($r2.exit): $(Short ($r2.stdout + $r2.stderr))"
+        $sig2 = Get-AddrSig
+        Expect ($sig2 -like '* CliTest Renamed`[PackSeparately,LZMA,False`]{B.png=cli/b:shared;}*' -and $sig2 -notlike '*CliTest Group*' -and $sig2 -notlike '*A.png*' -and $sig2 -notlike '*extra*') "after batch 2: $sig2"
+        Expect ((Test-Path (Join-Path $projectPath 'Assets\AddressableAssetsData\AssetGroups\CliTest Renamed.asset')) -and -not (Test-Path (Join-Path $projectPath 'Assets\AddressableAssetsData\AssetGroups\CliTest Group.asset'))) 'the renamed group file is not on disk under its new name'
+        $r3 = Invoke-AddrEdit 'addr-edit3.json' '[{"op":"remove_group","group":"CliTest Renamed"}]'
+        Expect ($r3.exit -eq 0 -and (Get-AddrSig) -notlike '*CliTest*') "remove_group: exit $($r3.exit): $(Short ($r3.stdout + $r3.stderr)) $(Get-AddrSig)"
+        "batch 1 (5 ops) and 2 (6 ops) applied as asked; $(Short $sig2 120)"
+    }
+}
+
+Add-Check 'addr.edit-rollback' $addrRow 'cliext.addressables edit batches whose last op fails after others changed things (a group added with an entry, a group removed, a group renamed, labels changed) exit 6, save nothing, and leave the settings in memory and every AddressableAssetsData file as before; the next good edit saves only its own change' {
+    Use-Addr {
+        $a = "$addrRel/A.png"; $b = "$addrRel/B.png"; $c = "$addrRel/C.png"
+        $setup = Invoke-AddrEdit 'addr-rb0.json' "[{`"op`":`"add_group`",`"name`":`"Keep`"},{`"op`":`"add_entry`",`"path`":`"$a`",`"group`":`"Keep`",`"address`":`"keep/a`",`"labels`":`"one`"},{`"op`":`"add_entry`",`"path`":`"$b`",`"address`":`"keep/b`"}]"
+        Expect ($setup.exit -eq 0) "setup: exit $($setup.exit): $(Short ($setup.stdout + $setup.stderr))"
+        $default = (Invoke-Cli @('cliext.addressables', 'status', '--format', 'json')).json.groups | Where-Object { $_.isDefault } | ForEach-Object { $_.name }
+        $sig0 = Get-AddrSig; $files0 = Get-AddrFiles
+        $cases = @(
+            @("[{`"op`":`"add_group`",`"name`":`"Temp`",`"set`":`"compression=LZMA`"},{`"op`":`"add_entry`",`"path`":`"$c`",`"group`":`"Temp`"},{`"op`":`"rename_group`",`"group`":`"Temp`",`"name`":`"Keep`"}]", 2, "Group 'Keep' exists already", 'a new group with an entry, then a rename onto an existing name'),
+            @("[{`"op`":`"remove_group`",`"group`":`"Keep`"},{`"op`":`"add_label`",`"name`":`"fresh`"},{`"op`":`"set_address`",`"path`":`"$c`",`"address`":`"x`"}]", 2, "isn't Addressable: use add_entry", 'a removed group and a new label, then an address for an asset that is not an entry'),
+            @("[{`"op`":`"rename_group`",`"group`":`"Keep`",`"name`":`"Kept`"},{`"op`":`"set_labels`",`"path`":`"$a`",`"labels`":`"two;three`"},{`"op`":`"move_entry`",`"path`":`"$b`",`"group`":`"Kept`"},{`"op`":`"remove_label`",`"name`":`"none-such`"}]", 3, "No label 'none-such'", 'a rename, new labels and a move, then removing a label that is not there'),
+            @("[{`"op`":`"set_group`",`"group`":`"$default`",`"set`":`"bundleMode=PackSeparately`"},{`"op`":`"remove_entry`",`"path`":`"$b`"},{`"op`":`"add_entry`",`"path`":`"$a`"}]", 2, 'is Addressable already \(in group Keep', 'a group set and an entry removed, then adding an asset that is an entry')
+        )
+        $seen = @()
+        foreach ($k in $cases) {
+            $r = Invoke-AddrEdit 'addr-rb.json' $k[0]
+            Expect-P3Failure $r ("Op $($k[1]) \(.*\) failed: .*$($k[2]).*Nothing was changed") $k[3] 6
+            Expect ($r.json.saved -eq $false -and $r.json.failedAt -eq $k[1] -and $r.json.applied -eq 0) "$($k[3]): the reply: $(Short $r.stdout)"
+            $sig = Get-AddrSig
+            Expect ($sig -eq $sig0) "$($k[3]): the settings in memory changed: $sig0 -> $sig"
+            Expect ((Get-AddrFiles) -eq $files0) "$($k[3]): a file in AssetDatabase data changed or was left: $(Short (Get-AddrFiles) 300)"
+            $seen += $k[3]
+        }
+        $ok = Invoke-AddrEdit 'addr-rb-ok.json' '[{"op":"add_label","name":"after"}]'
+        Expect ($ok.exit -eq 0) "the good edit after: exit $($ok.exit): $(Short ($ok.stdout + $ok.stderr))"
+        $sig1 = Get-AddrSig
+        Expect ($sig1 -eq ($sig0 -replace '^labels=', 'labels=after,') -or $sig1 -eq (($sig0 -replace '^labels=([^ ]*) \|', 'labels=$1,after |'))) "the good edit saved more than its label: $sig0 -> $sig1"
+        "$($seen.Count) failed batches put back in memory and on disk; the next edit added only its label"
+    }
+}
+
+Add-Check 'addr.edit-errors' $addrRow 'cliext.addressables edit with an unknown op, a missing or outside asset, an unknown group or label (Did you mean), bad set values, a bad label or group name, and ops that would change nothing exits 6 with the fix and failedAt; bad JSON or no ops exits 2; nothing changes' {
+    Use-Addr {
+        $a = "$addrRel/A.png"
+        $setup = Invoke-AddrEdit 'addr-err0.json' "[{`"op`":`"add_group`",`"name`":`"Enemies`"},{`"op`":`"add_entry`",`"path`":`"$a`",`"group`":`"Enemies`",`"address`":`"enemy/a`",`"labels`":`"enemies`"}]"
+        Expect ($setup.exit -eq 0) "setup: exit $($setup.exit): $(Short ($setup.stdout + $setup.stderr))"
+        $sig0 = Get-AddrSig; $files0 = Get-AddrFiles
+        $cases = @(
+            @('[{"op":"add_entyr","path":"x"}]', 'Unknown op .add_entyr.\. Did you mean: add_entry\? Ops: ', 'a misspelled op'),
+            @("[{`"op`":`"add_label`",`"name`":`"ok`"},{`"op`":`"add_entry`",`"path`":`"$addrRel/Nope.png`"}]", "Op 1 \(add_entry\) failed: No asset at '.*Nope\.png'\. Check the path \(asset find", 'a missing asset (after a good op)'),
+            @('[{"op":"add_entry","path":"C:/Temp/a.png"}]', "isn't under Assets/ or Packages/", 'an asset outside the project'),
+            @('[{"op":"add_entry"}]', 'add_entry needs path', 'add_entry without a path'),
+            @("[{`"op`":`"move_entry`",`"path`":`"$a`",`"group`":`"Enemeis`"}]", "No group 'Enemeis'\. Did you mean: Enemies\?", 'a misspelled group'),
+            @("[{`"op`":`"move_entry`",`"path`":`"$a`",`"group`":`"Zzzzzzzzzz`"}]", "No group 'Zzzzzzzzzz'\. Groups: .*Enemies.*cliext\.addressables status lists them", 'an unknown group'),
+            @('[{"op":"remove_label","name":"enemeis"}]', "No label 'enemeis'\. Did you mean: enemies\?", 'a misspelled label'),
+            @('[{"op":"set_group","group":"Enemies","set":"compression=zip"}]', "compression: 'zip' isn't a bundle compression mode\. Use one of: Uncompressed, LZ4, LZMA", 'a bad compression'),
+            @('[{"op":"set_group","group":"Enemies","set":"bundleMode=PackTogether;includeInBuild=maybe"}]', 'includeInBuild: .*true or false', 'a bad bool'),
+            @('[{"op":"set_group","group":"Enemies","set":"bundelMode=PackTogether"}]', "No group setting 'bundelMode'\. Did you mean: bundleMode\?", 'a misspelled setting'),
+            @('[{"op":"set_group","group":"Enemies","set":"compression"}]', "'compression' isn't name=value", 'a setting without a value'),
+            @('[{"op":"set_group","group":"Enemies"}]', 'set_group needs set', 'set_group without set'),
+            @('[{"op":"add_group","name":"A/B"}]', "has '/', which a group's file name can't", 'a group name with a slash'),
+            @('[{"op":"add_label","name":"[x]"}]', "has '\[' or '\]'", 'a label with brackets'),
+            @('[{"op":"add_group","name":"enemies"}]', "Group 'Enemies' exists already", 'a group that exists'),
+            @('[{"op":"rename_group","group":"Enemies","name":"Enemies"}]', 'has that name already: nothing would change', 'a rename to the same name'),
+            @('[{"op":"set_group","group":"Enemies","set":"includeInBuild=true"}]', 'nothing would change', 'a set to the value it has'),
+            @("[{`"op`":`"add_entry`",`"path`":`"$a`"}]", 'is Addressable already \(in group Enemies, address .enemy/a.\): use move_entry', 'an entry added twice'),
+            @("[{`"op`":`"move_entry`",`"path`":`"$a`",`"group`":`"Enemies`"}]", 'is in group Enemies already: nothing would change', 'a move to its own group'),
+            @("[{`"op`":`"set_address`",`"path`":`"$a`",`"address`":`"enemy/a`"}]", "has the address 'enemy/a' already", 'an address it has'),
+            @("[{`"op`":`"set_labels`",`"path`":`"$a`",`"labels`":`"enemies`"}]", 'has the labels \[enemies\] already', 'labels it has'),
+            @('[{"op":"add_label","name":"enemies"}]', "has the label 'enemies' already", 'a label that exists'),
+            @("[{`"op`":`"remove_entry`",`"path`":`"$addrRel/B.png`"}]", "isn't Addressable: nothing to remove\. cliext\.addressables entries lists", 'removing an asset that is not an entry')
+        )
+        $seen = @()
+        foreach ($k in $cases) {
+            $r = Invoke-AddrEdit 'addr-err.json' $k[0]
+            Expect-P3Failure $r $k[1] $k[2] 6
+            Expect ($r.json.saved -eq $false -and $r.json.failedAt -ne $null) "$($k[2]): the reply has no failedAt: $(Short $r.stdout)"
+            $seen += $k[2]
+        }
+        foreach ($k in @(@('[{"op":', 'aren''t valid JSON', 'bad JSON'), @('[]', 'No ops given', 'no ops'))) {
+            $r = Invoke-AddrEdit 'addr-err.json' $k[0]
+            Expect-P3Failure $r $k[1] $k[2] 2
+            $seen += $k[2]
+        }
+        Expect ((Get-AddrSig) -eq $sig0) "a failed edit changed the settings in memory: $sig0 -> $(Get-AddrSig)"
+        Expect ((Get-AddrFiles) -eq $files0) 'a failed edit changed a file in AddressableAssetsData'
+        $eg = Invoke-Cli @('cliext.addressables', 'entries', '--group', 'Enemeis', '--format', 'json')
+        Expect-P3Failure $eg "No group 'Enemeis'\. Did you mean: Enemies\?" 'entries --group misspelled' 13
+        $el = Invoke-Cli @('cliext.addressables', 'entries', '--label', 'nolabel', '--format', 'json')
+        Expect-P3Failure $el "No label 'nolabel'\. Labels: .*enemies.*cliext\.addressables status lists them" 'entries --label unknown' 13
+        "$($seen.Count) refused edits and 2 refused entries filters; nothing changed"
+    }
+}
+
+Add-Check 'addr.build' $addrRow 'cliext.addressables build --clean true of two scratch textures in a PackSeparately group writes its bundles (the reply''s bundles and output are on disk); with an unsaved scene open it exits 6 at once, naming the scene, instead of stopping at Unity''s save dialog' {
+    Use-Addr {
+        $a = "$addrRel/A.png"; $b = "$addrRel/B.png"
+        $e = Invoke-AddrEdit 'addr-build.json' "[{`"op`":`"add_group`",`"name`":`"CliBuild`",`"set`":`"bundleMode=PackSeparately`"},{`"op`":`"add_entry`",`"path`":`"$a`",`"group`":`"CliBuild`"},{`"op`":`"add_entry`",`"path`":`"$b`",`"group`":`"CliBuild`"}]"
+        Expect ($e.exit -eq 0) "edit: exit $($e.exit): $(Short ($e.stdout + $e.stderr))"
+        $buildPath = (Invoke-Cli @('cliext.addressables', 'status', '--format', 'json')).json.groups | Where-Object { $_.name -eq 'CliBuild' } | ForEach-Object { $_.buildPath }
+        $r = Invoke-Cli @('cliext.addressables', 'build', '--clean', 'true', '--timeout', '900', '--format', 'json') 960
+        Expect ($r.exit -ne 124) 'build timed out (a dialog?)'
+        Expect ($r.exit -eq 0 -and $r.json.success -eq $true -and $r.json.bundles -ge 2) "build: exit $($r.exit): $(Short ($r.stdout + $r.stderr) 300)"
+        $out = Join-Path $projectPath ($buildPath -replace '/', '\')
+        $bundles = @(Get-ChildItem $out -Filter '*.bundle' -ErrorAction SilentlyContinue | Where-Object { $_.Name -like '*clibuild*' })
+        Expect ($bundles.Count -eq 2) "bundles of CliBuild in ${buildPath}: $(@(Get-ChildItem $out -ErrorAction SilentlyContinue | ForEach-Object Name) -join ', ')"
+        $settingsJson = if ($r.json.output) { $(if ([IO.Path]::IsPathRooted($r.json.output)) { $r.json.output } else { Join-Path $projectPath $r.json.output }) } else { '' }
+        Expect ($settingsJson -and (Test-Path $settingsJson)) "the build's output '$($r.json.output)' is not on disk"
+        $was = Open-P3Scene
+        [void](Invoke-Eval 'addr-dirty.cs' 'UnityEditor.SceneManagement.EditorSceneManager.MarkSceneDirty(UnityEngine.SceneManagement.SceneManager.GetActiveScene()); return UnityEngine.SceneManagement.SceneManager.GetActiveScene().isDirty.ToString();')
+        try { $d = Invoke-Cli @('cliext.addressables', 'build', '--timeout', '60', '--format', 'json') 90 }
+        finally { $back = Close-P3Scene $was }
+        Expect-P3Failure $d '\(untitled\) has unsaved changes, and the build would stop at Unity.s "Unsaved Scenes" dialog\. Save them \(cliext\.scene save_open' 'build with an unsaved scene' 6
+        Expect ($d.ms -lt 30000) "the refused build took $($d.ms) ms"
+        Expect ($back -match '\|False\|') "reopening $was`: $back"
+        "$($r.json.bundles) bundles in $($r.json.seconds)s ($($bundles.Count) CliBuild bundles in $buildPath); unsaved scene: exit 6 in $($d.ms) ms"
+    }
+}
+
+Add-Check 'addr.analyze' $addrRow 'cliext.addressables analyze runs every registered rule (one record per rule, no base classes, exit 0 with no errors) and --rule narrows to one; an unknown --rule exits 13 with Did you mean or the rule names, --limit 0 exits 2, an unsaved scene exits 6; the settings and the render pipeline assets are left as they were' {
+    Use-Addr {
+        $a = "$addrRel/A.png"
+        $e = Invoke-AddrEdit 'addr-an.json' "[{`"op`":`"add_entry`",`"path`":`"$a`",`"address`":`"an/a`"}]"
+        Expect ($e.exit -eq 0) "edit: exit $($e.exit): $(Short ($e.stdout + $e.stderr))"
+        $sig0 = Get-AddrSig; $files0 = Get-AddrFiles
+        $rpHash = { (@(Get-ChildItem (Join-Path $projectPath 'Assets\Settings') -Filter '*.asset' | ForEach-Object { (Get-FileHash $_.FullName).Hash }) -join ',') }
+        $rp0 = & $rpHash
+        $all = Invoke-Cli @('cliext.addressables', 'analyze', '--timeout', '600', '--format', 'json') 660
+        $rules = @(@($all.json) | Where-Object { $_.rule })
+        Expect (@($rules | Where-Object { $_.rule -match 'RuleBase' }).Count -eq 0) "analyze ran a base class as a rule: $(@($rules.rule) -join ', ')"
+        Expect ($all.exit -eq 0 -and $rules.Count -ge 3 -and @($rules | Where-Object { $_.error }).Count -eq 0) "analyze: exit $($all.exit), $($rules.Count) rules: $(Short ($all.stdout + $all.stderr) 400)"
+        $layout = @($rules | Where-Object { $_.rule -match 'Layout' })[0].rule
+        $one = Invoke-Cli @('cliext.addressables', 'analyze', '--rule', 'layout', '--limit', '5', '--timeout', '600', '--format', 'json') 660
+        Expect ($one.exit -eq 0 -and @($one.json).Count -eq 1 -and @($one.json)[0].rule -eq $layout -and @(@($one.json)[0].results).Count -le 5) "analyze --rule layout: exit $($one.exit): $(Short $one.stdout 300)"
+        $seen = @()
+        foreach ($c in @(
+                @(@('--rule', 'Bundle Layuot Preview'), "No Analyze rule's name contains 'Bundle Layuot Preview'\. Did you mean: Bundle Layout Preview\?", 13, 'a misspelled rule'),
+                @(@('--rule', 'zzzzzz'), "No Analyze rule's name contains 'zzzzzz'\. Rules: .*Layout", 13, 'an unknown rule'),
+                @(@('--limit', '0'), '--limit 0: give 1 or more', 2, '--limit 0'))) {
+            $x = Invoke-Cli (@('cliext.addressables', 'analyze') + $c[0] + @('--format', 'json')) 60
+            Expect-P3Failure $x $c[1] $c[3] $c[2]
+            $seen += "$($c[3]) $($x.exit)"
+        }
+        $was = Open-P3Scene
+        [void](Invoke-Eval 'addr-dirty.cs' 'UnityEditor.SceneManagement.EditorSceneManager.MarkSceneDirty(UnityEngine.SceneManagement.SceneManager.GetActiveScene()); return UnityEngine.SceneManagement.SceneManager.GetActiveScene().isDirty.ToString();')
+        try { $d = Invoke-Cli @('cliext.addressables', 'analyze', '--timeout', '60', '--format', 'json') 90 }
+        finally { $back = Close-P3Scene $was }
+        Expect-P3Failure $d 'has unsaved changes, and the Analyze rules would stop at Unity.s "Unsaved Scenes" dialog' 'analyze with an unsaved scene' 6
+        Expect ($back -match '\|False\|') "reopening $was`: $back"
+        Expect ((Get-AddrSig) -eq $sig0) "analyze changed the settings: $sig0 -> $(Get-AddrSig)"
+        Expect ((& $rpHash) -eq $rp0) 'analyze left a render pipeline asset in Assets/Settings changed (the bundle rules'' build step rewrites its shader prefiltering)'
+        "$($rules.Count) rules ($(@($rules | ForEach-Object { "$($_.rule): $($_.issues)" }) -join '; ')); $($seen -join ', '); unsaved scene exit 6"
+    }
+}
+
 # --- Cross-cutting ----------------------------------------------------------------------------------------------------
 
 $batchEdits = @(
@@ -4058,6 +4621,7 @@ if (-not $T3Ready) {
         'cliext.cinemachine' = '^cliext\.cinemachine '; 'cliext.splines' = '^cliext\.splines '
         'cliext.navmesh' = '^cliext\.navmesh '; 'cliext.physics' = '^cliext\.physics '; 'cliext.quality' = '^cliext\.quality '
         'cliext.import, cliext.presets' = '^cliext\.(import|presets) '; 'cliext.package' = '^cliext\.package '
+        'cliext.asset, cliext.diff' = '^cliext\.(asset|diff) '; 'cliext.addressables' = '^cliext\.addressables '
     }
     $q = Invoke-Cli @('--query', 'cliext', '--format', 'json') 60
     $all = @()
