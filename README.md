@@ -871,7 +871,9 @@ The package ships Claude Code skills in `Skills~/`:
   `unity-cliext-shadergraph` (Shader Graph), `unity-cliext-animation` (Animator, clips, Timeline),
   `unity-cliext-input` (Input System, including PlayMode input test templates), `unity-cliext-uitk` (UI Toolkit)
   and `unity-cliext-addressables` (Addressables). `unity-cliext-import` (import settings, presets, .unitypackage
-  files) and `unity-cliext-asset-packs` (taking a few assets from a large art pack) are installed in every project.
+  files) and `unity-cliext-asset-packs` (taking a few assets from a large art pack: an index and extractor script that
+  previews variants in a dry run and takes a trial extraction back out with `--remove`, and a material converter
+  template that takes the pack's folder) are installed in every project.
 - `clarify`, installed in every project: asks the user multiple-choice questions until a task has no open questions.
 
 Agents find skills in the project's `.claude/skills/`, so the package puts them there itself:

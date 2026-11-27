@@ -30,19 +30,32 @@ The scripts and template are in this skill's folder (`.claude/skills/unity-cliex
    `python -I scripts/extract_unitypackage.py <project_root> <pkg> "Prefabs/Props/<name>_0[1-3]" --dry-run`.
    Tighten the patterns until the list and the MB are what you expect. Patterns are regexes searched anywhere in
    the path, and a match that is a skipped type (scripts, shaders, scenes) isn't counted. Dependencies are followed
-   by GUID only: a model whose `.meta` has no `externalObjects` (older packs, e.g. Kenney: `materialSearch` finds
-   materials by name in a `Materials/` folder at import) lists no materials in the dry run. Add a pattern for that
-   folder (`"FBX format/Materials/"`): without it the model can't find the pack's materials.
+   by GUID only: a model whose `.meta` has no `externalObjects` (older packs: `materialSearch` finds materials by
+   name in a `Materials/` folder at import) lists no materials in the dry run. Add a pattern for that folder
+   (`"<model folder>/Materials/"`): without it the model can't find the pack's materials.
    Run the scripts by their full path (`python -I .claude/skills/unity-cliext-asset-packs/scripts/...`), not from inside a pack folder.
+   **Several variants with similar names** (`<name>_01` to `_07`): choose before extracting. The index lists them all;
+   a dry run with a pattern matching every candidate prints each match with its own dependency count and MB. Pick
+   from the names, folders and sizes, and extract only the one you need. When you have to see them in the scene to
+   choose, extract the candidates as a trial and take the rejected ones out with `--remove` (step 4).
 4. **Extract** (the same command without `--dry-run`). It's safe to re-run: existing files are skipped, so add
    patterns later as the game needs them. Packs write under `Assets/<Vendor>/...`; move afterwards only in the
    Editor (`asset move`), so GUIDs and references stay intact.
+   To take a trial extraction back out, run the same script with the rejected assets' patterns and `--remove`
+   (`--dry-run` first): it deletes them and the dependencies only they use, keeps any that another asset in the
+   project still references (it names one user for each), and removes the folders left empty. Then refresh.
+   Delete scene instances of those prefabs first, or the scene counts as a user and keeps them.
 5. **Import:** `unity command cliext.wait idle --refresh true`, then read the console for import errors
    (`cliext.compile diagnostics` or `console get`) by timestamp against your first call.
-6. **Convert materials.** Copy `templates/Editor/PackMaterialConverter.cs` into an Editor folder, set `PackRoot`, the
-   target shader names and this vendor's source slot names (below), and compile. Run it with a snippet file holding
-   `return AssetPackTools.Editor.PackMaterialConverter.ConvertAll();` (it returns a summary):
-   `unity command cliext.eval run --file <snippet>.cs`. Re-run it after every new extraction.
+6. **Convert materials.** Copy `templates/Editor/PackMaterialConverter.cs` into an Editor folder, set the target
+   shader names and this vendor's source slot names (below), and compile. Run it on the pack's folder with a snippet
+   file holding `return AssetPackTools.Editor.PackMaterialConverter.ConvertAll("Assets/<Vendor>/<Pack>");` (it
+   returns a summary with the alpha-clipped and emissive counts): `unity command cliext.eval run --file <snippet>.cs`.
+   It converts every `.mat` under that folder, so never pass one holding the project's own materials; the menu item
+   uses `DefaultPackRoot`, marked at the top of the file. Re-run it after every new extraction. It turns alpha
+   clipping on only when the pack asks for it (a clip toggle, or a foliage name) and the base texture imports with
+   alpha: many vendor materials save the toggle on for opaque atlases. It clears keywords and texture slots it
+   doesn't set (a leftover metallic map), and keeps the vendor's HDR emission colour times its intensity.
 7. **Look at it.** Put a few prefabs in a scene and capture them (`capture scene_view`, or `cliext-play-capture.ps1`).
    Check for grey, black or pink materials, missing alpha cut-outs on foliage and over-bright emission before
    wiring them into gameplay. Check references with the `missing-refs.cs` snippet from `unity-cliext-import`.
@@ -63,7 +76,9 @@ Open one extracted `.mat` in a text editor. Under `m_SavedProperties`:
 - `m_TexEnvs` lists texture slots (`_Albedo_Map`, `_MainTex`, `_BaseColorMap`, ...): add the base, normal and
   emission names to `BaseSlots`, `NormalSlots`, `EmissionSlots`.
 - `m_Floats` holds toggles and values (`_AlphaClip`, `_Alpha_Clip_Threshold`, `_Smoothness`): `AlphaClipFlags`,
-  `CutoffFloats`.
+  `CutoffFloats`, `EmissionIntensityFloats`, `EmissionFlags`.
+- `m_Colors` holds colours (`_Emission_Color`): `EmissionColors`. Put the vendor's names before Unity's standard ones
+  in every list: a vendor material often also carries `_Cutoff` or `_EmissionColor` at Unity's default.
 
 The saved properties stay after the shader is missing or swapped, which is why conversion works without the vendor
 shader and can be re-run. Name rules are cheap and fine: foliage (`Leaf`, `Fern`) gets alpha clip and double-sided,
@@ -86,5 +101,5 @@ crystals get emission.
 
 - `scripts/index_unitypackage.py`: every entry (GUID, path, size) of one or more packages.
 - `scripts/extract_unitypackage.py`: selective, dependency-following, GUID-preserving extraction (`--dry-run`,
-  `--no-deps`, `--keep-code`).
+  `--no-deps`, `--keep-code`), and `--remove` to take a trial extraction back out.
 - `templates/Editor/PackMaterialConverter.cs`: re-runnable material conversion and the palette texture fix.

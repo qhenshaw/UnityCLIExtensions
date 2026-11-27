@@ -84,7 +84,7 @@ A threshold effect is only as even as the values it compares. Before choosing a 
 - `cliext.eval run --file .claude/skills/unity-cliext-shadergraph/ops/uv-layout.cs --vars "target=<object path>" --timeout 60`: a small
   `uvArea` or a UV island packed into a corner means UV0 samples a small patch; use `UV/Triplanar` or
   `Input/Geometry/Position` (Object space) scaled by `boundsSize` instead. `boundsSize` is in the mesh's own
-  units and can be 100x off the `worldSize` of an imported model with a scaled child (a Kenney character's mesh
+  units and can be 100x off the `worldSize` of an imported model with a scaled child (one character's mesh
   spans about 0.016 units inside a 1.8 m renderer): pick the scale from the one the graph's space uses, and look.
 
 ## Material and checking it

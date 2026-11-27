@@ -4391,6 +4391,142 @@ Add-Check 'pkg.errors' $pkgRow 'cliext.package import of a missing file, a folde
     "$($seen.Count) refusals with the fix; nothing written, no dialog"
 }
 
+# The asset-packs skill's converter template and extractor, on made-up vendor assets in the scratch folder.
+Add-Check 'pack.converter' $pkgRow 'the asset-packs PackMaterialConverter template, compiled in the project, converts a vendor material whose shader is missing (alpha clip and cutoff saved on, an opaque base texture, a metallic map, HDR emission 4.6) to an opaque Lit material with only base, normal and emission maps, no stale keywords and emission 4.6; one on a texture with alpha keeps its cut-out; ConvertAll takes the folder and refuses a missing one' {
+    $dir = "$scratchRel/PackConv"
+    $conv = Join-Path $scratch 'PackConv\Editor'
+    New-Item -ItemType Directory -Force $conv | Out-Null
+    Copy-Item (Join-Path $packageRoot 'Skills~\unity-cliext-asset-packs\templates\Editor\PackMaterialConverter.cs') $conv
+    try {
+        [void](Compile-AndWait)
+        $errs = @((Get-Diagnostics) | Where-Object { "$($_.file)" -match 'PackMaterialConverter' })
+        Expect ($errs.Count -eq 0) "the template doesn't compile: $(Short (($errs | ForEach-Object { "$($_.code) $($_.message)" }) -join '; '))"
+        $setup = @'
+string dir = "{{dir}}/Mats";
+if (!UnityEditor.AssetDatabase.IsValidFolder(dir)) UnityEditor.AssetDatabase.CreateFolder("{{dir}}", "Mats");
+string Png(string name, bool alpha) {
+    var t = new UnityEngine.Texture2D(8, 8, alpha ? UnityEngine.TextureFormat.RGBA32 : UnityEngine.TextureFormat.RGB24, false);
+    var px = new UnityEngine.Color[64];
+    for (int i = 0; i < 64; i++) px[i] = new UnityEngine.Color(0.6f, 0.4f, 0.2f, alpha && i % 2 == 0 ? 0f : 1f);
+    t.SetPixels(px); t.Apply();
+    string p = dir + "/" + name + ".png";
+    System.IO.File.WriteAllBytes(p, UnityEngine.ImageConversion.EncodeToPNG(t));
+    UnityEditor.AssetDatabase.ImportAsset(p);
+    return UnityEditor.AssetDatabase.AssetPathToGUID(p);
+}
+string opaque = Png("Atlas", false), cut = Png("Leaves", true), emit = Png("Glow", false), metal = Png("Metal", false);
+string Tex(string slot, string guid) => "    - " + slot + ":\n        m_Texture: {fileID: 2800000, guid: " + guid + ", type: 3}\n        m_Scale: {x: 1, y: 1}\n        m_Offset: {x: 0, y: 0}\n";
+string Mat(string name, string baseGuid) =>
+    "%YAML 1.1\n%TAG !u! tag:unity3d.com,2011:\n--- !u!21 &2100000\nMaterial:\n  serializedVersion: 8\n  m_ObjectHideFlags: 0\n" +
+    "  m_CorrespondingSourceObject: {fileID: 0}\n  m_PrefabInstance: {fileID: 0}\n  m_PrefabAsset: {fileID: 0}\n  m_Name: " + name + "\n" +
+    "  m_Shader: {fileID: -6465566751694194690, guid: 0c11e570000000000000000000000c1e, type: 3}\n  m_Parent: {fileID: 0}\n" +
+    "  m_ModifiedSerializedProperties: 0\n  m_ValidKeywords:\n  - _ALPHATEST_ON\n  - _METALLICGLOSSMAP\n  m_InvalidKeywords: []\n" +
+    "  m_LightmapFlags: 4\n  m_EnableInstancingVariants: 0\n  m_DoubleSidedGI: 0\n  m_CustomRenderQueue: 2450\n  stringTagMap: {}\n" +
+    "  disabledShaderPasses: []\n  m_LockedProperties: \n  m_SavedProperties:\n    serializedVersion: 3\n    m_TexEnvs:\n" +
+    Tex("_Albedo_Map", baseGuid) + Tex("_Emission_Map", emit) + Tex("_MetallicGlossMap", metal) + Tex("_OcclusionMap", metal) +
+    "    m_Ints: []\n    m_Floats:\n    - _AlphaClip: 1\n    - _AlphaToMask: 1\n    - _Alpha_Clip_Threshold: 0.4\n    - _BUILTIN_AlphaClip: 1\n" +
+    "    - _Cutoff: 0.5\n    - _Enable_Emission: 1\n    - _Metallic: 0\n    m_Colors:\n    - _EmissionColor: {r: 1, g: 1, b: 1, a: 1}\n" +
+    "    - _Emission_Color: {r: 4.6, g: 4.6, b: 4.6, a: 1}\n  m_BuildTextureStacks: []\n  m_AllowLocking: 1\n";
+System.IO.File.WriteAllText(dir + "/Vendor_Opaque.mat", Mat("Vendor_Opaque", opaque));
+System.IO.File.WriteAllText(dir + "/Vendor_Cutout.mat", Mat("Vendor_Cutout", cut));
+UnityEditor.AssetDatabase.ImportAsset(dir + "/Vendor_Opaque.mat");
+UnityEditor.AssetDatabase.ImportAsset(dir + "/Vendor_Cutout.mat");
+var m = UnityEditor.AssetDatabase.LoadAssetAtPath<UnityEngine.Material>(dir + "/Vendor_Opaque.mat");
+return m == null ? "no material" : "ok";
+'@
+        $s = Invoke-Eval 'pack-conv-setup.cs' $setup.Replace('{{dir}}', $dir)
+        Expect ($s -eq 'ok') "vendor assets: $s"
+        $read = @'
+var bad = AssetPackTools.Editor.PackMaterialConverter.ConvertAll("{{dir}}/NoSuchFolder");
+var summary = AssetPackTools.Editor.PackMaterialConverter.ConvertAll("{{dir}}/Mats");
+string Read(string name) {
+    var m = UnityEditor.AssetDatabase.LoadAssetAtPath<UnityEngine.Material>("{{dir}}/Mats/" + name + ".mat");
+    var maps = new System.Collections.Generic.List<string>();
+    foreach (var p in m.GetTexturePropertyNames()) if (m.HasProperty(p) && m.GetTexture(p) != null) maps.Add(p);
+    var e = m.GetColor("_EmissionColor");
+    return string.Format(System.Globalization.CultureInfo.InvariantCulture, "{0}|kw={1}|clip={2}|queue={3}|tag={4}|cutoff={5:0.00}|maps={6}|emission={7:0.00}",
+        m.shader.name, string.Join(",", m.shaderKeywords.OrderBy(k => k)), m.GetFloat("_AlphaClip"), m.renderQueue, m.GetTag("RenderType", false),
+        m.GetFloat("_Cutoff"), string.Join(",", maps.OrderBy(k => k)), e.r);
+}
+return bad + "\n" + summary + "\n" + Read("Vendor_Opaque") + "\n" + Read("Vendor_Cutout");
+'@
+        $out = (Invoke-Eval 'pack-conv-run.cs' $read.Replace('{{dir}}', $dir)) -replace '\\n', "`n" -replace '\\"', '"'
+        $lines = @($out -split "`n")
+        Expect ($lines.Count -ge 4) "convert: $(Short $out 400)"
+        Expect ($lines[0] -match "No folder '.*NoSuchFolder'") "a missing folder: $($lines[0])"
+        Expect ($lines[1] -match 'converted under .*/Mats: 2 \(1 alpha-clipped, 2 emissive') "summary: $($lines[1])"
+        $want = 'Universal Render Pipeline/Lit|kw=_EMISSION|clip=0|queue=2000|tag=Opaque|cutoff=0.40|maps=_BaseMap,_EmissionMap,_MainTex|emission=4.60'
+        Expect ($lines[2] -eq $want) "opaque base texture: $($lines[2]), expected $want"
+        $wantCut = 'Universal Render Pipeline/Lit|kw=_ALPHATEST_ON,_EMISSION|clip=1|queue=2450|tag=TransparentCutout|cutoff=0.40|maps=_BaseMap,_EmissionMap,_MainTex|emission=4.60'
+        Expect ($lines[3] -eq $wantCut) "base texture with alpha: $($lines[3]), expected $wantCut"
+        "opaque: $($lines[2]); cut-out: $($lines[3])"
+    }
+    finally {
+        [void](Invoke-Cli @('script', 'eval', '--file', (Write-WorkFile 'pack-conv-clean.cs' "UnityEditor.AssetDatabase.DeleteAsset(`"$dir`"); return `"ok`";"), '--format', 'json'))
+        [void](Compile-AndWait)
+    }
+}
+
+Add-Check 'pack.extract-remove' $pkgRow 'the asset-packs extractor: --dry-run on two matching prefabs lists each with its own dependencies; extracting both writes them with the package''s GUIDs; --remove of one (dry run, then for real) deletes it and the material and texture only it uses, keeps the material and texture the other prefab shares, and removes nothing else' {
+    $src = "$scratchRel/PackSrc"
+    $pkg = Join-Path $work 'trial.unitypackage'
+    $script = Join-Path $packageRoot 'Skills~\unity-cliext-asset-packs\scripts\extract_unitypackage.py'
+    $make = @'
+string dir = "{{dir}}";
+if (!UnityEditor.AssetDatabase.IsValidFolder(dir)) UnityEditor.AssetDatabase.CreateFolder("{{scratch}}", "PackSrc");
+UnityEngine.Material Mat(string name) {
+    var t = new UnityEngine.Texture2D(4, 4); string p = dir + "/" + name + ".png";
+    System.IO.File.WriteAllBytes(p, UnityEngine.ImageConversion.EncodeToPNG(t)); UnityEditor.AssetDatabase.ImportAsset(p);
+    var m = new UnityEngine.Material(UnityEngine.Shader.Find("Universal Render Pipeline/Lit"));
+    m.SetTexture("_BaseMap", UnityEditor.AssetDatabase.LoadAssetAtPath<UnityEngine.Texture2D>(p));
+    UnityEditor.AssetDatabase.CreateAsset(m, dir + "/" + name + ".mat"); return m;
+}
+var shared = Mat("Shared"); var onlyB = Mat("OnlyB");
+var a = UnityEngine.GameObject.CreatePrimitive(UnityEngine.PrimitiveType.Cube); a.GetComponent<UnityEngine.MeshRenderer>().sharedMaterial = shared;
+UnityEditor.PrefabUtility.SaveAsPrefabAsset(a, dir + "/Prop_01.prefab"); UnityEngine.Object.DestroyImmediate(a);
+var b = UnityEngine.GameObject.CreatePrimitive(UnityEngine.PrimitiveType.Cube); b.GetComponent<UnityEngine.MeshRenderer>().sharedMaterials = new[] { onlyB, shared };
+UnityEditor.PrefabUtility.SaveAsPrefabAsset(b, dir + "/Prop_02.prefab"); UnityEngine.Object.DestroyImmediate(b);
+UnityEditor.AssetDatabase.SaveAssets();
+UnityEditor.AssetDatabase.ExportPackage(dir, @"{{out}}", UnityEditor.ExportPackageOptions.Recurse);
+var guids = string.Join(",", new[] { "Prop_01.prefab", "Prop_02.prefab", "Shared.mat", "Shared.png", "OnlyB.mat", "OnlyB.png" }.Select(f => UnityEditor.AssetDatabase.AssetPathToGUID(dir + "/" + f)));
+UnityEditor.AssetDatabase.DeleteAsset(dir);
+return guids;
+'@
+    $present = "string d = `"$src`"; return string.Join(`",`", new[] { `"Prop_01.prefab`", `"Prop_02.prefab`", `"Shared.mat`", `"Shared.png`", `"OnlyB.mat`", `"OnlyB.png`" }.Select(f => UnityEditor.AssetDatabase.AssetPathToGUID(d + `"/`" + f, UnityEditor.AssetPathToGUIDOptions.OnlyExistingAssets)));"
+    function Py([string[]]$a) {
+        $ErrorActionPreference = 'Continue'
+        $o = & python -I $script $projectPath $pkg @a 2>&1 | Out-String
+        $ErrorActionPreference = 'Stop'
+        [pscustomobject]@{ exit = $LASTEXITCODE; out = $o }
+    }
+    try {
+        New-ScratchFolder
+        $guids = Invoke-Eval 'pack-src.cs' $make.Replace('{{dir}}', $src).Replace('{{scratch}}', $scratchRel).Replace('{{out}}', $pkg)
+        Expect ((Test-Path $pkg) -and $guids -match '^([0-9a-f]{32},){5}[0-9a-f]{32}$') "test package: $guids"
+        $g = $guids -split ','
+        $d = Py @('Prop_0[12]\.prefab', '--dry-run')
+        Expect ($d.exit -eq 0 -and $d.out -match '2 matched, 6 with dependencies' -and $d.out -match 'Prop_01\.prefab: 3 assets' -and $d.out -match 'Prop_02\.prefab: 5 assets') "dry run: $(Short $d.out 400)"
+        $x = Py @('Prop_0[12]\.prefab')
+        Expect ($x.exit -eq 0 -and $x.out -match '6 written') "extract: $(Short $x.out 300)"
+        [void](Invoke-Cli @('cliext.wait', 'idle', '--refresh', 'true', '--format', 'json'))
+        Expect ((Invoke-Eval 'pack-present.cs' $present) -eq $guids) "after extracting, the GUIDs differ from the package's: $(Invoke-Eval 'pack-present.cs' $present)"
+        $rd = Py @('Prop_02\.prefab', '--remove', '--dry-run')
+        Expect ($rd.exit -eq 0 -and $rd.out -match 'would remove 3' -and $rd.out -match '- .*/OnlyB\.png' -and $rd.out -match '= .*/Shared\.mat\s+\(used by .*Prop_01\.prefab\)') "remove dry run: $(Short $rd.out 500)"
+        Expect ((Invoke-Eval 'pack-present.cs' $present) -eq $guids) 'the remove dry run deleted something'
+        $r = Py @('Prop_02\.prefab', '--remove')
+        Expect ($r.exit -eq 0 -and $r.out -match 'removed 3 assets') "remove: $(Short $r.out 400)"
+        [void](Invoke-Cli @('cliext.wait', 'idle', '--refresh', 'true', '--format', 'json'))
+        $after = Invoke-Eval 'pack-present.cs' $present
+        $wantAfter = "$($g[0]),,$($g[2]),$($g[3]),,"
+        Expect ($after -eq $wantAfter) "after --remove: $after, expected Prop_01 and Shared kept, Prop_02 and OnlyB gone"
+        "dry run listed 2 matches with their own dependencies; extracted 6 with the package's GUIDs; --remove took out Prop_02, OnlyB.mat and OnlyB.png and kept Shared.mat and Shared.png (used by Prop_01)"
+    }
+    finally {
+        [void](Invoke-Cli @('script', 'eval', '--file', (Write-WorkFile 'pack-src-clean.cs' "UnityEditor.AssetDatabase.DeleteAsset(`"$src`"); return `"ok`";"), '--format', 'json'))
+        Remove-Item $pkg -Force -ErrorAction SilentlyContinue
+    }
+}
+
 # --- cliext.asset, cliext.diff ----------------------------------------------------------------------------------------
 
 # Dependencies are checked on the committed TestLevel: its Player wears PlayerSkin.mat, which uses skaterMaleA.png. Each

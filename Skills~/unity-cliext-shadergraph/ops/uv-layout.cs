@@ -2,7 +2,7 @@
 // area of its UV triangles (1 = the whole 0-1 square once; a small number means the mesh samples only a small part
 // of any texture mapped by UV0). Also the mesh's object-space size (boundsSize, in the mesh's own units: what
 // Position (Object space) spans, for picking a triplanar or object-space scale) and, for a scene object, the
-// renderer's world size (worldSize). They differ a lot on an imported model with a scaled child (Kenney: 0.016 vs 1.8).
+// renderer's world size (worldSize). They differ a lot on an imported model with a scaled child (0.016 vs 1.8 seen).
 // unity command cliext.eval run --file <this file> --vars "target=<scene object path or asset path>" --timeout 60 --format json
 using System.Collections.Generic;
 using System.Linq;
