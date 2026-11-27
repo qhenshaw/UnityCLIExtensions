@@ -703,8 +703,11 @@ Pipeline's `animation.timeline` commands create a timeline and add tracks and cl
   and state, and `tracks`: each track's active clip (two while they blend, with weights), its local time, the
   AnimationClip it plays and that clip's length. In Edit mode a scrub is sampled as the Timeline window previews it:
   the bound objects are put back afterwards, so saving the scene doesn't save the scrubbed pose (`scene` says so).
-  `--read` returns the named objects' position and rotation at that time, before they are put back; `--keep-pose
-  true` leaves the frame in the scene instead and marks it unsaved.
+  `--read` returns the named objects' position and rotation at that time, before they are put back; each is a name,
+  a path from the scene root (a leading `/` is optional) or a path relative to a bound object (`Root/Hips` under the
+  bound character), and a path that matches nothing says where an object of that name is. `--keep-pose true` leaves
+  the frame in the scene instead and marks it unsaved. The animation skill's `ops/pose.cs` compares a `--read` of
+  every bone with a clip, to prove which clip a character is posed in without changing the scene.
 
 ## UI Toolkit
 `cliext.uitk` edits UXML and USS files and works with the live UI in Play mode.

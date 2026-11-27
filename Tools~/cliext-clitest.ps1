@@ -2147,6 +2147,16 @@ return string.Format(System.Globalization.CultureInfo.InvariantCulture, "{0:0.0}
         Expect-TlFailure $usage '--read reports the pose at --time' '' '--read without --time' 2
         $missing = Invoke-Cli @('cliext.timeline', 'director', '--director', 'CliTestScrubDirector', '--time', '0.5', '--read', 'NoSuchBone', '--format', 'json')
         Expect-TlFailure $missing "No GameObject 'NoSuchBone'" '' 'unknown --read object' 13
+        # The same bone as a rooted path and as a path relative to the bound rig reads the same pose; a wrong path names where the bone is.
+        $relPath = $armPath.Substring($armPath.IndexOf('/') + 1)
+        foreach ($form in @("/$armPath", $relPath, "/$relPath")) {
+            $f = Invoke-Cli @('cliext.timeline', 'director', '--director', 'CliTestScrubDirector', '--time', '0.5', '--read', $form, '--format', 'json')
+            Expect ($f.exit -eq 0) "--read $form`: exit $($f.exit): $(Short ($f.stdout + $f.stderr))"
+            $ft = (@($f.json.read[0].localRotation | ForEach-Object { [string]::Format([Globalization.CultureInfo]::InvariantCulture, '{0:0.0}', [double]$_) }) -join ',')
+            Expect ($ft -eq $readText) "--read $form gave $ft, the full path $readText"
+        }
+        $wrong = Invoke-Cli @('cliext.timeline', 'director', '--director', 'CliTestScrubDirector', '--time', '0.5', '--read', 'CliTestScrubRig/NoSuchModel/LeftForeArm', '--format', 'json')
+        Expect-TlFailure $wrong "'LeftForeArm' is at (.*; )?$([regex]::Escape($armPath)) \(under CliTestScrubRig: $([regex]::Escape($relPath))\).*relative to a bound object" '' 'a wrong --read path' 13
     }
     finally {
         $close = "var s = UnityEngine.SceneManagement.SceneManager.GetSceneByPath(`"$scenePath`"); if (s.IsValid()) UnityEditor.SceneManagement.EditorSceneManager.CloseScene(s, true); UnityEditor.AssetDatabase.DeleteAsset(`"$scenePath`"); return `"ok`";"
@@ -2155,7 +2165,51 @@ return string.Format(System.Globalization.CultureInfo.InvariantCulture, "{0:0.0}
     "Anim plays $($anim.clips[0].clip) at local 0.5; read $readText while sampled; rig back at $p0; keep-pose left the frame and dirtied the scene"
 }
 
-Add-Check 'tl.clip-refs' $tlRow 'cliext.timeline edit add_clip given a take name two clips share, or a bare model with several clips, exits 2 listing them with their lengths and saves nothing' {
+Add-Check 'tl.pose-proof' $tlRow 'the animation skill''s pose proof: pose.cs mode=bones lists the rig''s bones, director --read of them saved to a file, and pose.cs mode=compare puts the active clip under 1 degree and the other clip well away; the scene stays as saved (no --keep-pose, nothing restored)' {
+    Need-TlAssets
+    $scenePath = "$scratchRel/CliTestPose.unity"
+    $setup = @'
+var scene = UnityEditor.SceneManagement.EditorSceneManager.NewScene(UnityEditor.SceneManagement.NewSceneSetup.EmptyScene, UnityEditor.SceneManagement.NewSceneMode.Additive);
+var model = UnityEditor.AssetDatabase.LoadAssetAtPath<UnityEngine.GameObject>("Assets/TestLevel/Characters/characterMedium.fbx");
+var rig = (UnityEngine.GameObject)UnityEditor.PrefabUtility.InstantiatePrefab(model, scene); rig.name = "CliTestPoseRig";
+var dgo = new UnityEngine.GameObject("CliTestPoseDirector"); UnityEngine.SceneManagement.SceneManager.MoveGameObjectToScene(dgo, scene);
+var d = dgo.AddComponent<UnityEngine.Playables.PlayableDirector>(); d.playOnAwake = false;
+var t = UnityEditor.AssetDatabase.LoadAssetAtPath<UnityEngine.Timeline.TimelineAsset>("{{path}}"); d.playableAsset = t;
+d.SetGenericBinding(t.GetRootTracks().First(x => x.name == "Anim"), rig.GetComponent<UnityEngine.Animator>());
+UnityEditor.SceneManagement.EditorSceneManager.SaveScene(scene, "{{scene}}");
+return "ok|" + scene.isDirty;
+'@
+    $pose = Join-Path $packageRoot 'Skills~\unity-cliext-animation\ops\pose.cs'
+    $scrub = Join-Path $work 'tl-pose-scrub.json'
+    try {
+        Expect ((Invoke-Eval 'tl-pose-setup.cs' $setup.Replace('{{path}}', $script:tlPath).Replace('{{scene}}', $scenePath)) -eq 'ok|False') 'scratch scene'
+        $b = Invoke-Cli @('cliext.eval', 'run', '--file', $pose, '--vars', 'mode=bones;object=CliTestPoseRig;clip=-;time=0;read=-', '--format', 'json')
+        $bones = $b.stdout.Trim().Trim([char]34)
+        Expect ($b.exit -eq 0 -and $bones -match '^CliTestPoseRig/.+;CliTestPoseRig/') "mode=bones: exit $($b.exit): $(Short ($b.stdout + $b.stderr))"
+        $d = Invoke-Cli @('cliext.timeline', 'director', '--director', 'CliTestPoseDirector', '--time', '1.5', '--read', $bones, '--format', 'json')
+        Expect ($d.exit -eq 0 -and @($d.json.read).Count -eq @($bones -split ';').Count) "director --read: exit $($d.exit), $(@($d.json.read).Count) poses: $(Short $d.stderr)"
+        [IO.File]::WriteAllText($scrub, $d.stdout)
+        $run = @($d.json.tracks | Where-Object { $_.track -eq 'Anim' })[0].clips[0]
+        function Compare-Pose([string]$model, $clip) {
+            $vars = [string]::Format([Globalization.CultureInfo]::InvariantCulture, 'mode=compare;object=CliTestPoseRig;clip={0}@{1};time={2};read={3}', $model, $clip.animationClip, [double]$clip.localTime, $scrub)
+            $c = Invoke-Cli @('cliext.eval', 'run', '--file', $pose, '--vars', $vars, '--format', 'json')
+            Expect ($c.exit -eq 0 -and "$($c.stdout)" -match 'mean ([\d.]+) deg over (\d+) bones') "compare $($clip.clip): $(Short ($c.stdout + $c.stderr))"
+            [double]::Parse($Matches[1], [Globalization.CultureInfo]::InvariantCulture)
+        }
+        $own = Compare-Pose 'Assets/TestLevel/Animations/kenney run.fbx' $run
+        $other = Compare-Pose 'Assets/TestLevel/Animations/standing idle.fbx' ([pscustomobject]@{ clip = 'standing idle'; animationClip = 'standing idle'; localTime = 0.5 })
+        Expect ($own -lt 1 -and $other -gt $own + 2) "mean off the active clip $own, off the other $other"
+        $dirty = Invoke-Eval 'tl-pose-dirty.cs' "return UnityEngine.SceneManagement.SceneManager.GetSceneByPath(`"$scenePath`").isDirty.ToString();"
+        Expect ($dirty -eq 'False') 'the scene is dirty after the proof'
+        "$(@($bones -split ';').Count) bones read at 1.5 s; mean $own deg off $($run.animationClip), $other off standing idle; scene clean"
+    }
+    finally {
+        $close = "var s = UnityEngine.SceneManagement.SceneManager.GetSceneByPath(`"$scenePath`"); if (s.IsValid()) UnityEditor.SceneManagement.EditorSceneManager.CloseScene(s, true); UnityEditor.AssetDatabase.DeleteAsset(`"$scenePath`"); return `"ok`";"
+        [void](Invoke-Cli @('script', 'eval', '--file', (Write-WorkFile 'tl-pose-close.cs' $close), '--format', 'json'))
+    }
+}
+
+Add-Check 'tl.clip-refs' $tlRow'cliext.timeline edit add_clip given a take name two clips share, or a bare model with several clips, exits 2 listing them with their lengths and saves nothing' {
     Need-TlAssets
     $before = Get-TlHash
     $idle = 'Assets/TestLevel/Animations/kenney idle.fbx'

@@ -490,7 +490,7 @@ namespace UnityCLIExtensions.Timeline
             [CliArg("director", "The GameObject with the PlayableDirector", Required = true)] string director,
             [CliArg("time", "Scrub to this time in seconds, 0 to the timeline's duration (default -1: don't scrub)")] double time = -1,
             [CliArg("action", "play, pause, resume, stop, or empty to just read (play, pause and resume need Play mode)")] string action = "",
-            [CliArg("read", "Objects (names or hierarchy paths, separated by ;) whose position and rotation at --time are returned, before Edit mode puts them back")] string read = "",
+            [CliArg("read", "Objects whose position and rotation at --time are returned, before Edit mode puts them back, separated by ;: a name, a hierarchy path from the scene root (a leading / is optional), or a path relative to an object a track is bound to (Root/Hips under the bound rig)")] string read = "",
             [CliArg("keep-pose", "Edit mode: leave the scrubbed frame in the scene (it is then saved with the scene) instead of putting the bound objects back")] bool keepPose = false)
         {
             try
@@ -503,7 +503,7 @@ namespace UnityCLIExtensions.Timeline
                 if (readObjects.Count > 0 && time < 0) throw new AnimUsageException("--read reports the pose at --time: pass --time too.");
                 if (keepPose && time < 0) throw new AnimUsageException("--keep-pose keeps a scrubbed frame: pass --time too.");
                 var d = FindDirector(director);
-                var readGos = readObjects.Select(FindGameObject).ToList();
+                var readGos = readObjects.Select(r => FindReadObject(r, d)).ToList();
                 if ((a != "" || time >= 0) && d.playableAsset == null)
                     throw new ArgumentException($"{d.name}'s director has no Playable Asset to {(a != "" ? a : "scrub")}. Set it to a .playable timeline first.");
                 if (time >= 0 && d.playableAsset != null && time > d.playableAsset.duration + 1e-6)
@@ -698,5 +698,64 @@ namespace UnityCLIExtensions.Timeline
         private static GameObject FindGameObject(string name) =>
             FindGameObjectOrNull((name ?? "").Trim())
             ?? throw new AnimNotFoundException($"No GameObject '{name}' in the open scenes. Give its name or hierarchy path (scene get_hierarchy lists them), or none to clear the binding.");
+
+        /// <summary>The GameObjects the director's tracks are bound to (an Animator's or AudioSource's GameObject, ...).</summary>
+        private static List<GameObject> BoundObjects(PlayableDirector d)
+        {
+            var bound = new List<GameObject>();
+            if (d.playableAsset == null) return bound;
+            foreach (var output in d.playableAsset.outputs)
+            {
+                var b = output.sourceObject != null ? d.GetGenericBinding(output.sourceObject) : null;
+                var go = b as GameObject ?? (b as Component)?.gameObject;
+                if (go != null && !bound.Contains(go)) bound.Add(go);
+            }
+            return bound;
+        }
+
+        /// <summary>
+        /// A --read object: a name, a hierarchy path from the scene root (a leading / is optional), or a path relative to
+        /// an object the director's tracks are bound to (Root/Hips under the bound Player). Inactive objects count. When
+        /// nothing matches, the error names where an object with that last name is, in both path forms.
+        /// </summary>
+        internal static GameObject FindReadObject(string spec, PlayableDirector d)
+        {
+            string s = (spec ?? "").Trim();
+            string rel = s.TrimStart('/');
+            var inScenes = Resources.FindObjectsOfTypeAll<Transform>().Where(t => t.gameObject.scene.IsValid() && t.hideFlags == HideFlags.None).ToList();
+            if (!rel.Contains('/'))
+            {
+                var byName = GameObject.Find(rel) ?? inScenes.FirstOrDefault(t => string.Equals(t.name, rel, StringComparison.OrdinalIgnoreCase))?.gameObject;
+                if (byName != null) return byName;
+            }
+            else
+            {
+                // From the scene root, then relative to each bound object, then Unity's own path lookup.
+                var exact = inScenes.FirstOrDefault(t => PathOf(t) == rel);
+                if (exact != null) return exact.gameObject;
+                foreach (var b in BoundObjects(d))
+                    if (b.transform.Find(rel) is Transform under && under != null) return under.gameObject;
+                var found = GameObject.Find(s);
+                if (found != null) return found;
+            }
+            string last = rel.Substring(rel.LastIndexOf('/') + 1);
+            var bound = BoundObjects(d);
+            // Objects under a bound object first: those are what the director poses.
+            var named = inScenes.Where(t => string.Equals(t.name, last, StringComparison.OrdinalIgnoreCase))
+                .OrderBy(t => bound.Any(b => t.IsChildOf(b.transform)) ? 0 : 1).Take(3).ToList();
+            string forms = "Give a name, a path from the scene root (Player/Root/Hips; a leading / is optional) or a path relative to a bound object" +
+                           (bound.Count > 0 ? $" ({string.Join(", ", bound.Select(b => b.name))})" : "") + " (Root/Hips).";
+            if (named.Count > 0)
+            {
+                var where = named.Select(t =>
+                {
+                    string full = PathOf(t);
+                    var b = bound.FirstOrDefault(x => t.IsChildOf(x.transform) && t != x.transform);
+                    return b != null ? $"{full} (under {b.name}: {full.Substring(PathOf(b.transform).Length + 1)})" : full;
+                });
+                throw new AnimNotFoundException($"No GameObject at '{s}'. '{last}' is at {string.Join("; ", where)}. {forms}");
+            }
+            throw new AnimNotFoundException($"No GameObject '{s}' in the open scenes. {forms} scene get_hierarchy lists the paths.");
+        }
     }
 }
