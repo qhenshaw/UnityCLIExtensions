@@ -72,58 +72,240 @@ namespace UnityCLIExtensions.Project
 
         private static string LayerLabel(int i) => LayerMask.LayerToName(i) is string s && s.Length > 0 ? s : $"layer {i}";
 
-        [CliGroupCommand("cliext.physics", "The layer collision matrix (3D, or --2d true): for each named layer, the layers it does not collide with.",
+        /// <summary>Layer indexes as compact ranges: "3, 6-7, 10-31"; null for none.</summary>
+        internal static string Ranges(IEnumerable<int> indexes)
+        {
+            var list = indexes.OrderBy(i => i).ToList();
+            if (list.Count == 0) return null;
+            var parts = new List<string>();
+            for (int i = 0; i < list.Count;)
+            {
+                int j = i;
+                while (j + 1 < list.Count && list[j + 1] == list[j] + 1) j++;
+                parts.Add(j == i ? list[i].ToString(CultureInfo.InvariantCulture) : j == i + 1 ? $"{list[i]}, {list[j]}" : $"{list[i]}-{list[j]}");
+                i = j + 1;
+            }
+            return string.Join(", ", parts);
+        }
+
+        [CliGroupCommand("cliext.physics", "The layer collision matrix (3D, or --2d true): for each named layer, the named layers it does not collide with (ignores), " +
+                                           "and unnamedIgnored, the unnamed layers (by index, such as \"3, 6-7, 10-31\") it doesn't collide with either; null when it collides with all of them. " +
+                                           "--all true lists the unnamed layers' rows too (as \"layer 12\").",
             Name = "matrix", Tags = new[] { "cliext", "physics" }, Effect = CommandEffect.ReadOnly)]
-        internal static ExitCode Matrix(CommandContext cmd, [CliArg("2d", "The 2D matrix")] bool twoD = false)
+        internal static ExitCode Matrix(CommandContext cmd, [CliArg("2d", "The 2D matrix")] bool twoD = false, [CliArg("all", "Also list the unnamed layers' rows")] bool all = false)
         {
             var so = SerializedText.Settings(MatrixAsset(twoD));
             var m = so.FindProperty("m_LayerCollisionMatrix");
-            var layers = Enumerable.Range(0, 32).Where(i => LayerMask.LayerToName(i).Length > 0).ToList();
-            foreach (int a in layers)
+            var named = Enumerable.Range(0, 32).Where(i => LayerMask.LayerToName(i).Length > 0).ToList();
+            var unnamed = Enumerable.Range(0, 32).Except(named).ToList();
+            foreach (int a in all ? Enumerable.Range(0, 32) : named)
             {
                 uint bits = (uint)m.GetArrayElementAtIndex(a).longValue;
-                var ignores = layers.Where(b => (bits & (1u << b)) == 0).Select(LayerMask.LayerToName).ToArray();
-                cmd.Result.WriteRecord(new { layer = LayerMask.LayerToName(a), index = a, ignores });
+                var ignores = named.Where(b => (bits & (1u << b)) == 0).Select(LayerMask.LayerToName).ToArray();
+                cmd.Result.WriteRecord(new { layer = LayerLabel(a), index = a, ignores, unnamedIgnored = Ranges(unnamed.Where(b => (bits & (1u << b)) == 0)) });
             }
             return ExitCode.Success;
         }
 
-        [CliGroupCommand("cliext.physics", "Make two layers collide or not (both directions), in the 3D matrix or with --2d true the 2D one. Saved to the project settings. " +
-                                           "An unknown layer exits 2 with the layer names (cliext.physics matrix lists them and what each ignores); layers that already collide (or ignore each other) exit 6.",
-            Name = "set_matrix", Tags = new[] { "cliext", "physics" }, Effect = CommandEffect.Destructive)]
-        internal static ExitCode SetMatrix(
-            CommandContext cmd,
-            [CliArg("a", "A layer (name or index)", Required = true)] string a,
-            [CliArg("b", "The other layer", Required = true)] string b,
-            [CliArg("collide", "true to collide, false to ignore", Required = true)] bool collide,
-            [CliArg("2d", "The 2D matrix")] bool twoD = false)
+        private const string TagAsset = "ProjectSettings/TagManager.asset";
+
+        /// <summary>Unity's built-in layers, whose names can't change: 0 Default, 1 TransparentFX, 2 Ignore Raycast, 4 Water, 5 UI.</summary>
+        internal static readonly int[] BuiltinLayers = { 0, 1, 2, 4, 5 };
+
+        /// <summary>
+        /// The 32 layer names after --set "8=Player;9=Pickup" (none clears an index) on <paramref name="current"/>, with each
+        /// change as "8: (none) -> Player". A built-in, used or repeated index, a name another layer has, a bad pair or an
+        /// index outside 0-31 is invalid usage; all of them already set is an ArgumentException (nothing would change).
+        /// </summary>
+        internal static string[] PlanLayers(string set, string[] current, out List<string> changes)
+        {
+            var next = (string[])current.Clone();
+            changes = new List<string>();
+            var seen = new HashSet<int>();
+            var pairs = (set ?? "").Split(';').Select(p => p.Trim()).Where(p => p.Length > 0).ToList();
+            if (pairs.Count == 0) throw new AnimUsageException("--set: give index=name pairs such as \"8=Player;9=Pickup\" (none clears one).");
+            string Free() => Ranges(Enumerable.Range(3, 29).Where(i => !BuiltinLayers.Contains(i) && string.IsNullOrEmpty(next[i]))) ?? "none";
+            foreach (string pair in pairs)
+            {
+                int eq = pair.IndexOf('=');
+                if (eq <= 0) throw new AnimUsageException($"--set: '{pair}' isn't index=name (such as 8=Player).");
+                string idx = pair.Substring(0, eq).Trim(), name = pair.Substring(eq + 1).Trim();
+                if (!int.TryParse(idx, NumberStyles.Integer, CultureInfo.InvariantCulture, out int i) || i < 0 || i > 31)
+                    throw new AnimUsageException($"--set: '{idx}' isn't a layer index 0-31 (user layers are 3 and 6-31).");
+                if (!seen.Add(i)) throw new AnimUsageException($"--set names layer {i} twice.");
+                if (BuiltinLayers.Contains(i))
+                    throw new AnimUsageException($"--set: layer {i} is Unity's built-in {current[i]}, whose name can't change: name a user layer (free: {Free()}).");
+                bool clear = string.Equals(name, "none", StringComparison.OrdinalIgnoreCase) || name.Length == 0;
+                if (clear)
+                {
+                    if (!string.IsNullOrEmpty(next[i])) { changes.Add($"{i}: {next[i]} -> (none)"); next[i] = ""; }
+                    continue;
+                }
+                if (string.Equals(next[i], name, StringComparison.Ordinal)) continue;
+                if (!string.IsNullOrEmpty(next[i]))
+                    throw new AnimUsageException($"--set: layer {i} is already {next[i]}: pick a free index (free: {Free()}), or clear it first with {i}=none.");
+                int other = Array.FindIndex(next, n => string.Equals(n, name, StringComparison.OrdinalIgnoreCase));
+                if (other >= 0) throw new AnimUsageException($"--set: layer {other} is already named {next[other]}: layer names are unique.");
+                changes.Add($"{i}: (none) -> {name}");
+                next[i] = name;
+            }
+            if (changes.Count == 0) throw new ArgumentException($"The layers already have {string.Join(";", pairs)}: nothing would change.");
+            return next;
+        }
+
+        [CliGroupCommand("cliext.physics", "The 32 layers (index, name, builtin), or with --set \"8=Player;9=Pickup\" name user layers (3, 6-31; 8=none clears one), saved to ProjectSettings/TagManager.asset. " +
+                                           "A built-in index (0, 1, 2, 4, 5), an index that already has another name (clear it first with 8=none), a name another layer has, " +
+                                           "an index given twice or outside 0-31 exits 2 naming the free indexes; names the layers already have exit 6.",
+            Name = "layers", Tags = new[] { "cliext", "physics" }, Effect = CommandEffect.Destructive)]
+        internal static ExitCode Layers(CommandContext cmd, [CliArg("set", "index=name pairs separated by ';'")] string set = "")
         {
             try
             {
-                int la = Layer(a, "--a"), lb = Layer(b, "--b");
-                var so = SerializedText.Settings(MatrixAsset(twoD));
-                var m = so.FindProperty("m_LayerCollisionMatrix");
-                bool collidesNow = ((uint)m.GetArrayElementAtIndex(la).longValue & (1u << lb)) != 0;
-                if (collidesNow == collide)
-                    throw new ArgumentException($"{LayerLabel(la)} and {LayerLabel(lb)} already {(collide ? "collide" : "ignore each other")} in the {(twoD ? "2D" : "3D")} matrix: nothing would change.");
-                void Set(int row, int col)
+                var so = SerializedText.Settings(TagAsset);
+                var layers = so.FindProperty("layers");
+                var current = Enumerable.Range(0, 32).Select(i => i < layers.arraySize ? layers.GetArrayElementAtIndex(i).stringValue : "").ToArray();
+                if (string.IsNullOrWhiteSpace(set))
                 {
-                    var e = m.GetArrayElementAtIndex(row);
-                    uint bits = (uint)e.longValue;
-                    bits = collide ? bits | (1u << col) : bits & ~(1u << col);
-                    e.longValue = bits;
+                    for (int i = 0; i < 32; i++)
+                        cmd.Result.WriteRecord(new { index = i, name = current[i].Length > 0 ? current[i] : null, builtin = BuiltinLayers.Contains(i) });
+                    return ExitCode.Success;
                 }
-                Set(la, lb); Set(lb, la);
+                var next = PlanLayers(set, current, out var changes);
+                for (int i = 0; i < 32; i++) layers.GetArrayElementAtIndex(i).stringValue = next[i];
                 so.ApplyModifiedPropertiesWithoutUndo();
-                if (twoD) Physics2D.IgnoreLayerCollision(la, lb, !collide); else Physics.IgnoreLayerCollision(la, lb, !collide);
                 AssetDatabase.SaveAssets();
-                cmd.Result.Write(new { a = LayerLabel(la), b = LayerLabel(lb), collide, matrix = twoD ? "2D" : "3D" });
+                cmd.Result.Write(new { changes, saved = TagAsset });
                 return ExitCode.Success;
             }
             catch (Exception e) when (IsArgError(e)) { return Report(cmd, e); }
         }
 
-        private static readonly string[] Material3DFields = { "dynamicFriction", "staticFriction", "bounciness", "frictionCombine", "bounceCombine" };
+        /// <summary>
+        /// The matrix rows after making layer <paramref name="a"/> collide with exactly the layers in <paramref name="keep"/>
+        /// (a bit mask) and ignore every other one, both directions. <paramref name="changed"/> gets the layers whose pair with a changes.
+        /// </summary>
+        internal static uint[] OnlyRows(uint[] rows, int a, uint keep, out List<int> changed)
+        {
+            var next = (uint[])rows.Clone();
+            changed = new List<int>();
+            for (int b = 0; b < 32; b++)
+            {
+                bool want = (keep & (1u << b)) != 0;
+                bool now = (rows[a] & (1u << b)) != 0;
+                if (want != now) changed.Add(b);
+                next[a] = want ? next[a] | (1u << b) : next[a] & ~(1u << b);
+                next[b] = want ? next[b] | (1u << a) : next[b] & ~(1u << a);
+            }
+            return next;
+        }
+
+        [CliGroupCommand("cliext.physics", "Make two layers collide or not (--a, --b, --collide; both directions), or with --only \"Player;Enemy\" make --a collide with just those layers and ignore all 31 others " +
+                                           "(named or not; list --a itself to keep it colliding with its own layer). In the 3D matrix or with --2d true the 2D one. Saved to the project settings. " +
+                                           "An unknown layer exits 2 with the layer names (cliext.physics matrix lists them and what each ignores), as does --only with --b or --collide, or neither; " +
+                                           "layers that already collide (or ignore each other), or an --only the matrix already has, exit 6.",
+            Name = "set_matrix", Tags = new[] { "cliext", "physics" }, Effect = CommandEffect.Destructive)]
+        internal static ExitCode SetMatrix(
+            CommandContext cmd,
+            [CliArg("a", "A layer (name or index)", Required = true)] string a,
+            [CliArg("b", "The other layer")] string b = "",
+            [CliArg("collide", "true to collide, false to ignore")] bool? collide = null,
+            [CliArg("only", "The only layers --a collides with, separated by ';'")] string only = "",
+            [CliArg("2d", "The 2D matrix")] bool twoD = false)
+        {
+            try
+            {
+                bool hasOnly = !string.IsNullOrWhiteSpace(only), hasB = !string.IsNullOrWhiteSpace(b);
+                if (hasOnly && (hasB || collide.HasValue)) throw new AnimUsageException("--only sets every pair for --a: leave out --b and --collide.");
+                if (!hasOnly && (!hasB || !collide.HasValue))
+                    throw new AnimUsageException("Pass --b and --collide true|false for one pair, or --only \"<layers>\" for the only layers --a collides with.");
+                int la = Layer(a, "--a");
+                if (hasOnly)
+                {
+                    uint keep = 0;
+                    foreach (string l in only.Split(';').Where(x => x.Trim().Length > 0)) keep |= 1u << Layer(l, "--only");
+                    var sm = SerializedText.Settings(MatrixAsset(twoD));
+                    var mp = sm.FindProperty("m_LayerCollisionMatrix");
+                    var rows = Enumerable.Range(0, 32).Select(i => (uint)mp.GetArrayElementAtIndex(i).longValue).ToArray();
+                    var next = OnlyRows(rows, la, keep, out var changed);
+                    string keepText = string.Join(", ", Enumerable.Range(0, 32).Where(i => (keep & (1u << i)) != 0).Select(LayerLabel));
+                    if (changed.Count == 0)
+                        throw new ArgumentException($"{LayerLabel(la)} already collides only with {keepText} in the {(twoD ? "2D" : "3D")} matrix: nothing would change.");
+                    for (int i = 0; i < 32; i++) mp.GetArrayElementAtIndex(i).longValue = next[i];
+                    sm.ApplyModifiedPropertiesWithoutUndo();
+                    foreach (int x in changed)
+                    {
+                        bool ignore = (keep & (1u << x)) == 0;
+                        if (twoD) Physics2D.IgnoreLayerCollision(la, x, ignore); else Physics.IgnoreLayerCollision(la, x, ignore);
+                    }
+                    AssetDatabase.SaveAssets();
+                    cmd.Result.Write(new { a = LayerLabel(la), collidesOnlyWith = keepText.Split(new[] { ", " }, StringSplitOptions.RemoveEmptyEntries), changed = changed.Select(LayerLabel).ToArray(), matrix = twoD ? "2D" : "3D" });
+                    return ExitCode.Success;
+                }
+                bool on = collide.Value;
+                int lb = Layer(b, "--b");
+                var so = SerializedText.Settings(MatrixAsset(twoD));
+                var m = so.FindProperty("m_LayerCollisionMatrix");
+                bool collidesNow = ((uint)m.GetArrayElementAtIndex(la).longValue & (1u << lb)) != 0;
+                if (collidesNow == on)
+                    throw new ArgumentException($"{LayerLabel(la)} and {LayerLabel(lb)} already {(on ? "collide" : "ignore each other")} in the {(twoD ? "2D" : "3D")} matrix: nothing would change.");
+                void Set(int row, int col)
+                {
+                    var e = m.GetArrayElementAtIndex(row);
+                    uint bits = (uint)e.longValue;
+                    bits = on ? bits | (1u << col) : bits & ~(1u << col);
+                    e.longValue = bits;
+                }
+                Set(la, lb); Set(lb, la);
+                so.ApplyModifiedPropertiesWithoutUndo();
+                if (twoD) Physics2D.IgnoreLayerCollision(la, lb, !on); else Physics.IgnoreLayerCollision(la, lb, !on);
+                AssetDatabase.SaveAssets();
+                cmd.Result.Write(new { a = LayerLabel(la), b = LayerLabel(lb), collide = on, matrix = twoD ? "2D" : "3D" });
+                return ExitCode.Success;
+            }
+            catch (Exception e) when (IsArgError(e)) { return Report(cmd, e); }
+        }
+
+        internal static string PathOf(Transform t)
+        {
+            string p = t.name;
+            for (var x = t.parent; x != null; x = x.parent) p = x.name + "/" + p;
+            return p;
+        }
+
+        private static IEnumerable<GameObject> SceneObjects() =>
+            Resources.FindObjectsOfTypeAll<GameObject>().Where(g => g.scene.IsValid() && (g.hideFlags & HideFlags.HideInHierarchy) == 0);
+
+        /// <summary>A GameObject in the open scenes by hierarchy path (a leading / is allowed) or name, inactive ones too; unknown is not found with "Did you mean".</summary>
+        internal static GameObject FindSceneObject(string name, string arg)
+        {
+            string n = (name ?? "").Trim();
+            if (n.Length == 0) throw new AnimUsageException($"{arg}: give a GameObject's name or hierarchy path.");
+            string path = n.TrimStart('/');
+            var all = SceneObjects().ToList();
+            var go = all.FirstOrDefault(g => PathOf(g.transform) == path) ?? all.FirstOrDefault(g => string.Equals(g.name, path, StringComparison.OrdinalIgnoreCase))
+                     ?? all.FirstOrDefault(g => string.Equals(PathOf(g.transform), path, StringComparison.OrdinalIgnoreCase));
+            if (go != null) return go;
+            var close = AnimationErrors.Close(path, all.Select(g => g.name).Distinct());
+            throw new AnimNotFoundException($"{arg}: no GameObject '{n}' in the open scenes.{(close.Count > 0 ? $" Did you mean: {string.Join(", ", close)}?" : "")} Give its name or hierarchy path (scene get_hierarchy lists them).");
+        }
+
+        /// <summary>The colliders on the object (3D Collider, or Collider2D with <paramref name="twoD"/>); none is not found, saying how to add one.</summary>
+        internal static List<Component> ColliderTargets(string obj, bool twoD)
+        {
+            var go = FindSceneObject(obj, "--assign");
+            var list = twoD ? go.GetComponents<Collider2D>().Cast<Component>().ToList() : go.GetComponents<Collider>().Cast<Component>().ToList();
+            if (list.Count == 0)
+            {
+                bool other = twoD ? go.GetComponent<Collider>() != null : go.GetComponent<Collider2D>() != null;
+                throw new AnimNotFoundException($"--assign: '{PathOf(go.transform)}' has no {(twoD ? "Collider2D" : "Collider")}" +
+                                                (other ? $" (it has a {(twoD ? "3D Collider: leave out --2d" : "Collider2D: pass --2d true with a .physicsMaterial2D")})." : $": add one first (component add --type {(twoD ? "BoxCollider2D" : "BoxCollider")}), or name the object that has it."));
+            }
+            return list;
+        }
+
+        private static UnityEngine.Object SharedMaterial(Component c) => c is Collider c3 ? (UnityEngine.Object)c3.sharedMaterial : ((Collider2D)c).sharedMaterial;
+
+        private static readonly string[] Material3DFields ={ "dynamicFriction", "staticFriction", "bounciness", "frictionCombine", "bounceCombine" };
         private static readonly string[] Material2DFields = { "friction", "bounciness" };
 
         /// <summary>Parses "name=value;..." for a physics material into field -> value, checking names and ranges.</summary>
@@ -168,16 +350,21 @@ namespace UnityCLIExtensions.Project
         [CliGroupCommand("cliext.physics", "Create or change a physics material (--path .physicMaterial, or .physicsMaterial2D with --2d true): --set \"dynamicFriction=0.2;staticFriction=0.3;bounciness=0.5;frictionCombine=Minimum;bounceCombine=Maximum\" (2D: friction, bounciness). " +
                                            "Frictions are 0 or more, bounciness 0 to 1, combines Average, Minimum, Multiply or Maximum. Everything is checked before the asset is made or changed: " +
                                            "a path outside Assets/ or Packages/, the wrong extension or an asset of another type exits 2, as do an unknown setting or a bad value; a missing folder exits 13; " +
-                                           "an existing material with no --set exits 2, and values it already has exit 6.",
+                                           "an existing material with no --set and no --assign exits 2, and values it already has exit 6. " +
+                                           "--assign <object> (a name or hierarchy path in the open scenes) also puts it on that object's colliders (Collider, or Collider2D with --2d true), not its children's; " +
+                                           "an unknown object or one with no collider exits 13 (add one with component add), and colliders that already have it, with no --set change, exit 6.",
             Name = "material", Tags = new[] { "cliext", "physics" }, Effect = CommandEffect.Destructive)]
         internal static ExitCode Material(
             CommandContext cmd,
             [CliArg("path", "The material asset", Required = true)] string path,
             [CliArg("set", "Settings: name=value;...")] string set = "",
-            [CliArg("2d", "A 2D physics material")] bool twoD = false)
+            [CliArg("2d", "A 2D physics material")] bool twoD = false,
+            [CliArg("assign", "A GameObject (name or hierarchy path) whose colliders get the material")] string assign = "")
         {
             try
             {
+                bool hasAssign = !string.IsNullOrWhiteSpace(assign);
+                var colliders = hasAssign ? ColliderTargets(assign, twoD) : new List<Component>();
                 path = AnimationErrors.AssetPath(path);
                 Type type = twoD ? typeof(PhysicsMaterial2D) : typeof(PhysicsMaterial);
                 if (!path.StartsWith("Assets/") && !path.StartsWith("Packages/"))
@@ -197,10 +384,15 @@ namespace UnityCLIExtensions.Project
                         throw new AnimNotFoundException($"No folder '{folder}' for --path: create it first (asset create_folder, or AssetDatabase.CreateFolder).");
                 }
                 var values = ParseMaterialSet(set, twoD);
-                if (main != null && values.Count == 0)
-                    throw new AnimUsageException($"Nothing to change on '{path}': pass --set \"{(twoD ? "friction=0.4;bounciness=0" : "dynamicFriction=0.6;bounciness=0")}\".");
-                if (main != null && values.All(kv => Equals(MaterialValue(main, kv.Key), kv.Value)))
-                    throw new ArgumentException($"'{path}' already has {string.Join(", ", values.Select(kv => $"{kv.Key} {ValueText.Format(kv.Value)}"))}: nothing would change.");
+                if (main != null && values.Count == 0 && !hasAssign)
+                    throw new AnimUsageException($"Nothing to change on '{path}': pass --set \"{(twoD ? "friction=0.4;bounciness=0" : "dynamicFriction=0.6;bounciness=0")}\", or --assign <object> to put it on a collider.");
+                bool valuesSame = main != null && values.All(kv => Equals(MaterialValue(main, kv.Key), kv.Value));
+                bool assignedSame = colliders.All(c => SharedMaterial(c) == main && main != null);
+                if (valuesSame && (!hasAssign || assignedSame))
+                {
+                    string have = values.Count > 0 ? $"'{path}' already has {string.Join(", ", values.Select(kv => $"{kv.Key} {ValueText.Format(kv.Value)}"))}" : $"'{path}'";
+                    throw new ArgumentException(hasAssign ? $"{have}, and {colliders[0].gameObject.name}'s collider(s) already use it: nothing would change." : $"{have}: nothing would change.");
+                }
 
                 bool created = main == null;
                 var mat = main ?? (UnityEngine.Object)Activator.CreateInstance(type);
@@ -215,9 +407,20 @@ namespace UnityCLIExtensions.Project
                 if (created) AssetDatabase.CreateAsset(mat, path);
                 EditorUtility.SetDirty(mat);
                 AssetDatabase.SaveAssetIfDirty(mat);
+                var assigned = new List<string>();
+                foreach (var c in colliders)
+                {
+                    if (SharedMaterial(c) == mat) continue;
+                    Undo.RecordObject(c, "cliext.physics material --assign");
+                    if (c is Collider c3) c3.sharedMaterial = (PhysicsMaterial)mat; else ((Collider2D)c).sharedMaterial = (PhysicsMaterial2D)mat;
+                    EditorUtility.SetDirty(c);
+                    if (!Application.isPlaying) UnityEditor.SceneManagement.EditorSceneManager.MarkSceneDirty(c.gameObject.scene);
+                    assigned.Add($"{PathOf(c.transform)} {c.GetType().Name}");
+                }
+                string[] assignedTo = hasAssign ? assigned.ToArray() : null;
                 object describe = mat is PhysicsMaterial m3
-                    ? (object)new { path, created, m3.dynamicFriction, m3.staticFriction, m3.bounciness, frictionCombine = m3.frictionCombine.ToString(), bounceCombine = m3.bounceCombine.ToString(), set = done }
-                    : new { path, created, ((PhysicsMaterial2D)mat).friction, ((PhysicsMaterial2D)mat).bounciness, set = done };
+                    ? (object)new { path, created, m3.dynamicFriction, m3.staticFriction, m3.bounciness, frictionCombine = m3.frictionCombine.ToString(), bounceCombine = m3.bounceCombine.ToString(), set = done, assigned = assignedTo }
+                    : new { path, created, ((PhysicsMaterial2D)mat).friction, ((PhysicsMaterial2D)mat).bounciness, set = done, assigned = assignedTo };
                 cmd.Result.Write(describe);
                 return ExitCode.Success;
             }
@@ -461,6 +664,124 @@ namespace UnityCLIExtensions.Project
                 }
                 cmd.Fail($"No path from {ValueText.Format(ha.position)} to {ValueText.Format(hb.position)}{agentLabel}: check both points are on the NavMesh (--sample) and the --areas.");
                 return ExitCode.NotFound;
+            }
+            catch (Exception e) when (IsArgError(e)) { return Report(cmd, e); }
+        }
+
+        internal sealed class ObstaclePlan
+        {
+            public NavMeshObstacleShape Shape;
+            public Vector3 Size, Center;
+            public float Radius, Height;
+            public bool Carve;
+            public bool Add;
+            public readonly List<string> Changes = new List<string>();
+        }
+
+        /// <summary>
+        /// Checks and resolves an obstacle change against the object's current NavMeshObstacle (null: one is added with
+        /// Unity's defaults). Bad shapes, sizes or vectors are invalid usage; values it already has are an ArgumentException.
+        /// </summary>
+        internal static ObstaclePlan PlanObstacle(NavMeshObstacle existing, string label, string shape, string size, string center, float radius, float height, bool? carve)
+        {
+            var p = new ObstaclePlan
+            {
+                Add = existing == null,
+                Shape = existing != null ? existing.shape : NavMeshObstacleShape.Box,
+                Size = existing != null ? existing.size : Vector3.one,
+                Center = existing != null ? existing.center : Vector3.zero,
+                Radius = existing != null ? existing.radius : 0.5f,
+                // NavMeshObstacle.height reads back half what it was set to (the extent); size.y is the full height.
+                Height = existing != null ? existing.size.y : 2f,
+                Carve = existing != null && existing.carving
+            };
+            if (!string.IsNullOrWhiteSpace(shape))
+            {
+                var s = ParseCurrent<NavMeshObstacleShape>(shape, "--shape", "obstacle shape", "Shapes");
+                if (s != p.Shape) { p.Changes.Add($"shape: {p.Shape} -> {s}"); p.Shape = s; }
+            }
+            if (!string.IsNullOrWhiteSpace(size))
+            {
+                var v = Vec(size, "--size");
+                if (!(v.x > 0 && v.y > 0 && v.z > 0)) throw new AnimUsageException($"--size {ValueText.Format(v)}: every side must be more than 0.");
+                if (p.Shape != NavMeshObstacleShape.Box) throw new AnimUsageException("--size is the box's size: a capsule takes --radius and --height (or pass --shape Box).");
+                if (v != p.Size) { p.Changes.Add($"size: {ValueText.Format(p.Size)} -> {ValueText.Format(v)}"); p.Size = v; }
+            }
+            if (radius != -1 || height != -1)
+            {
+                if (p.Shape != NavMeshObstacleShape.Capsule) throw new AnimUsageException("--radius and --height are the capsule's: a box takes --size (or pass --shape Capsule).");
+                if (radius != -1)
+                {
+                    if (!(radius > 0)) throw new AnimUsageException($"--radius {ValueText.Format(radius)}: give more than 0.");
+                    if (radius != p.Radius) { p.Changes.Add($"radius: {ValueText.Format(p.Radius)} -> {ValueText.Format(radius)}"); p.Radius = radius; }
+                }
+                if (height != -1)
+                {
+                    if (!(height > 0)) throw new AnimUsageException($"--height {ValueText.Format(height)}: give more than 0.");
+                    if (height != p.Height) { p.Changes.Add($"height: {ValueText.Format(p.Height)} -> {ValueText.Format(height)}"); p.Height = height; }
+                }
+            }
+            if (!string.IsNullOrWhiteSpace(center))
+            {
+                var v = Vec(center, "--center");
+                if (v != p.Center) { p.Changes.Add($"center: {ValueText.Format(p.Center)} -> {ValueText.Format(v)}"); p.Center = v; }
+            }
+            if (carve.HasValue && carve.Value != p.Carve) { p.Changes.Add($"carve: {p.Carve.ToString().ToLowerInvariant()} -> {carve.Value.ToString().ToLowerInvariant()}"); p.Carve = carve.Value; }
+            if (p.Add) p.Changes.Insert(0, "added NavMeshObstacle");
+            else if (p.Changes.Count == 0) throw new ArgumentException($"{label}'s NavMeshObstacle already has those values: nothing would change.");
+            return p;
+        }
+
+        [CliGroupCommand("cliext.navmesh", "Add or change the NavMeshObstacle on --object (a name or hierarchy path in the open scenes): --shape Box or Capsule, --size [x,y,z] (box), " +
+                                           "--radius and --height (capsule), --center [x,y,z] (local), --carve true to cut a hole in the NavMesh where it stands. Sizes are local, scaled by the object's transform. " +
+                                           "Without one, it is added (Box, size [1,1,1], or what you give); --remove true takes it off. An unknown object exits 13; an unknown shape (with the shapes), " +
+                                           "a size of 0 or less, a bad vector, or --size on a capsule exits 2; values it already has, or --remove with no obstacle, exit 6.",
+            Name = "obstacle", Tags = new[] { "cliext", "navmesh" }, Effect = CommandEffect.Destructive)]
+        internal static ExitCode Obstacle(
+            CommandContext cmd,
+            [CliArg("object", "The GameObject (name or hierarchy path)", Required = true)] string obj,
+            [CliArg("shape", "Box or Capsule")] string shape = "",
+            [CliArg("size", "Box size [x,y,z]")] string size = "",
+            [CliArg("center", "Local center [x,y,z]")] string center = "",
+            [CliArg("radius", "Capsule radius (-1: keep it)")] float radius = -1,
+            [CliArg("height", "Capsule height (-1: keep it)")] float height = -1,
+            [CliArg("carve", "true to carve the NavMesh, false not to (leave out to keep it)")] bool? carve = null,
+            [CliArg("remove", "Remove the obstacle")] bool remove = false)
+        {
+            try
+            {
+                var go = FindSceneObject(obj, "--object");
+                var existing = go.GetComponent<NavMeshObstacle>();
+                string label = PathOf(go.transform);
+                if (remove)
+                {
+                    if (!string.IsNullOrWhiteSpace(shape + size + center) || radius != -1 || height != -1 || carve.HasValue)
+                        throw new AnimUsageException("--remove takes the obstacle off: leave out the other settings.");
+                    if (existing == null) throw new ArgumentException($"'{label}' has no NavMeshObstacle: nothing would change.");
+                    Undo.DestroyObjectImmediate(existing);
+                    if (!Application.isPlaying) UnityEditor.SceneManagement.EditorSceneManager.MarkSceneDirty(go.scene);
+                    cmd.Result.Write(new { @object = label, removed = true });
+                    return ExitCode.Success;
+                }
+                var plan = PlanObstacle(existing, label, shape, size, center, radius, height, carve);
+                var o = existing != null ? existing : Undo.AddComponent<NavMeshObstacle>(go);
+                if (existing != null) Undo.RecordObject(o, "cliext.navmesh obstacle");
+                o.shape = plan.Shape;
+                if (plan.Shape == NavMeshObstacleShape.Box) o.size = plan.Size;
+                else { o.radius = plan.Radius; o.height = plan.Height; }
+                o.center = plan.Center;
+                o.carving = plan.Carve;
+                EditorUtility.SetDirty(o);
+                if (!Application.isPlaying) UnityEditor.SceneManagement.EditorSceneManager.MarkSceneDirty(go.scene);
+                cmd.Result.Write(new
+                {
+                    @object = label, changes = plan.Changes, shape = o.shape.ToString(),
+                    size = o.shape == NavMeshObstacleShape.Box ? ValueText.Format(o.size) : null,
+                    radius = o.shape == NavMeshObstacleShape.Capsule ? (float?)o.radius : null,
+                    height = o.shape == NavMeshObstacleShape.Capsule ? (float?)o.size.y : null,
+                    center = ValueText.Format(o.center), carve = o.carving
+                });
+                return ExitCode.Success;
             }
             catch (Exception e) when (IsArgError(e)) { return Report(cmd, e); }
         }
