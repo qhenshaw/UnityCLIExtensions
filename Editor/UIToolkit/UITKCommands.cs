@@ -212,9 +212,12 @@ namespace UnityCLIExtensions.UIToolkit
             bool uss = path.EndsWith(".uss", StringComparison.OrdinalIgnoreCase);
             string full = FullPath(path);
             string original = File.ReadAllText(full);
+            // Ops work on "\n" text; the file keeps its own line endings (CRLF files on Windows stay CRLF), so an op
+            // that changes nothing is seen as such and an edit doesn't rewrite every line ending.
+            bool crlf = original.Contains("\r\n");
             string output;
             XDocument doc = uss ? null : ParseUxml(original, path);
-            string text = original;
+            string text = original.Replace("\r\n", "\n");
             for (int i = 0; i < ops.Count; i++)
             {
                 var op = ops[i] ?? new UxmlOp();
@@ -244,6 +247,8 @@ namespace UnityCLIExtensions.UIToolkit
                 }
             }
             output = uss ? text : doc.Declaration != null ? doc.Declaration + "\n" + doc.Root : doc.ToString();
+            output = output.Replace("\r\n", "\n");
+            if (crlf) output = output.Replace("\n", "\r\n");
 
             bool imported = path.StartsWith("Assets/", StringComparison.OrdinalIgnoreCase) || path.StartsWith("Packages/", StringComparison.OrdinalIgnoreCase);
             File.WriteAllText(full, output, new UTF8Encoding(false));

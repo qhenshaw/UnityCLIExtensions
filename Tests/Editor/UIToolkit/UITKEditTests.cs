@@ -86,6 +86,26 @@ namespace UnityCLIExtensions.Tests
         }
 
         [Test]
+        public void CrlfFiles_KeepTheirLineEndings_AndANoOpIsStillANoOp()
+        {
+            string uss = Make("uss", Uss.Replace("\n", "\r\n"));
+            var same = UITKCommands.EditFile(uss, new[] { Op("set_rule", ".panel", properties: "width: 300px") });
+            Assert.IsFalse(same.saved, "a set_rule to the value a CRLF file already has must not save");
+            StringAssert.Contains("would change nothing", same.error);
+
+            var good = UITKCommands.EditFile(uss, new[] { Op("set_rule", ".panel", properties: "width: 200px") });
+            Assert.IsTrue(good.saved, good.error);
+            string after = Read(uss);
+            StringAssert.Contains("200px", after);
+            Assert.IsFalse(after.Replace("\r\n", "").Contains("\n"), "the edit left LF-only lines in a CRLF file");
+
+            string uxml = Make("uxml", Uxml.Replace("\n", "\r\n"));
+            var removed = UITKCommands.EditFile(uxml, new[] { Op("remove", "#start") });
+            Assert.IsTrue(removed.saved, removed.error);
+            Assert.IsFalse(Read(uxml).Replace("\r\n", "").Contains("\n"), "the edit left LF-only lines in a CRLF UXML file");
+        }
+
+        [Test]
         public void UssEditTheImporterWarnsAbout_SavesNothing_ButOldWarningsDoNotBlock()
         {
             string path = Make("uss", Uss);
