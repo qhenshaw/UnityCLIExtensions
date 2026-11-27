@@ -100,6 +100,18 @@ namespace UnityCLIExtensions.Addressables.Tests
         }
 
         [Test]
+        public void Analyze_NoIssuesResults_AreNotCountedAsIssues()
+        {
+            UnityEditor.AddressableAssets.Build.AnalyzeRules.AnalyzeRule.AnalyzeResult R(string name, MessageType severity) =>
+                new UnityEditor.AddressableAssets.Build.AnalyzeRules.AnalyzeRule.AnalyzeResult { resultName = name, severity = severity };
+            // The texts the rules return: the base rule's, and the bundle rules' "<rule> - No issues found.".
+            Assert.IsTrue(AddressablesCommands.IsNoIssues(R("No issues found", MessageType.None)));
+            Assert.IsTrue(AddressablesCommands.IsNoIssues(R("Check Duplicate Bundle Dependencies - No issues found.", MessageType.None)));
+            Assert.IsFalse(AddressablesCommands.IsNoIssues(R("Check Duplicate Bundle Dependencies - No issues found.", MessageType.Warning)), "Only severity None is a no-issues result.");
+            Assert.IsFalse(AddressablesCommands.IsNoIssues(R("Assets/Tex.png:Duplicated", MessageType.None)));
+        }
+
+        [Test]
         public void Apply_RemoveLabel_TakesItOffTheEntries()
         {
             AddressablesCommands.Apply(_settings, Op("add_entry", Readme, labels: "ui;docs"));

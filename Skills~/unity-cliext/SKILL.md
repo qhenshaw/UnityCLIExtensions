@@ -96,13 +96,13 @@ scripts named below are in `{{cliext-tools}}` (`cliext-wait.ps1`, `cliext-run.ps
 | `cliext.animator` | controllers: `inspect`, `validate`, `edit` (states, transitions, blend trees, layers); `live`, `drive` |
 | `cliext.anim` | model takes and clip import, `.anim` keys and events, avatar masks, `check` clips against a model |
 | `cliext.timeline` | `inspect`, `edit` (clips, timing, markers, tracks), `bind`, `director` (scrub, play) |
-| `cliext.cinemachine` | `list` (live camera, blends), `create`, `set`, `blend` |
+| `cliext.cinemachine` | `list` (live camera, blends), `create`, `set` (targets, `--rig follow/orbital/thirdperson/lookat/fixed`), `blend` |
 | `cliext.uitk` | UXML/USS `inspect`/`edit`; live `tree`, `query`, `click`, `set_value` |
-| `cliext.splines` | `list`, `inspect`, `create`, `edit` knots, `sample` |
+| `cliext.splines` | `list`, `inspect`, `create`, `edit` knots, `sample` (`--count N`: open includes both ends, closed gives t = k/N) |
 | `cliext.addressables` | `status`, `init`, `entries`, `edit`, `build`, `analyze` |
 | `cliext.import`, `cliext.presets` | import settings across folders; default presets per folder and an `audit` |
 | `cliext.package` | `import` a .unitypackage with no dialogs: `--dry-run true` lists what it would write; then all or nothing |
-| `cliext.physics`, `cliext.navmesh`, `cliext.quality` | collision matrix, materials, raycasts; NavMesh areas, agents, paths, bakes; quality levels, graphics APIs |
+| `cliext.physics`, `cliext.navmesh`, `cliext.quality` | `layers` (names, `--set`), collision matrix (`set_matrix --only` sets a whole row), materials (`--assign` to colliders), raycasts; NavMesh areas, agents, paths, `obstacle`, bakes; quality levels, graphics APIs |
 
 Scripts: `cliext-play-capture.ps1` compiles, enters Play mode, optionally slows time (`-TimeScale`), waits for a state,
 runs the project's own commands (`-Run`), and screenshots it at timed moments (`NAME@SECONDS`) or after snippets into a

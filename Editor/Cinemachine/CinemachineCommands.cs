@@ -170,9 +170,11 @@ namespace UnityCLIExtensions.Cinemachine
             catch (ArgumentException e) { throw new AnimUsageException($"{arg}: {e.Message}"); }
         }
 
-        [CliGroupCommand(Group, "Change a CinemachineCamera: priority, follow and look-at targets (a GameObject name or path, or none to clear), field of view, enabled. " +
+        [CliGroupCommand(Group, "Change a CinemachineCamera: priority, follow and look-at targets (a GameObject name or path, or none to clear), field of view, enabled, " +
+                                "and --rig (follow, orbital, thirdperson, lookat, fixed, as create takes) to replace its position and rotation components. " +
+                                "Targets alone don't move a camera: one with no position (body) or rotation (aim) component ignores them, and the output's warnings say so and name --rig follow. " +
                                 "In Play mode a priority change re-picks the live camera. Every target is found before anything changes. An unknown camera or target exits 13 " +
-                                "(cliext.cinemachine list names the cameras); a bad --fov or no change asked for exits 2; values the camera already has (nothing would change) exit 6.",
+                                "(cliext.cinemachine list names the cameras); a bad --fov, an unknown --rig or no change asked for exits 2; values the camera already has (nothing would change) exit 6.",
             Name = "set", Tags = new[] { "cliext", "cinemachine" }, Effect = CommandEffect.Destructive)]
         internal static ExitCode Set(
             CommandContext cmd,
@@ -181,12 +183,14 @@ namespace UnityCLIExtensions.Cinemachine
             [CliArg("follow", "Tracking target (GameObject name or path), or none to clear it")] string follow = "",
             [CliArg("lookat", "Look-at target (GameObject name or path), or none to clear it")] string lookAt = "",
             [CliArg("fov", "Vertical field of view in degrees, more than 0 and less than 180 (leave out to keep it)")] float? fov = null,
-            [CliArg("enabled", "true to enable the camera, false to disable it (leave out to keep it)")] bool? enabled = null)
+            [CliArg("enabled", "true to enable the camera, false to disable it (leave out to keep it)")] bool? enabled = null,
+            [CliArg("rig", "Replace the position and rotation components: follow, orbital, thirdperson, lookat or fixed (leave out to keep them)")] string rig = "")
         {
             try
             {
                 var cam = FindCamera(camera);
-                var plan = Plan(cam, priority, follow, lookAt, fov, enabled);
+                var plan = Plan(cam, priority, follow, lookAt, fov, enabled, rig);
+                if (plan.Rig != null) ApplyRig(cam, plan.Rig);
                 Undo.RecordObject(cam, "cliext.cinemachine set");
                 if (plan.Priority.HasValue) cam.Priority.Value = plan.Priority.Value;
                 if (plan.SetFollow) cam.Target.TrackingTarget = plan.Follow;
@@ -198,14 +202,61 @@ namespace UnityCLIExtensions.Cinemachine
                 if (plan.Fov.HasValue) cam.Lens.FieldOfView = plan.Fov.Value;
                 if (plan.Enabled.HasValue) cam.enabled = plan.Enabled.Value;
                 if (!Application.isPlaying) EditorSceneManager.MarkSceneDirty(cam.gameObject.scene);
-                cmd.Result.Write(new { changed = plan.Changed.ToArray(), camera = Describe(cam) });
+                var warnings = RigWarnings(cam);
+                cmd.Result.Write(new { changed = plan.Changed.ToArray(), camera = Describe(cam), warnings = warnings.Count > 0 ? warnings.ToArray() : null });
                 return ExitCode.Success;
             }
             catch (ArgumentException e) { cmd.Fail(e.Message); return AnimationErrors.Exit(e); }
         }
 
+        private static CinemachineComponentBase Stage(CinemachineCamera cam, CinemachineCore.Stage stage) =>
+            cam.GetComponents<CinemachineComponentBase>().FirstOrDefault(c => c.Stage == stage);
+
+        /// <summary>The rig the camera's position and rotation components make (as create names them), or null for another mix.</summary>
+        internal static string CurrentRig(CinemachineCamera cam)
+        {
+            var body = Stage(cam, CinemachineCore.Stage.Body);
+            var aim = Stage(cam, CinemachineCore.Stage.Aim);
+            if (body is CinemachineFollow && aim is CinemachineRotationComposer) return "follow";
+            if (body is CinemachineOrbitalFollow && aim is CinemachineRotationComposer) return "orbital";
+            if (body is CinemachineThirdPersonFollow && aim == null) return "thirdperson";
+            if (body == null && aim is CinemachineHardLookAt) return "lookat";
+            if (body == null && aim == null) return "fixed";
+            return null;
+        }
+
+        /// <summary>Replaces the camera's position (body) and rotation (aim) components with the rig's, with undo. Noise and extensions stay.</summary>
+        internal static void ApplyRig(CinemachineCamera cam, string rig)
+        {
+            foreach (var c in cam.GetComponents<CinemachineComponentBase>().Where(c => c.Stage == CinemachineCore.Stage.Body || c.Stage == CinemachineCore.Stage.Aim).ToArray())
+                Undo.DestroyObjectImmediate(c);
+            var go = cam.gameObject;
+            switch (rig)
+            {
+                case "follow": Undo.AddComponent<CinemachineFollow>(go); Undo.AddComponent<CinemachineRotationComposer>(go); break;
+                case "orbital": Undo.AddComponent<CinemachineOrbitalFollow>(go); Undo.AddComponent<CinemachineRotationComposer>(go); break;
+                case "thirdperson": Undo.AddComponent<CinemachineThirdPersonFollow>(go); break;
+                case "lookat": Undo.AddComponent<CinemachineHardLookAt>(go); break;
+            }
+        }
+
+        /// <summary>What the camera's targets won't do because it has no component to use them.</summary>
+        internal static List<string> RigWarnings(CinemachineCamera cam)
+        {
+            var warnings = new List<string>();
+            var follow = cam.Target.TrackingTarget;
+            var lookAt = cam.Target.CustomLookAtTarget ? cam.Target.LookAtTarget : follow;
+            var body = Stage(cam, CinemachineCore.Stage.Body);
+            if (follow != null && body == null)
+                warnings.Add($"{cam.name} has no position (body) component, so it doesn't move with its follow target {follow.name}: add a rig with cliext.cinemachine set --camera {cam.name} --rig follow (CinemachineFollow + RotationComposer), orbital or thirdperson.");
+            if (lookAt != null && Stage(cam, CinemachineCore.Stage.Aim) == null && !(body is CinemachineThirdPersonFollow))
+                warnings.Add($"{cam.name} has no rotation (aim) component, so it doesn't turn toward {lookAt.name}: add one with --rig follow (RotationComposer) or --rig lookat (HardLookAt).");
+            return warnings;
+        }
+
         internal sealed class SetPlan
         {
+            public string Rig;
             public int? Priority;
             public bool SetFollow, SetLookAt;
             public Transform Follow, LookAt;
@@ -220,14 +271,20 @@ namespace UnityCLIExtensions.Cinemachine
         /// Resolves and checks a set without changing the camera: throws when a target is unknown (13), a value is bad or
         /// nothing is asked for (2), or every value given is what the camera already has (6).
         /// </summary>
-        internal static SetPlan Plan(CinemachineCamera cam, int? priority, string follow, string lookAt, float? fov, bool? enabled)
+        internal static SetPlan Plan(CinemachineCamera cam, int? priority, string follow, string lookAt, float? fov, bool? enabled, string rig = "")
         {
-            bool hasFollow = !string.IsNullOrWhiteSpace(follow), hasLookAt = !string.IsNullOrWhiteSpace(lookAt);
-            if (!priority.HasValue && !hasFollow && !hasLookAt && !fov.HasValue && !enabled.HasValue)
-                throw new AnimUsageException($"Nothing to change on {cam.name}: pass --priority, --follow, --lookat, --fov or --enabled.");
+            bool hasFollow = !string.IsNullOrWhiteSpace(follow), hasLookAt = !string.IsNullOrWhiteSpace(lookAt), hasRig = !string.IsNullOrWhiteSpace(rig);
+            if (!priority.HasValue && !hasFollow && !hasLookAt && !fov.HasValue && !enabled.HasValue && !hasRig)
+                throw new AnimUsageException($"Nothing to change on {cam.name}: pass --priority, --follow, --lookat, --fov, --enabled or --rig.");
             if (fov.HasValue) CheckFov(fov.Value);
             var plan = new SetPlan();
             var same = new List<string>();
+            if (hasRig)
+            {
+                string r = ParseRig(rig);
+                if (CurrentRig(cam) == r) same.Add($"rig {r}");
+                else { plan.Rig = r; plan.Changed.Add("rig"); }
+            }
             if (priority.HasValue)
             {
                 if (cam.Priority.Value == priority.Value) same.Add($"priority {priority.Value}");

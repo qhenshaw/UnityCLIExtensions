@@ -52,6 +52,35 @@ namespace UnityCLIExtensions.Cinemachine.Tests
         }
 
         [Test]
+        public void Set_TargetsOnACameraWithNoRig_Warn_AndRigFollowAddsOne()
+        {
+            var cam = MakeCamera("CmTestCam", 10);
+            var target = new GameObject("CmTestTarget");
+            _made.Add(target);
+            cam.Target.TrackingTarget = target.transform;
+            Assert.AreEqual("fixed", CinemachineCommands.CurrentRig(cam));
+            var warnings = CinemachineCommands.RigWarnings(cam);
+            Assert.AreEqual(2, warnings.Count, string.Join(" | ", warnings));
+            StringAssert.Contains("no position (body) component", warnings[0]);
+            StringAssert.Contains("--rig follow", warnings[0]);
+            StringAssert.Contains("no rotation (aim) component", warnings[1]);
+
+            var plan = CinemachineCommands.Plan(cam, null, "", "", null, null, "follow");
+            CollectionAssert.AreEqual(new[] { "rig" }, plan.Changed);
+            CinemachineCommands.ApplyRig(cam, plan.Rig);
+            Assert.IsNotNull(cam.GetComponent<CinemachineFollow>());
+            Assert.IsNotNull(cam.GetComponent<CinemachineRotationComposer>());
+            Assert.AreEqual("follow", CinemachineCommands.CurrentRig(cam));
+            CollectionAssert.IsEmpty(CinemachineCommands.RigWarnings(cam));
+            StringAssert.Contains("already has rig follow: nothing would change", Catch(() => CinemachineCommands.Plan(cam, null, "", "", null, null, "follow")).Message);
+            StringAssert.Contains("Did you mean: orbital", Catch(() => CinemachineCommands.Plan(cam, null, "", "", null, null, "orbitl")).Message);
+
+            CinemachineCommands.ApplyRig(cam, "lookat");
+            Assert.IsNull(cam.GetComponent<CinemachineFollow>(), "A new rig replaces the old body.");
+            Assert.AreEqual("lookat", CinemachineCommands.CurrentRig(cam));
+        }
+
+        [Test]
         public void BadValues_AreUsageErrorsThatSayWhatToGive()
         {
             var cam = MakeCamera("CmTestCam", 20);

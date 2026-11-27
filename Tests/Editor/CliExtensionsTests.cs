@@ -112,10 +112,19 @@ namespace UnityCLIExtensions.Tests
         [TestCase("Opening Project in Non-Matching Editor Installation", "editor-version")]
         [TestCase("Save As", "file-picker")]
         [TestCase("Script Updating Consent", "api-updater")]
+        [TestCase("Missing signature", "missing-signature")]
         public void Match_PicksTheRuleForUnityDialogs(string title, string expected)
         {
             var policy = new WatchdogPolicy { rules = WatchdogPolicy.DefaultRules(ScenePromptAnswer.Escalate) };
             Assert.AreEqual(expected, policy.Match(title)?.name);
+        }
+
+        [Test]
+        public void MissingSignature_IsFocusedForTheEditorToAnswer_AndOnlyThatTitle()
+        {
+            var policy = new WatchdogPolicy { rules = WatchdogPolicy.DefaultRules(ScenePromptAnswer.Escalate) };
+            Assert.AreEqual("focus", policy.Match(MissingSignatureAnswer.DialogTitle).action);
+            Assert.IsNull(policy.Match("Invalid signature"), "The trust dialogs for a bad signature are left for a person.");
         }
 
         [Test]

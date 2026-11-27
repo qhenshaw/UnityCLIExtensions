@@ -33,6 +33,101 @@ namespace UnityCLIExtensions.Tests
             StringAssert.Contains("layer 40 is outside 0-31", Catch(() => ProjectSettingsCommands.Layer("40")).Message);
         }
 
+        private static string[] SomeLayers()
+        {
+            var l = new string[32];
+            for (int i = 0; i < 32; i++) l[i] = "";
+            l[0] = "Default"; l[1] = "TransparentFX"; l[2] = "Ignore Raycast"; l[4] = "Water"; l[5] = "UI"; l[8] = "Enemy";
+            return l;
+        }
+
+        [Test]
+        public void LayerNames_AreSetOnFreeUserIndexes_AndUsedOrBuiltinOnesAreRefused()
+        {
+            var next = ProjectSettingsCommands.PlanLayers("9=Player; 10=Pickup", SomeLayers(), out var changes);
+            Assert.AreEqual("Player", next[9]);
+            Assert.AreEqual("Pickup", next[10]);
+            CollectionAssert.AreEqual(new[] { "9: (none) -> Player", "10: (none) -> Pickup" }, changes);
+            Assert.AreEqual("", ProjectSettingsCommands.PlanLayers("8=none", SomeLayers(), out _)[8], "none clears a layer.");
+
+            var used = Catch(() => ProjectSettingsCommands.PlanLayers("8=Player", SomeLayers(), out _));
+            Assert.AreEqual("AnimUsageException", used.GetType().Name);
+            StringAssert.Contains("layer 8 is already Enemy: pick a free index (free: 3, 6, 7, 9-31), or clear it first with 8=none", used.Message);
+            StringAssert.Contains("layer 4 is Unity's built-in Water", Catch(() => ProjectSettingsCommands.PlanLayers("4=Player", SomeLayers(), out _)).Message);
+            StringAssert.Contains("layer 8 is already named Enemy: layer names are unique", Catch(() => ProjectSettingsCommands.PlanLayers("9=enemy", SomeLayers(), out _)).Message);
+            StringAssert.Contains("names layer 9 twice", Catch(() => ProjectSettingsCommands.PlanLayers("9=A;9=B", SomeLayers(), out _)).Message);
+            StringAssert.Contains("isn't a layer index 0-31", Catch(() => ProjectSettingsCommands.PlanLayers("40=A", SomeLayers(), out _)).Message);
+            StringAssert.Contains("isn't index=name", Catch(() => ProjectSettingsCommands.PlanLayers("Player", SomeLayers(), out _)).Message);
+            var same = Catch(() => ProjectSettingsCommands.PlanLayers("8=Enemy", SomeLayers(), out _));
+            Assert.AreEqual(typeof(ArgumentException), same.GetType(), "Names the layers already have exit 6.");
+            StringAssert.Contains("nothing would change", same.Message);
+        }
+
+        [Test]
+        public void MatrixOnly_MakesALayerCollideWithJustTheNamedOnes_BothWays()
+        {
+            var rows = Enumerable.Repeat(uint.MaxValue, 32).ToArray();
+            var next = ProjectSettingsCommands.OnlyRows(rows, 9, 1u << 8, out var changed);
+            Assert.AreEqual(1u << 8, next[9]);
+            for (int b = 0; b < 32; b++)
+                Assert.AreEqual(b == 8, (next[b] & (1u << 9)) != 0, $"layer {b}'s row agrees with layer 9's");
+            Assert.AreEqual(31, changed.Count);
+            ProjectSettingsCommands.OnlyRows(next, 9, 1u << 8, out var again);
+            CollectionAssert.IsEmpty(again, "The same --only again changes nothing.");
+            Assert.AreEqual("3, 6, 7, 10-31", ProjectSettingsCommands.Ranges(new[] { 3, 6, 7, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31 }));
+            Assert.IsNull(ProjectSettingsCommands.Ranges(new int[0]));
+        }
+
+        [Test]
+        public void MaterialAssign_FindsTheObjectsColliders_AndSaysHowToAddOne()
+        {
+            var go = new GameObject("PhysTestFloor");
+            var bare = new GameObject("PhysTestBare");
+            try
+            {
+                go.AddComponent<BoxCollider>();
+                go.AddComponent<SphereCollider>();
+                Assert.AreEqual(2, ProjectSettingsCommands.ColliderTargets("/PhysTestFloor", false).Count, "A leading / (a hierarchy path) is fine; both colliders.");
+                var none = Catch(() => ProjectSettingsCommands.ColliderTargets("PhysTestBare", false));
+                Assert.AreEqual("AnimNotFoundException", none.GetType().Name);
+                StringAssert.Contains("has no Collider: add one first (component add --type BoxCollider)", none.Message);
+                StringAssert.Contains("it has a 3D Collider: leave out --2d", Catch(() => ProjectSettingsCommands.ColliderTargets("PhysTestFloor", true)).Message);
+                var missing = Catch(() => ProjectSettingsCommands.ColliderTargets("PhysTestFlor", false));
+                Assert.AreEqual("AnimNotFoundException", missing.GetType().Name);
+                StringAssert.Contains("Did you mean: PhysTestFloor", missing.Message);
+            }
+            finally { UnityEngine.Object.DestroyImmediate(go); UnityEngine.Object.DestroyImmediate(bare); }
+        }
+
+        [Test]
+        public void Obstacle_IsCheckedBeforeAnythingChanges()
+        {
+            var add = ProjectSettingsCommands.PlanObstacle(null, "Box", "", "[2,2,2]", "", -1, -1, true);
+            Assert.IsTrue(add.Add);
+            Assert.AreEqual(NavMeshObstacleShape.Box, add.Shape);
+            Assert.AreEqual(new Vector3(2, 2, 2), add.Size);
+            Assert.IsTrue(add.Carve);
+            var cap = ProjectSettingsCommands.PlanObstacle(null, "Box", "capsule", "", "[0,1,0]", 0.4f, 1.5f, null);
+            Assert.AreEqual(NavMeshObstacleShape.Capsule, cap.Shape);
+            Assert.AreEqual(0.4f, cap.Radius);
+            StringAssert.Contains("--shape: 'Sphere' isn't an obstacle shape", Catch(() => ProjectSettingsCommands.PlanObstacle(null, "Box", "Sphere", "", "", -1, -1, null)).Message);
+            StringAssert.Contains("every side must be more than 0", Catch(() => ProjectSettingsCommands.PlanObstacle(null, "Box", "", "[1,0,1]", "", -1, -1, null)).Message);
+            StringAssert.Contains("a capsule takes --radius and --height", Catch(() => ProjectSettingsCommands.PlanObstacle(null, "Box", "Capsule", "[1,1,1]", "", -1, -1, null)).Message);
+            StringAssert.Contains("a box takes --size", Catch(() => ProjectSettingsCommands.PlanObstacle(null, "Box", "", "", "", 1, -1, null)).Message);
+
+            var go = new GameObject("NavTestBox");
+            try
+            {
+                var o = go.AddComponent<NavMeshObstacle>();
+                o.carving = true;
+                var same = Catch(() => ProjectSettingsCommands.PlanObstacle(o, "NavTestBox", "Box", "[1,1,1]", "", -1, -1, true));
+                Assert.AreEqual(typeof(ArgumentException), same.GetType());
+                StringAssert.Contains("already has those values: nothing would change", same.Message);
+                CollectionAssert.AreEqual(new[] { "carve: true -> false" }, ProjectSettingsCommands.PlanObstacle(o, "NavTestBox", "", "", "", -1, -1, false).Changes);
+            }
+            finally { UnityEngine.Object.DestroyImmediate(go); }
+        }
+
         [Test]
         public void MaterialSettings_AreCheckedBeforeAnythingIsMade()
         {

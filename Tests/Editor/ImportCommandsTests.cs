@@ -132,6 +132,71 @@ namespace UnityCLIExtensions.Tests
             IsUsage(Catch(() => ImportCommands.DefaultFilter("C:/Art")));
         }
 
+        private static readonly string[] TexturePaths =
+        {
+            "m_EnableMipMap", "m_sRGBTexture", "m_MaxTextureSize", "m_TextureSettings.m_FilterMode", "m_TextureSettings.m_WrapU", "m_AlphaUsage",
+            "m_PlatformSettings.Array.size", "m_PlatformSettings.Array.data[0].m_MaxTextureSize", "m_PlatformSettings.Array.data[0].m_TextureCompression", "m_UserData"
+        };
+
+        [Test]
+        public void PresetCreate_Only_KeepsTheNamedAndThePlatformBlock_ExcludeLeavesOut()
+        {
+            CollectionAssert.IsEmpty(ImportCommands.Exclusions(TexturePaths, "", ""));
+            CollectionAssert.AreEqual(new[] { "m_sRGBTexture", "m_TextureSettings", "m_AlphaUsage", "m_UserData" },
+                ImportCommands.Exclusions(TexturePaths, "enableMipMap;M_MAXTEXTURESIZE", ""), "--only leaves the platform settings whole.");
+            CollectionAssert.AreEqual(new[] { "m_sRGBTexture", "m_TextureSettings.m_WrapU", "m_AlphaUsage", "m_UserData" },
+                ImportCommands.Exclusions(TexturePaths, "m_EnableMipMap;m_MaxTextureSize;m_TextureSettings.m_FilterMode", ""), "A kept sub-property keeps its parent's other parts listed one by one.");
+            CollectionAssert.AreEqual(new[] { "m_sRGBTexture", "m_AlphaUsage" }, ImportCommands.Exclusions(TexturePaths, "", "sRGBTexture;alphaUsage"));
+            CollectionAssert.AreEqual(new[] { "m_sRGBTexture", "m_TextureSettings", "m_AlphaUsage", "m_UserData", "m_PlatformSettings" },
+                ImportCommands.Exclusions(TexturePaths, "enableMipMap;maxTextureSize", "m_PlatformSettings"), "Only a named m_PlatformSettings drops the block.");
+
+            var unknown = Catch(() => ImportCommands.Exclusions(TexturePaths, "maxTexureSize", ""));
+            IsUsage(unknown);
+            StringAssert.StartsWith("--only: the preset has no property 'maxTexureSize'. Did you mean: m_MaxTextureSize? Properties: m_EnableMipMap,", unknown.Message);
+            var inside = Catch(() => ImportCommands.Exclusions(TexturePaths, "", "m_PlatformSettings.Array.data[0].m_TextureCompression"));
+            IsUsage(inside);
+            StringAssert.Contains("keeps or excludes whole: name m_PlatformSettings", inside.Message);
+            StringAssert.Contains("both name m_MaxTextureSize", Catch(() => ImportCommands.Exclusions(TexturePaths, "maxTextureSize", "maxTextureSize")).Message);
+            StringAssert.Contains("no properties", Catch(() => ImportCommands.Exclusions(new[] { "m_A", "m_B" }, "", "m_A;m_B")).Message);
+        }
+
+        [Test]
+        public void PresetAudit_WithNoDefaults_SaysNothingWasAudited()
+        {
+            var r = ImportCommands.RunAudit("Packages/com.qhenshaw.unitycliextensions/Editor/Assets", 12);
+            Assert.AreEqual(0, r.Audited);
+            CollectionAssert.IsEmpty(r.Breaking);
+            StringAssert.Contains("has a default preset, so nothing was audited", r.Note);
+            StringAssert.Contains("set_default --preset", ImportCommands.NoDefaultsNote);
+        }
+
+        [Test]
+        public void PresetSetDefault_WritesThePresetManagerFile()
+        {
+            const string presetPath = "Assets/CliextTest_SetDefault.preset";
+            string file = Path.GetFullPath(ImportCommands.PresetManagerAsset);
+            byte[] before = File.ReadAllBytes(file);
+            var mat = new UnityEngine.GameObject("CliextTest", typeof(UnityEngine.BoxCollider));
+            var preset = new UnityEditor.Presets.Preset(mat.GetComponent<UnityEngine.BoxCollider>());
+            AssetDatabase.CreateAsset(preset, presetPath);
+            var type = preset.GetPresetType();
+            var original = UnityEditor.Presets.Preset.GetDefaultPresetsForType(type);
+            try
+            {
+                Assert.IsTrue(type.IsValidDefault(), "A BoxCollider preset can be a default.");
+                Assert.IsTrue(ImportCommands.SetDefaults(type, original.Prepend(new UnityEditor.Presets.DefaultPreset("", preset, true)).ToArray()));
+                string guid = AssetDatabase.AssetPathToGUID(presetPath);
+                StringAssert.Contains(guid, File.ReadAllText(file), "set_default writes ProjectSettings/PresetManager.asset, not only the Editor's copy.");
+            }
+            finally
+            {
+                UnityEditor.Presets.Preset.SetDefaultPresetsForType(type, original);
+                AssetDatabase.DeleteAsset(presetPath);
+                UnityEngine.Object.DestroyImmediate(mat);
+                File.WriteAllBytes(file, before);
+            }
+        }
+
         // .unitypackage files
 
         private string m_Dir;

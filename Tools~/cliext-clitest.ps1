@@ -2875,10 +2875,18 @@ Add-Check 'cm.set' $cmRow 'cliext.cinemachine set changes a camera''s priority, 
         $l = Invoke-Cli @('cliext.cinemachine', 'list', '--format', 'json')
         $b = @($l.json.cameras) | Where-Object { $_.name -eq 'CliTestCamB' }
         Expect ($b.priority -eq 30 -and $b.follow -eq 'CliTestPlain' -and $null -eq $b.lookAt -and $b.fov -eq 35 -and $b.enabled -eq $false) "list: $(Short ($b | ConvertTo-Json -Compress))"
+        # CamB has the lookat rig (no body): a follow target alone doesn't move it, and set says so; --rig follow adds one.
+        Expect ((@($r.json.warnings) -join ' ') -match 'CliTestCamB has no position \(body\) component.*--rig follow') "a follow target on a camera with no body: warnings $(Short ($r.json.warnings -join ' | '))"
+        $g = Invoke-Cli @('cliext.cinemachine', 'set', '--camera', 'CliTestCamB', '--rig', 'follow', '--format', 'json')
+        Expect ($g.exit -eq 0 -and (@($g.json.changed) -join ',') -eq 'rig' -and (@($g.json.camera.components) -join ',') -eq 'CinemachineFollow,CinemachineRotationComposer' -and $null -eq $g.json.warnings) "set --rig follow: exit $($g.exit): $(Short ($g.stdout + $g.stderr))"
+        $g2 = Invoke-Cli @('cliext.cinemachine', 'set', '--camera', 'CliTestCamB', '--rig', 'follow', '--format', 'json')
+        Expect-P3Failure $g2 'already has rig follow: nothing would change' 'the same rig again' 6
+        $g3 = Invoke-Cli @('cliext.cinemachine', 'set', '--camera', 'CliTestCamB', '--rig', 'orbitl', '--format', 'json')
+        Expect-P3Failure $g3 "Unknown rig 'orbitl'\. Did you mean: orbital\?" 'a misspelled rig' 2
     }
     finally { $closed = Close-P3Scene $orig }
     Expect ("$closed" -match "^`"?$([regex]::Escape($orig))\|False\|1") "after closing the scratch scene: $(Short $closed)"
-    "priority 30, follow CliTestPlain, fov 35, look-at cleared, disabled; $s"
+    "priority 30, follow CliTestPlain, fov 35, look-at cleared, disabled; no-body warning; --rig follow replaced HardLookAt; $s"
 }
 
 Add-Check 'cm.blend' $cmRow 'cliext.cinemachine blend sets the brain''s default blend and adds a custom blend between two cameras in a new Custom Blends asset; the brain and list show both' {
@@ -3073,10 +3081,15 @@ Add-Check 'spl.sample' $splRow 'cliext.splines sample returns the world position
         Expect ($n.exit -eq 0 -and $n.json.nearest -eq '[3,0,0]' -and $n.json.distance -eq 5 -and $n.json.t -eq 0.5) "near: exit $($n.exit): $(Short ($n.stdout + $n.stderr))"
         $k = Invoke-Cli @('cliext.splines', 'sample', '--object', 'CliTestLine', '--count', '3', '--format', 'json')
         Expect ($k.exit -eq 0 -and (@($k.json | ForEach-Object { $_.position }) -join ' ') -eq '[1,0,0] [3,0,0] [5,0,0]') "count 3: exit $($k.exit): $(Short ($k.stdout + $k.stderr))"
+        # A closed spline: --count N is t = k/N, N different points (t = 1 would be the start again).
+        $sq = Invoke-Cli @('cliext.splines', 'create', '--name', 'CliTestSquare', '--knots', '[0,0,0];[4,0,0];[4,0,4];[0,0,4]', '--mode', 'Linear', '--closed', 'true', '--format', 'json')
+        Expect ($sq.exit -eq 0) "create closed: exit $($sq.exit): $(Short ($sq.stdout + $sq.stderr))"
+        $q = Invoke-Cli @('cliext.splines', 'sample', '--object', 'CliTestSquare', '--count', '4', '--format', 'json')
+        Expect ($q.exit -eq 0 -and (@($q.json | ForEach-Object { ([double]$_.t).ToString([Globalization.CultureInfo]::InvariantCulture) }) -join ' ') -eq '0 0.25 0.5 0.75' -and (@($q.json | ForEach-Object { $_.position }) -join ' ') -eq '[0,0,0] [4,0,0] [4,0,4] [0,0,4]') "closed count 4: exit $($q.exit): $(Short ($q.stdout + $q.stderr))"
     }
     finally { $closed = Close-P3Scene $orig }
     Expect ("$closed" -match "^`"?$([regex]::Escape($orig))\|False\|1") "after closing the scratch scene: $(Short $closed)"
-    't 0.5 [3,0,0], distance 1 [2,0,0], near [3,5,0] -> [3,0,0] at 5, count 3 [1..5]'
+    't 0.5 [3,0,0], distance 1 [2,0,0], near [3,5,0] -> [3,0,0] at 5, count 3 [1..5]; closed square count 4 = its 4 corners at t k/4'
 }
 
 Add-Check 'spl.errors' $splRow 'cliext.splines inspect, sample, create and edit with unknown objects and splines, objects without a container, out-of-range t and distance, bad vectors, modes and knots, duplicate names and bad JSON exit 13, 2 or 6 with the fix; edit ops that fail (knot out of range, unknown op, bad mode or value, a change that does nothing) exit 6 and change nothing' {
@@ -3183,7 +3196,7 @@ Add-Check 'spl.edit-rollback' $splRow 'a splines edit batch that adds knots and 
 # saves (a newer serializedVersion, new default fields), so the values come back but the file text would not. The
 # checks compare a hash of every serialized value of those settings (Get-SettingsSig) before and after, and git status
 # of ProjectSettings when the project is a git repository.
-$settingsFiles = @('ProjectSettings/DynamicsManager.asset', 'ProjectSettings/Physics2DSettings.asset', 'ProjectSettings/NavMeshAreas.asset', 'ProjectSettings/QualitySettings.asset', 'ProjectSettings/ProjectSettings.asset')
+$settingsFiles = @('ProjectSettings/DynamicsManager.asset', 'ProjectSettings/Physics2DSettings.asset', 'ProjectSettings/NavMeshAreas.asset', 'ProjectSettings/QualitySettings.asset', 'ProjectSettings/ProjectSettings.asset', 'ProjectSettings/TagManager.asset')
 
 function Save-SettingsFiles {
     $h = @{}
@@ -3486,6 +3499,113 @@ Add-Check 'phys.matrix-set' $physRow 'cliext.physics set_matrix makes Default an
     Expect ($back.exit -eq 0) "set back: exit $($back.exit): $(Short ($back.stdout + $back.stderr))"
     $restored = Expect-SettingsBack $saved $sig0 $git0 'set_matrix'
     "Default x Water ignored (GetIgnoreLayerCollision True both ways), matrix shows both rows; $restored"
+}
+
+Add-Check 'phys.layers-only' $physRow 'cliext.physics layers names two free user layers (LayerMask.NameToLayer agrees), refuses a used or built-in index and exits 6 on names it has; set_matrix --only makes the first collide with just the second (GetIgnoreLayerCollision over all 32, both ways) and matrix shows the unnamed layers it ignores; all put back in a finally, the settings and their files as before' {
+    $saved = Save-SettingsFiles; $sig0 = Get-SettingsSig; $git0 = Get-SettingsGit
+    $l0 = Invoke-Cli @('cliext.physics', 'layers', '--format', 'json')
+    Expect ($l0.exit -eq 0 -and @($l0.json).Count -eq 32 -and (@($l0.json) | Where-Object { $_.index -eq 4 }).name -eq 'Water' -and (@($l0.json) | Where-Object { $_.index -eq 4 }).builtin) "layers: exit $($l0.exit): $(Short $l0.stdout)"
+    $free = @(@($l0.json) | Where-Object { -not $_.name -and $_.index -ge 8 } | ForEach-Object { [int]$_.index })
+    Expect ($free.Count -ge 2) "no two free user layers: $(Short $l0.stdout)"
+    $ia = $free[0]; $ib = $free[1]
+    try {
+        $s = Invoke-Cli @('cliext.physics', 'layers', '--set', "$ia=CliTestA;$ib=CliTestB", '--format', 'json')
+        Expect ($s.exit -eq 0 -and (@($s.json.changes) -join ';') -eq "${ia}: (none) -> CliTestA;${ib}: (none) -> CliTestB") "layers --set: exit $($s.exit): $(Short ($s.stdout + $s.stderr))"
+        $n = Invoke-Eval 'phys-layers.cs' 'return UnityEngine.LayerMask.NameToLayer("CliTestA") + "|" + UnityEngine.LayerMask.NameToLayer("CliTestB");'
+        Expect ($n -eq "$ia|$ib") "LayerMask.NameToLayer: $n"
+        $again = Invoke-Cli @('cliext.physics', 'layers', '--set', "$ia=CliTestA", '--format', 'json')
+        Expect-P3Failure $again 'nothing would change' 'layers set to what they are' 6
+        $used = Invoke-Cli @('cliext.physics', 'layers', '--set', "$ia=CliTestOther", '--format', 'json')
+        Expect-P3Failure $used "layer $ia is already CliTestA: pick a free index \(free: .*\), or clear it first with $ia=none" 'a used index' 2
+        $bi = Invoke-Cli @('cliext.physics', 'layers', '--set', '4=CliTestOther', '--format', 'json')
+        Expect-P3Failure $bi "layer 4 is Unity's built-in Water, whose name can't change" 'a built-in index' 2
+        $o = Invoke-Cli @('cliext.physics', 'set_matrix', '--a', 'CliTestA', '--only', 'CliTestB', '--format', 'json')
+        Expect ($o.exit -eq 0 -and (@($o.json.collidesOnlyWith) -join ',') -eq 'CliTestB' -and @($o.json.changed).Count -eq 31) "set_matrix --only: exit $($o.exit): $(Short ($o.stdout + $o.stderr))"
+        $ig = Invoke-Eval 'phys-only.cs' "var sb = new System.Text.StringBuilder(); for (int b = 0; b < 32; b++) { bool i1 = UnityEngine.Physics.GetIgnoreLayerCollision($ia, b), i2 = UnityEngine.Physics.GetIgnoreLayerCollision(b, $ia); sb.Append(i1 == i2 ? (i1 ? '1' : '0') : '?'); } return sb.ToString();"
+        $want = -join (0..31 | ForEach-Object { if ($_ -eq $ib) { '0' } else { '1' } })
+        Expect ($ig -eq $want) "GetIgnoreLayerCollision($ia, 0..31): $ig, want $want"
+        $m = Invoke-Cli @('cliext.physics', 'matrix', '--format', 'json')
+        $row = @($m.json) | Where-Object { $_.layer -eq 'CliTestA' }
+        Expect ((@($row.ignores) -contains 'Default') -and (@($row.ignores) -notcontains 'CliTestB') -and $row.unnamedIgnored -match '\d') "matrix row for CliTestA: $(Short ($row | ConvertTo-Json -Compress))"
+        $all = Invoke-Cli @('cliext.physics', 'matrix', '--all', 'true', '--format', 'json')
+        Expect (@($all.json).Count -eq 32) "matrix --all lists 32 rows: $(@($all.json).Count)"
+        $o2 = Invoke-Cli @('cliext.physics', 'set_matrix', '--a', 'CliTestA', '--only', 'CliTestB', '--format', 'json')
+        Expect-P3Failure $o2 'already collides only with CliTestB in the 3D matrix: nothing would change' 'the same --only again' 6
+        $o3 = Invoke-Cli @('cliext.physics', 'set_matrix', '--a', 'CliTestA', '--only', 'CliTestB', '--b', 'Default', '--format', 'json')
+        Expect-P3Failure $o3 '--only sets every pair for --a: leave out --b and --collide' '--only with --b' 2
+        $o4 = Invoke-Cli @('cliext.physics', 'set_matrix', '--a', 'CliTestA', '--format', 'json')
+        Expect-P3Failure $o4 'Pass --b and --collide true\|false for one pair, or --only' 'set_matrix with neither' 2
+    }
+    finally {
+        $back = Invoke-Cli @('cliext.physics', 'set_matrix', '--a', "$ia", '--only', ((0..31) -join ';'), '--format', 'json')
+        $clear = Invoke-Cli @('cliext.physics', 'layers', '--set', "$ia=none;$ib=none", '--format', 'json')
+    }
+    Expect ($back.exit -eq 0 -and $clear.exit -eq 0) "put back: matrix exit $($back.exit), layers exit $($clear.exit): $(Short ($back.stderr + $clear.stderr))"
+    $restored = Expect-SettingsBack $saved $sig0 $git0 'layers and set_matrix --only'
+    "layers $ia/$ib named; used and built-in refused; --only: collides with $ib alone ($ig); $restored"
+}
+
+Add-Check 'phys.material-assign' $physRow 'cliext.physics material --assign creates a bouncy material and puts it on a scratch object''s collider (Collider.sharedMaterial shows it); again exits 6; an unknown object or one with no collider exits 13 and makes no file' {
+    New-ScratchFolder
+    $orig = Open-P3Scene
+    $mat = "$scratchRel/CliTestAssign.physicMaterial"
+    try {
+        Add-PhysTargets
+        [void](Invoke-Eval 'phys-bare.cs' 'new UnityEngine.GameObject("CliTestBare"); return "ok";')
+        $a = Invoke-Cli @('cliext.physics', 'material', '--path', $mat, '--set', 'bounciness=0.9', '--assign', '/CliTestGround', '--format', 'json')
+        Expect ($a.exit -eq 0 -and $a.json.created -eq $true -and (@($a.json.assigned) -join ',') -eq 'CliTestGround MeshCollider') "material --assign: exit $($a.exit): $(Short ($a.stdout + $a.stderr))"
+        $r = Invoke-Eval 'phys-assign.cs' 'var c = UnityEngine.GameObject.Find("CliTestGround").GetComponent<UnityEngine.Collider>(); return c.sharedMaterial == null ? "none" : UnityEditor.AssetDatabase.GetAssetPath(c.sharedMaterial) + "|" + c.sharedMaterial.bounciness.ToString(System.Globalization.CultureInfo.InvariantCulture);'
+        Expect ($r -eq "$mat|0.9") "Collider.sharedMaterial: $r"
+        $again = Invoke-Cli @('cliext.physics', 'material', '--path', $mat, '--assign', 'CliTestGround', '--format', 'json')
+        Expect-P3Failure $again "CliTestGround's collider\(s\) already use it: nothing would change" 'assign it again' 6
+        $box = Invoke-Cli @('cliext.physics', 'material', '--path', $mat, '--assign', 'CliTestBox', '--format', 'json')
+        Expect ($box.exit -eq 0 -and (@($box.json.assigned) -join ',') -eq 'CliTestBox BoxCollider' -and @($box.json.set).Count -eq 0) "assign an existing material: exit $($box.exit): $(Short ($box.stdout + $box.stderr))"
+        $bad = "$scratchRel/CliTestAssignBad.physicMaterial"
+        $u = Invoke-Cli @('cliext.physics', 'material', '--path', $bad, '--assign', 'CliTestGrund', '--format', 'json')
+        Expect-P3Failure $u "--assign: no GameObject 'CliTestGrund' in the open scenes\. Did you mean: CliTestGround\?" 'an unknown object' 13
+        $n = Invoke-Cli @('cliext.physics', 'material', '--path', $bad, '--assign', 'CliTestBare', '--format', 'json')
+        Expect-P3Failure $n "'CliTestBare' has no Collider: add one first \(component add --type BoxCollider\)" 'an object with no collider' 13
+        Expect (-not (Test-Path (Join-Path $scratch 'CliTestAssignBad.physicMaterial'))) 'a refused --assign created the material'
+    }
+    finally { $closed = Close-P3Scene $orig }
+    Expect ("$closed" -match "^`"?$([regex]::Escape($orig))\|False\|1") "after closing the scratch scene: $(Short $closed)"
+    "assigned $mat (bounciness 0.9) to CliTestGround, then CliTestBox; again exit 6; unknown and collider-less objects exit 13"
+}
+
+Add-Check 'nav.obstacle' $navRow 'in a scratch scene, cliext.navmesh obstacle adds a carving box NavMeshObstacle (size, center), changes it to a capsule, exits 6 on values it has, 2 on a bad shape or size, 13 on an unknown object, and --remove takes it off' {
+    $orig = Open-P3Scene
+    try {
+        Add-PhysTargets
+        $a = Invoke-Cli @('cliext.navmesh', 'obstacle', '--object', 'CliTestBox', '--size', '[2,2,2]', '--center', '[0,0.5,0]', '--carve', 'true', '--format', 'json')
+        Expect ($a.exit -eq 0 -and $a.json.shape -eq 'Box' -and $a.json.size -eq '[2,2,2]' -and $a.json.carve -eq $true -and @($a.json.changes)[0] -eq 'added NavMeshObstacle') "obstacle: exit $($a.exit): $(Short ($a.stdout + $a.stderr))"
+        $read = 'var o = UnityEngine.GameObject.Find("CliTestBox").GetComponent<UnityEngine.AI.NavMeshObstacle>(); return o == null ? "none" : o.shape + "|" + o.size + "|" + o.center + "|" + o.carving + "|" + o.radius + "|" + o.size.y;'
+        $s1 = Invoke-Eval 'nav-obst1.cs' $read
+        Expect ($s1 -match '^Box\|\(2\.0+, 2\.0+, 2\.0+\)\|\(0\.0+, 0\.50*, 0\.0+\)\|True\|') "NavMeshObstacle after add: $s1"
+        $same = Invoke-Cli @('cliext.navmesh', 'obstacle', '--object', 'CliTestBox', '--size', '[2,2,2]', '--carve', 'true', '--format', 'json')
+        Expect-P3Failure $same "CliTestBox's NavMeshObstacle already has those values: nothing would change" 'obstacle values it has' 6
+        $c = Invoke-Cli @('cliext.navmesh', 'obstacle', '--object', 'CliTestBox', '--shape', 'Capsule', '--radius', '0.75', '--height', '3', '--format', 'json')
+        Expect ($c.exit -eq 0 -and $c.json.shape -eq 'Capsule' -and $c.json.radius -eq 0.75 -and $c.json.height -eq 3) "to a capsule: exit $($c.exit): $(Short ($c.stdout + $c.stderr))"
+        $s2 = Invoke-Eval 'nav-obst2.cs' $read
+        Expect ($s2 -match '^Capsule\|.*\|True\|0\.75\|3$') "NavMeshObstacle as a capsule: $s2"
+        $seen = @()
+        foreach ($x in @(
+                @(@('--object', 'CliTestBox', '--shape', 'Sphere'), "--shape: 'Sphere' isn't an obstacle shape\..*Shapes: ", 2, 'an unknown shape'),
+                @(@('--object', 'CliTestBox', '--shape', 'Box', '--size', '[1,0,1]'), 'every side must be more than 0', 2, 'a flat box'),
+                @(@('--object', 'CliTestBox', '--size', '[1,1,1]'), 'a capsule takes --radius and --height', 2, '--size on a capsule'),
+                @(@('--object', 'CliTestBoks', '--carve', 'false'), "--object: no GameObject 'CliTestBoks' in the open scenes\. Did you mean: CliTestBox\?", 13, 'an unknown object'))) {
+            $r = Invoke-Cli (@('cliext.navmesh', 'obstacle') + $x[0] + @('--format', 'json'))
+            Expect-P3Failure $r $x[1] $x[3] $x[2]
+            $seen += "$($x[3]) $($r.exit)"
+        }
+        Expect ((Invoke-Eval 'nav-obst3.cs' $read) -eq $s2) 'a refused obstacle call changed the obstacle'
+        $rm = Invoke-Cli @('cliext.navmesh', 'obstacle', '--object', 'CliTestBox', '--remove', 'true', '--format', 'json')
+        Expect ($rm.exit -eq 0 -and $rm.json.removed -eq $true -and (Invoke-Eval 'nav-obst4.cs' $read) -eq 'none') "--remove: exit $($rm.exit): $(Short ($rm.stdout + $rm.stderr))"
+        $rm2 = Invoke-Cli @('cliext.navmesh', 'obstacle', '--object', 'CliTestBox', '--remove', 'true', '--format', 'json')
+        Expect-P3Failure $rm2 "has no NavMeshObstacle: nothing would change" 'remove twice' 6
+    }
+    finally { $closed = Close-P3Scene $orig }
+    Expect ("$closed" -match "^`"?$([regex]::Escape($orig))\|False\|1") "after closing the scratch scene: $(Short $closed)"
+    "box 2x2x2 carving -> capsule r 0.75 h 3; $($seen.Count) refusals; removed"
 }
 
 Add-Check 'phys.material' $physRow 'cliext.physics material creates a 3D material with frictions, bounciness and combines, then changes one field of it, and creates a 2D one; the assets'' fields as loaded show the values' {
@@ -3860,6 +3980,9 @@ Add-Check 'imp.presets-defaults' $impRow 'cliext.presets create makes a preset f
         Expect ($s.exit -eq 0 -and $s.json.type -eq 'UnityEditor.TextureImporter' -and @($s.json.defaults)[0].preset -eq $preset -and @($s.json.defaults)[0].filter -eq "glob:`"$impRel/**`"") "set_default: exit $($s.exit): $(Short ($s.stdout + $s.stderr))"
         $sig1 = Get-PresetSig
         Expect ($sig1 -like "*UnityEditor.TextureImporter|$preset|glob:'$impRel/**'|True;*") "Preset.GetDefaultPresetsForType: $sig1"
+        $presetGuid = ((Get-Content (Join-Path $projectPath ($preset + '.meta')) | Where-Object { $_ -match '^guid:' }) -replace '^guid:\s*', '').Trim()
+        $pmText = [IO.File]::ReadAllText((Join-Path $projectPath 'ProjectSettings\PresetManager.asset'))
+        Expect ($presetGuid -and $pmText.Contains($presetGuid)) "set_default did not write ProjectSettings/PresetManager.asset (no guid $presetGuid in it)"
         $l = Invoke-Cli @('cliext.presets', 'list', '--format', 'json')
         Expect ($l.exit -eq 0 -and @(@($l.json) | Where-Object { $_.preset -eq $preset -and $_.enabled }).Count -eq 1) "list: $(Short $l.stdout)"
         $again = Invoke-Cli @('cliext.presets', 'set_default', '--preset', $preset, '--filter', $impRel, '--format', 'json')
@@ -3869,7 +3992,7 @@ Add-Check 'imp.presets-defaults' $impRow 'cliext.presets create makes a preset f
         $rec = @($a.json)
         Expect ($rec.Count -eq 1 -and $rec[0].path -eq "$impRel/B.png" -and (@($rec[0].differences) -join ';') -match 'm_MaxTextureSize: is 256, preset 2048') "audit records: $(Short $a.stdout)"
         $ok = Invoke-Cli @('cliext.presets', 'audit', '--folder', "$impRel/Sub", '--format', 'json')
-        Expect ($ok.exit -eq 0 -and "$($ok.stdout)".Trim() -eq '') "audit of Sub (C matches): exit $($ok.exit): $(Short ($ok.stdout + $ok.stderr))"
+        Expect ($ok.exit -eq 0 -and $ok.json.audited -eq 1 -and $ok.json.breaking -eq 0 -and @($ok.json.presets) -contains $preset -and $ok.json.note -match '0 of 1 asset') "audit of Sub (C matches) prints a summary record: exit $($ok.exit): $(Short ($ok.stdout + $ok.stderr))"
     }
     finally { $rm = Invoke-Cli @('cliext.presets', 'set_default', '--preset', $preset, '--remove', 'true', '--format', 'json') }
     Expect ($rm.exit -eq 0 -and @($rm.json.defaults | Where-Object { $_.preset -eq $preset }).Count -eq 0) "remove: exit $($rm.exit): $(Short ($rm.stdout + $rm.stderr))"
@@ -3878,6 +4001,37 @@ Add-Check 'imp.presets-defaults' $impRow 'cliext.presets create makes a preset f
     $restored = Expect-PresetsBack $saved $sig0 $git0 'set_default'
     Expect-PackClean 'presets'
     "preset $($c.json.properties) properties; default for $impRel; audit: B maxTextureSize 256 vs 2048; $restored"
+}
+
+Add-Check 'imp.presets-only' $impRow 'cliext.presets create --only keeps the named properties and the whole platform settings block (the rest are the preset''s excludedProperties), --exclude leaves properties out, a misspelled name exits 2 with Did you mean and makes no file; list with no defaults and audit of a folder no preset covers print a summary record' {
+    New-ImpTextures
+    $only = "$scratchRel/ImpPresets/Only.preset"; $ex = "$scratchRel/ImpPresets/Exclude.preset"; $bad = "$scratchRel/ImpPresets/Bad.preset"
+    $o = Invoke-Cli @('cliext.presets', 'create', '--from', "$impRel/A.png", '--out', $only, '--only', 'textureType;enableMipMap;maxTextureSize', '--format', 'json')
+    Expect ($o.exit -eq 0 -and $o.json.platformSettings -eq 'kept' -and @($o.json.excluded) -contains 'm_sRGBTexture' -and @($o.json.excluded) -notcontains 'm_PlatformSettings' -and $o.json.kept -gt 3) "create --only: exit $($o.exit): $(Short ($o.stdout + $o.stderr))"
+    $code = @'
+var p = UnityEditor.AssetDatabase.LoadAssetAtPath<UnityEditor.Presets.Preset>("{{p}}");
+var ex = new System.Collections.Generic.HashSet<string>(p.excludedProperties);
+return (ex.Contains("m_sRGBTexture") && ex.Contains("m_TextureSettings") && !ex.Contains("m_MaxTextureSize") && !ex.Contains("m_EnableMipMap") && !ex.Contains("m_TextureType") && !ex.Contains("m_PlatformSettings")) ? "ok" : string.Join(",", p.excludedProperties);
+'@
+    $e = Invoke-Eval 'preset-only.cs' $code.Replace('{{p}}', $only)
+    Expect ($e -eq 'ok') "the --only preset's excludedProperties: $e"
+    $x = Invoke-Cli @('cliext.presets', 'create', '--from', "$impRel/A.png", '--out', $ex, '--exclude', 'sRGBTexture;alphaUsage;swizzle', '--format', 'json')
+    Expect ($x.exit -eq 0 -and (@($x.json.excluded) -join ';') -eq 'm_sRGBTexture;m_AlphaUsage;m_Swizzle' -and $x.json.platformSettings -eq 'kept') "create --exclude: exit $($x.exit): $(Short ($x.stdout + $x.stderr))"
+    $b = Invoke-Cli @('cliext.presets', 'create', '--from', "$impRel/A.png", '--out', $bad, '--only', 'maxTexureSize', '--format', 'json')
+    Expect-P3Failure $b "--only: the preset has no property 'maxTexureSize'\. Did you mean: m_MaxTextureSize\?" 'a misspelled --only' 2
+    $b2 = Invoke-Cli @('cliext.presets', 'create', '--from', "$impRel/A.png", '--out', $bad, '--exclude', 'm_PlatformSettings.Array.data[0].m_MaxTextureSize', '--format', 'json')
+    Expect-P3Failure $b2 'keeps or excludes whole: name m_PlatformSettings' 'a property inside the platform settings' 2
+    Expect (-not (Test-Path (Join-Path $scratch 'ImpPresets\Bad.preset'))) 'a refused create made a file'
+    $a = Invoke-Cli @('cliext.presets', 'audit', '--folder', $impRel, '--format', 'json')
+    Expect ($a.exit -eq 0 -and $a.json.breaking -eq 0 -and $null -ne $a.json.note) "audit prints a summary record: exit $($a.exit): $(Short ($a.stdout + $a.stderr))"
+    $note = 'list has defaults (empty-list case not checked)'
+    if ((Get-PresetSig) -eq '(none)') {
+        $l = Invoke-Cli @('cliext.presets', 'list', '--format', 'json')
+        Expect ($l.exit -eq 0 -and $l.json.defaults -eq 0 -and $l.json.note -match 'No default presets') "an empty list says so: exit $($l.exit): $(Short ($l.stdout + $l.stderr))"
+        $note = 'empty list says no default presets'
+    }
+    Expect-PackClean 'presets --only'
+    "--only kept $($o.json.kept) of $($o.json.properties) (platform block kept); --exclude 3; misspelling refused; audit: $(Short $a.json.note 60); $note"
 }
 
 Add-Check 'imp.presets-apply' $impRow 'cliext.presets apply --dry-run lists B and C (changed by batch) and changes nothing; apply sets them back to the preset (TextureImporter shows 2048, mipmaps on) and keeps B''s per-asset userData; apply again exits 6' {
@@ -4002,6 +4156,37 @@ Add-Check 'pkg.import' $pkgRow 'cliext.package import of a package exported from
     Expect (-not (Test-Path (Join-Path $scratch 'PkgSrc'))) 'the imported folder was not deleted'
     Expect-PackClean 'package import'
     "created 3 with the package's GUIDs in $($i.ms) ms, no dialog; again exit 6; changed .txt replaced; removed"
+}
+
+Add-Check 'pkg.signature-watchdog' $pkgRow 'Unity''s own AssetDatabase.ImportPackage of the unsigned test package opens "Missing signature"; watchdog -Status reports it as a unity-modal with the missing-signature rule (focus) and a note naming cliext.package import; -Click "Import Anyway" brings it to the front so MissingSignatureAnswer answers it (journal), the import lands and the Editor answers again; deleted after' {
+    $guids = New-TestPackage
+    $wd = Join-Path $tools 'Watchdog\cliext-watchdog.ps1'
+    $t0 = [DateTime]::UtcNow
+    try {
+        $code = "UnityEditor.AssetDatabase.ImportPackage(@`"$pkgFile`", false); return `"returned`";"
+        $x = Invoke-Cli @('script', 'eval', '--file', (Write-WorkFile 'pkg-unity-import.cs' $code), '--timeout', '6', '--format', 'json') 60
+        $seen = 'answered before the status'
+        $st = (& powershell -NoProfile -ExecutionPolicy Bypass -File $wd -Project $projectPath -Status | Out-String) | ConvertFrom-Json
+        $d = @($st.dialogs) | Where-Object { $_.title -eq 'Missing signature' } | Select-Object -First 1
+        if ($d) {
+            Expect ($d.kind -eq 'unity-modal' -and $d.rule -eq 'missing-signature' -and $d.action -eq 'focus' -and $st.state -eq 'blocked-by-dialog') "status of the dialog: $(Short ($d | ConvertTo-Json -Compress))"
+            Expect ("$($d.note)" -match 'unity command cliext\.package import --path' -and "$($d.note)" -match 'Import Anyway or Reimport Anyway, Cancel, Learn More') "the dialog's note: $(Short $d.note)"
+            $c = (& powershell -NoProfile -ExecutionPolicy Bypass -File $wd -Project $projectPath -Click 'Import Anyway' 2>&1 | Out-String)
+            $seen = 'seen by -Status, answered after -Click'
+            Expect ($c -notmatch 'still open|No button') "-Click Import Anyway: $(Short $c)"
+        }
+        $w = Invoke-Cli @('cliext.wait', 'idle', '--timeout', '120', '--format', 'json') 150
+        Expect ($w.exit -eq 0) "the Editor after the dialog: exit $($w.exit): $(Short ($w.stdout + $w.stderr))"
+        $j = Join-Path $projectPath 'Library\CLIExtensions\dialogs.jsonl'
+        $answered = @(Get-Content $j | ForEach-Object { try { $_ | ConvertFrom-Json } catch { } } | Where-Object { $_.title -eq 'Missing signature' -and $_.kind -eq 'answered' -and $_.detail -eq 'MissingSignatureAnswer' -and ([DateTime]::Parse("$($_.time)").ToUniversalTime()) -ge $t0.AddSeconds(-1) })
+        Expect ($answered.Count -ge 1) 'no MissingSignatureAnswer entry in the journal for this import'
+        $g = Get-PkgGuids
+        Expect ($g -eq "$guids|True") "AssetDatabase after Unity's import: $g, package GUIDs $guids"
+    }
+    finally { Remove-PkgImport }
+    Expect (-not (Test-Path (Join-Path $scratch 'PkgSrc'))) 'the imported folder was not deleted'
+    Expect-PackClean 'Unity package import'
+    "Missing signature $seen ($($answered[0].answer)); imported with the package's GUIDs; removed"
 }
 
 Add-Check 'pkg.errors' $pkgRow 'cliext.package import of a missing file, a folder, a .png, a text file and a gzip file named .unitypackage, and a package with a path outside Assets/ exits 13 or 2 with the fix, opens no dialog and writes nothing' {
@@ -4587,6 +4772,10 @@ Add-Check 'addr.analyze' $addrRow 'cliext.addressables analyze runs every regist
         $rules = @(@($all.json) | Where-Object { $_.rule })
         Expect (@($rules | Where-Object { $_.rule -match 'RuleBase' }).Count -eq 0) "analyze ran a base class as a rule: $(@($rules.rule) -join ', ')"
         Expect ($all.exit -eq 0 -and $rules.Count -ge 3 -and @($rules | Where-Object { $_.error }).Count -eq 0) "analyze: exit $($all.exit), $($rules.Count) rules: $(Short ($all.stdout + $all.stderr) 400)"
+        # A rule whose only result is "No issues found" (severity None) counts 0 issues and lists no results.
+        $noIssue = @($rules | Where-Object { @($_.results | Where-Object { $_.severity -eq 'None' -and $_.name -match 'No issues found' }).Count -gt 0 })
+        Expect ($noIssue.Count -eq 0) "analyze counted a 'No issues found' result as an issue: $(@($noIssue | ForEach-Object { "$($_.rule) issues $($_.issues)" }) -join '; ')"
+        Expect (@($rules | Where-Object { $_.rule -match 'Duplicate' -and $_.issues -ne 0 }).Count -eq 0) "a duplicate rule reports issues on one scratch entry: $(Short $all.stdout 300)"
         $layout = @($rules | Where-Object { $_.rule -match 'Layout' })[0].rule
         $one = Invoke-Cli @('cliext.addressables', 'analyze', '--rule', 'layout', '--limit', '5', '--timeout', '600', '--format', 'json') 660
         Expect ($one.exit -eq 0 -and @($one.json).Count -eq 1 -and @($one.json)[0].rule -eq $layout -and @(@($one.json)[0].results).Count -le 5) "analyze --rule layout: exit $($one.exit): $(Short $one.stdout 300)"

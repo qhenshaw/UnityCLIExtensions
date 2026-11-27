@@ -109,6 +109,13 @@ namespace UnityCLIExtensions.Splines.Tests
         }
 
         [Test]
+        public void SampleCount_OpenIncludesBothEnds_ClosedStopsBeforeTheStartAgain()
+        {
+            CollectionAssert.AreEqual(new[] { 0f, 0.5f, 1f }, SplineCommands.SampleTs(3, false));
+            CollectionAssert.AreEqual(new[] { 0f, 0.25f, 0.5f, 0.75f }, SplineCommands.SampleTs(4, true), "t = k/N on a closed spline: no doubled start point.");
+        }
+
+        [Test]
         public void UnknownContainer_IsNotFoundWithDidYouMean()
         {
             Make("SplineTestPath");
