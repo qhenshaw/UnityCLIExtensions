@@ -8,7 +8,8 @@ description: Drive the open Unity Editor from the command line with Unity CLI Ex
 The Editor is already open with this project. Drive it with `unity command <group> <command> --format json`.
 Pipeline's own groups (`scene`, `gameobject`, `asset`, `animation.*`, `settings.*`, `test`, `capture`, ...) do the
 basics; the `cliext.*` groups add what they leave out. `unity command <group>` lists a group's commands and
-`unity command <group> <command> --help` its parameters. Read a command's help before its first use.
+`unity command <group> <command> --help` its parameters. Never guess a command name: list the group first, then read
+the command's help before its first use.
 
 Start with `unity command cliext status`: agent mode, the setup checks still open, the package `version`, and
 `tools`, the folder holding the scripts named below (`cliext-wait.ps1`, `cliext-run.ps1`, `cliext-test.ps1`,
@@ -32,7 +33,11 @@ Start with `unity command cliext status`: agent mode, the setup checks still ope
   says what the Editor was doing when time ran out.
 - A command that hangs is almost always a modal dialog. `Watchdog/cliext-watchdog.ps1 -Project <p> -Status` names it
   and its buttons; `-Click "<button>"` presses one. Ask the user before pressing anything that saves, deletes or
-  rewrites files (save prompts, the API updater).
+  rewrites files (save prompts, the API updater). When no one can be asked, press the button that changes nothing
+  (Cancel, Close, No, Don't Save) and report the dialog's title, text and buttons as you saw them. Don't explain why it
+  appeared unless something showed you: file timestamps don't say which change a dialog is about.
+- In your report, state as fact only what a command or file showed you, and mark anything else as a guess. Don't
+  restate facts about the project from your context (whether it is a git repository, what changed) without checking.
 - Save or discard scene changes before tests, scene switches or builds (`cliext.scene save_open`): an unsaved scene
   stops them at a save prompt.
 - Exit 6 means two things. A real failure prints its reason on stderr, usually as an `error:` line (stdout is empty, or

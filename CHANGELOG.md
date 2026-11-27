@@ -1,6 +1,10 @@
 # Changelog
 All notable changes to Unity CLI Extensions. Versions are git tags: install one with `https://github.com/qhenshaw/UnityCLIExtensions.git#<version>`.
 
+## 0.25.0
+- The `unity-cliext` skill covers what the first agent baseline (18 runs on 0.24.0) got wrong: when a dialog blocks the Editor and no one can be asked, press the button that changes nothing and report the dialog as seen, without inferring why it appeared from file timestamps (0 of 3 runs passed this scenario); state as fact only what a command or file showed, not what the agent's context says about the project; and never guess a command name, list the group first.
+- `cliext-clitest.ps1` reports T1 coverage after its checks (for each core-loop group, the commands the run called and the ones it didn't), and `-T3Ready` checks the environment for agent scenario runs: setup checks applied, agent mode on, the watchdog running, the installed skills current. Its watchdog check leaves the watchdog running when it was running before.
+
 ## 0.24.0
 - Every batch edit reads its ops the same way, before it looks at its target: exactly one of `--ops` and `--ops-file`, else exit 2 (invalid usage), and invalid JSON or an empty list is exit 2 too. Before, giving neither exited 6 or 13 depending on the command, and giving both silently used the file.
 - Added `Tools~/cliext-clitest.ps1`, out-of-process tests that drive a running Editor through `unity command`: setup, compile errors and edit batches, test runs, the dialog journal and the watchdog, snippets with placeholders, exit codes (a dropped reply versus a failure), reply shapes, misspelled and either/or parameters, skill freshness, and Windows PowerShell 5.1 quoting. 23 checks; all pass on Unity 6000.6.6f1.
