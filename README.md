@@ -1028,7 +1028,7 @@ All under `unity command --project-path <project>`:
 | `cliext.watchdog start` / `stop` | Starts or stops the watchdog. |
 | `cliext.watchdog report` | The watchdog's last report. |
 | `cliext.package import --path <file.unitypackage>` | Imports a .unitypackage without the Import dialog. |
-| `cliext.scene save_open [--scene <path>] [--dry-run true]` | Saves open scenes that have unsaved changes and a file (or only `--scene`) and returns their paths; `--dry-run` lists them and saves nothing. |
+| `cliext.scene save_open [--scene <path>] [--dry-run true] [--changes false]` | Saves open scenes that have unsaved changes and a file (or only `--scene`) and returns their paths; `--dry-run` lists them and saves nothing. Per scene, `scenes` lists what the save writes against the file (`changedObjects`, `changes` with old and new values), and marks camera values a CinemachineBrain wrote in Edit mode as `drivenBy: CinemachineBrain`. |
 | `cliext.wait idle [--refresh true] [--timeout 120] [--settle-frames 3]` | Waits until the Editor is idle. |
 | `cliext.compile run [--warnings true] [--timeout 300] [--async true] [--stop-play true]` | Refreshes, compiles, and returns structured errors and warnings. `--async true` answers at once and compiles after; `--stop-play true` leaves Play mode first. |
 | `cliext.compile diagnostics [--warnings true]` | The standing errors and warnings, one record each. |
