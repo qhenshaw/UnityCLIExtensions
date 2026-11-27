@@ -48,11 +48,13 @@ namespace UnityCLIExtensions.Animation
 
     internal static class AnimatorEditing
     {
+        /// <summary>The controller at a path or GUID: not found (naming the command that makes one), or invalid usage when the asset there is something else.</summary>
         public static AnimatorController Load(string path)
         {
-            path = (path ?? "").Trim().Replace('\\', '/');
-            if (path.Length == 32 && path.All(Uri.IsHexDigit)) path = AssetDatabase.GUIDToAssetPath(path);
-            return AssetDatabase.LoadAssetAtPath<AnimatorController>(path) ?? throw new ArgumentException($"No AnimatorController at '{path}'.");
+            string p = AnimationErrors.AssetPath(path);
+            AnimationErrors.RequireType(p, "AnimatorController", typeof(AnimatorController),
+                $"Create one with animation.animator create_controller --path {(p.Length > 0 ? p : "Assets/Name.controller")}, or pass an existing .controller path or GUID.", path);
+            return AssetDatabase.LoadAssetAtPath<AnimatorController>(p);
         }
 
         public static AnimatorControllerLayer[] Layers(AnimatorController c) => c.layers;
@@ -61,11 +63,18 @@ namespace UnityCLIExtensions.Animation
         {
             var layers = c.layers;
             if (string.IsNullOrWhiteSpace(layer)) return 0;
-            if (int.TryParse(layer, out int i) && i >= 0 && i < layers.Length) return i;
+            if (int.TryParse(layer, out int i))
+            {
+                if (i >= 0 && i < layers.Length) return i;
+                throw new ArgumentException($"No layer {i}: the controller has {layers.Length} (0-{layers.Length - 1}: {string.Join(", ", layers.Select(l => l.name))}).");
+            }
             int found = Array.FindIndex(layers, l => string.Equals(l.name, layer.Trim(), StringComparison.OrdinalIgnoreCase));
-            if (found < 0) throw new ArgumentException($"No layer '{layer}'. Layers: {string.Join(", ", layers.Select(l => l.name))}");
+            if (found < 0) throw new ArgumentException($"No layer '{layer}'." + AnimationErrors.Hint(layer, layers.Select(l => l.name), "Layers", "cliext.animator inspect"));
             return found;
         }
+
+        private static string ParameterHint(AnimatorController c, string name) =>
+            AnimationErrors.Hint(name, c.parameters.Select(p => p.name), "Parameters", "cliext.animator inspect");
 
         /// <summary>Every state in a state machine and its sub-machines, with its path (Sub/State).</summary>
         public static IEnumerable<(string path, AnimatorState state, AnimatorStateMachine owner)> AllStates(AnimatorStateMachine sm, string prefix = "")
@@ -94,7 +103,7 @@ namespace UnityCLIExtensions.Animation
                 if (byName.Count > 1) throw new ArgumentException($"'{n}' names {byName.Count} states: {string.Join(", ", byName.Select(s => s.path))}. Use the path.");
                 match = byName.FirstOrDefault();
             }
-            if (match.state == null) throw new ArgumentException($"No state '{n}'. States: {string.Join(", ", all.Select(s => s.path))}");
+            if (match.state == null) throw new ArgumentException($"No state '{n}'." + AnimationErrors.Hint(n, all.Select(s => s.path), "States", "cliext.animator inspect"));
             return (match.state, match.owner);
         }
 
@@ -107,7 +116,9 @@ namespace UnityCLIExtensions.Animation
             var assets = AssetDatabase.LoadAllAssetsAtPath(path).OfType<Motion>().Where(m => !m.name.StartsWith("__preview__")).ToList();
             var motion = sub == null ? (AssetDatabase.LoadAssetAtPath<Motion>(path) ?? assets.FirstOrDefault())
                                      : assets.FirstOrDefault(m => string.Equals(m.name, sub, StringComparison.OrdinalIgnoreCase));
-            return motion ?? throw new ArgumentException($"No motion '{spec}'." + (assets.Count > 0 ? $" Clips there: {string.Join(", ", assets.Select(m => m.name))}" : ""));
+            return motion ?? throw new ArgumentException($"No motion '{spec}'." + (assets.Count > 0
+                ? $" Clips there: {string.Join(", ", assets.Select(m => m.name))}."
+                : " Give an .anim path, or a model's clip as Assets/Model.fbx@Clip (cliext.anim takes lists a model's clips; animation.clip create makes an .anim)."));
         }
 
         private static string MotionName(Motion m) => m == null ? null : m is BlendTree ? $"BlendTree({m.name})" : $"{AssetDatabase.GetAssetPath(m)}@{m.name}";
@@ -130,7 +141,7 @@ namespace UnityCLIExtensions.Animation
                     throw new ArgumentException($"{type.Name} has no settable '{name}'. It has: {string.Join(", ", type.GetProperties().Where(p => p.CanWrite && IsSimple(p.PropertyType)).Select(p => p.Name).Concat(type.GetFields().Where(f => IsSimple(f.FieldType)).Select(f => f.Name)))}");
                 Type valueType = prop != null ? prop.PropertyType : field.FieldType;
                 object v = valueType == typeof(Motion) ? LoadMotion(text)
-                         : valueType == typeof(AvatarMask) ? (object)(text == "" || text == "null" ? null : AssetDatabase.LoadAssetAtPath<AvatarMask>(text) ?? throw new ArgumentException($"No AvatarMask at '{text}'."))
+                         : valueType == typeof(AvatarMask) ? (object)(text == "" || text == "null" ? null : AssetDatabase.LoadAssetAtPath<AvatarMask>(text) ?? throw new ArgumentException($"No AvatarMask at '{text}'. Create one with cliext.anim mask --path {text}."))
                          : ValueText.Parse(text, valueType);
                 if (prop != null) prop.SetValue(target, v); else field.SetValue(target, v);
                 done.Add(prop != null ? prop.Name : field.Name);
@@ -148,9 +159,11 @@ namespace UnityCLIExtensions.Animation
             {
                 var bits = part.Trim().Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
                 if (bits.Length < 2) throw new ArgumentException($"Condition '{part}' should be 'Parameter Mode [Threshold]' (If, IfNot, Greater, Less, Equals, NotEqual).");
-                var param = c.parameters.FirstOrDefault(p => p.name == bits[0]) ?? throw new ArgumentException($"No parameter '{bits[0]}'. Parameters: {string.Join(", ", c.parameters.Select(p => p.name))}");
-                var mode = (AnimatorConditionMode)Enum.Parse(typeof(AnimatorConditionMode), bits[1], true);
-                float threshold = bits.Length > 2 ? float.Parse(bits[2], CultureInfo.InvariantCulture) : 0;
+                var param = c.parameters.FirstOrDefault(p => p.name == bits[0]) ?? throw new ArgumentException($"No parameter '{bits[0]}'." + ParameterHint(c, bits[0]));
+                var mode = AnimationErrors.ParseEnum<AnimatorConditionMode>(bits[1], "condition mode");
+                float threshold = bits.Length > 2 ? (float)ValueText.Parse(bits[2], typeof(float)) : 0;
+                if (bits.Length < 3 && mode != AnimatorConditionMode.If && mode != AnimatorConditionMode.IfNot)
+                    throw new ArgumentException($"Condition '{part.Trim()}' needs a threshold: '{param.name} {mode} 0.5'.");
                 if ((mode == AnimatorConditionMode.If || mode == AnimatorConditionMode.IfNot) && param.type != AnimatorControllerParameterType.Bool && param.type != AnimatorControllerParameterType.Trigger)
                     throw new ArgumentException($"{mode} needs a Bool or Trigger; {param.name} is {param.type}.");
                 list.Add(new AnimatorCondition { parameter = param.name, mode = mode, threshold = threshold });
@@ -167,7 +180,7 @@ namespace UnityCLIExtensions.Animation
             bool toExit = string.Equals(to, "Exit", StringComparison.OrdinalIgnoreCase);
             AnimatorState target = toExit ? null : FindState(root, to).state;
             var matches = candidates.Where(t => toExit ? t.isExit : t.destinationState == target).ToList();
-            if (matches.Count == 0) throw new ArgumentException($"No transition from {from} to {to}.");
+            if (matches.Count == 0) throw new ArgumentException($"No transition from {from} to {to}. cliext.animator inspect lists each state's transitions (Pipeline's animation.animator add_transition adds one).");
             if (index < 0 || index >= matches.Count) throw new ArgumentException($"{matches.Count} transition(s) from {from} to {to}; index {index} is out of range.");
             return matches[index];
         }
@@ -189,13 +202,19 @@ namespace UnityCLIExtensions.Animation
                 }
                 case "rename_state":
                 {
-                    var (state, _) = FindState(root, op.state);
-                    state.name = op.name;
-                    return new { op = "rename_state", state = op.name };
+                    var (state, owner) = FindState(root, op.state);
+                    if (string.IsNullOrWhiteSpace(op.name)) throw new ArgumentException("rename_state needs a name (the new name).");
+                    string newName = op.name.Trim();
+                    if (state.name == newName) throw new ArgumentException($"The state is already called '{newName}'.");
+                    if (owner.states.Any(s => s.state != state && string.Equals(s.state.name, newName, StringComparison.OrdinalIgnoreCase)))
+                        throw new ArgumentException($"There is already a state '{newName}' there; pick another name.");
+                    state.name = newName;
+                    return new { op = "rename_state", state = newName };
                 }
                 case "set_state":
                 {
                     var (state, _) = FindState(root, op.state);
+                    if (op.motion == null && string.IsNullOrWhiteSpace(op.set)) throw new ArgumentException("set_state needs a motion or set=\"name=value;...\" (speed, tag, writeDefaultValues, ...).");
                     if (op.motion != null) state.motion = LoadMotion(op.motion);
                     var done = SetMembers(state, op.set);
                     return new { op = "set_state", state = op.state, set = done, motion = MotionName(state.motion) };
@@ -203,25 +222,32 @@ namespace UnityCLIExtensions.Animation
                 case "set_default":
                 {
                     var (state, owner) = FindState(root, op.state);
+                    if (owner.defaultState == state) throw new ArgumentException($"'{op.state}' is already the default state.");
                     owner.defaultState = state;
                     return new { op = "set_default", state = op.state };
                 }
                 case "add_substatemachine":
                 {
-                    var parent = string.IsNullOrWhiteSpace(op.state) ? root : AllMachines(root).FirstOrDefault(m => string.Equals(m.path, op.state, StringComparison.OrdinalIgnoreCase)).sm
-                                 ?? throw new ArgumentException($"No sub-state machine '{op.state}'.");
-                    var sm = parent.AddStateMachine(op.name);
+                    if (string.IsNullOrWhiteSpace(op.name)) throw new ArgumentException("add_substatemachine needs a name (and state: the parent sub-state machine's path, or none for the layer).");
+                    var machines = AllMachines(root).ToList();
+                    var parent = string.IsNullOrWhiteSpace(op.state) ? root : machines.FirstOrDefault(m => string.Equals(m.path, op.state, StringComparison.OrdinalIgnoreCase)).sm
+                                 ?? throw new ArgumentException($"No sub-state machine '{op.state}'." + AnimationErrors.Hint(op.state, machines.Select(m => m.path), "Sub-state machines", "cliext.animator inspect"));
+                    if (parent.stateMachines.Any(s => string.Equals(s.stateMachine.name, op.name.Trim(), StringComparison.OrdinalIgnoreCase)))
+                        throw new ArgumentException($"There is already a sub-state machine '{op.name.Trim()}' there.");
+                    var sm = parent.AddStateMachine(op.name.Trim());
                     return new { op = "add_substatemachine", path = (string.IsNullOrWhiteSpace(op.state) ? "" : op.state + "/") + sm.name };
                 }
                 case "remove_substatemachine":
                 {
-                    var m = AllMachines(root).FirstOrDefault(x => string.Equals(x.path, op.state, StringComparison.OrdinalIgnoreCase));
-                    if (m.sm == null || m.parent == null) throw new ArgumentException($"No sub-state machine '{op.state}'.");
+                    var machines = AllMachines(root).ToList();
+                    var m = machines.FirstOrDefault(x => string.Equals(x.path, op.state, StringComparison.OrdinalIgnoreCase));
+                    if (m.sm == null || m.parent == null) throw new ArgumentException($"No sub-state machine '{op.state}'." + AnimationErrors.Hint(op.state, machines.Select(x => x.path), "Sub-state machines", "cliext.animator inspect"));
                     m.parent.RemoveStateMachine(m.sm);
                     return new { op = "remove_substatemachine", path = op.state };
                 }
                 case "set_transition":
                 {
+                    if (op.conditions == null && string.IsNullOrWhiteSpace(op.set)) throw new ArgumentException("set_transition needs conditions=\"Speed Greater 0.1;...\" (\"\" clears them) or set=\"hasExitTime=false;duration=0.1\".");
                     var t = FindTransition(root, op.from, op.to, op.index);
                     if (op.conditions != null) t.conditions = ParseConditions(c, op.conditions);
                     var done = SetMembers(t, op.set);
@@ -238,7 +264,7 @@ namespace UnityCLIExtensions.Animation
                 case "remove_parameter":
                 {
                     int pi = Array.FindIndex(c.parameters, p => p.name == op.name);
-                    if (pi < 0) throw new ArgumentException($"No parameter '{op.name}'.");
+                    if (pi < 0) throw new ArgumentException($"No parameter '{op.name}'." + ParameterHint(c, op.name));
                     int stripped = 0;
                     foreach (var layer in c.layers)
                         foreach (var t in AllTransitions(layer.stateMachine))
@@ -253,8 +279,10 @@ namespace UnityCLIExtensions.Animation
                 {
                     var ps = c.parameters;
                     int pi = Array.FindIndex(ps, p => p.name == op.name);
-                    if (pi < 0) throw new ArgumentException($"No parameter '{op.name}'.");
+                    if (pi < 0) throw new ArgumentException($"No parameter '{op.name}'." + ParameterHint(c, op.name));
                     var p = ps[pi];
+                    if (p.type == AnimatorControllerParameterType.Trigger) throw new ArgumentException($"'{p.name}' is a Trigger: it has no default value.");
+                    if (op.value == null) throw new ArgumentException($"set_parameter needs a value (the default for {p.type} '{p.name}').");
                     switch (p.type)
                     {
                         case AnimatorControllerParameterType.Float: p.defaultFloat = (float)ValueText.Parse(op.value, typeof(float)); break;
@@ -266,48 +294,93 @@ namespace UnityCLIExtensions.Animation
                 }
                 case "set_layer":
                 {
+                    if (string.IsNullOrWhiteSpace(op.set)) throw new ArgumentException("set_layer needs set=\"defaultWeight=1;blendingMode=Additive;...\".");
                     var layer = layers[li];
                     var done = SetMembers(layer, op.set);
                     c.layers = layers;
                     return new { op = "set_layer", layer = layer.name, set = done };
                 }
                 case "remove_layer":
+                    if (string.IsNullOrWhiteSpace(op.layer)) throw new ArgumentException("remove_layer needs the layer (name or index); it doesn't default to the first.");
                     if (layers.Length == 1) throw new ArgumentException("A controller needs one layer.");
                     c.RemoveLayer(li);
                     return new { op = "remove_layer", layer = layers[li].name };
                 case "add_blendtree":
                 {
                     if (string.IsNullOrWhiteSpace(op.state)) throw new ArgumentException("add_blendtree needs the state's name.");
+                    var blendType = string.IsNullOrEmpty(op.type) ? BlendTreeType.Simple1D : AnimationErrors.ParseEnum<BlendTreeType>(op.type, "blend tree type");
+                    bool twoD = blendType != BlendTreeType.Simple1D && blendType != BlendTreeType.Direct;
+                    foreach (var (key, given) in new[] { ("parameter", op.parameter), ("parameterY", op.parameterY) })
+                    {
+                        if (blendType == BlendTreeType.Direct || (key == "parameterY" && !twoD)) continue;
+                        if (string.IsNullOrEmpty(given)) throw new ArgumentException($"A {blendType} blend tree needs {key} (a Float parameter).");
+                        var bp = c.parameters.FirstOrDefault(x => x.name == given) ?? throw new ArgumentException($"No parameter '{given}' for the blend tree." + ParameterHint(c, given));
+                        if (bp.type != AnimatorControllerParameterType.Float) throw new ArgumentException($"'{given}' is {bp.type}; a blend tree needs a Float parameter.");
+                    }
+                    // Children first, so a bad one fails before anything is added to the controller.
+                    var kids = new List<(Motion motion, float[] at)>();
+                    foreach (string child in (op.children ?? "").Split(new[] { ';' }, StringSplitOptions.RemoveEmptyEntries))
+                    {
+                        int at = child.LastIndexOf('@');
+                        if (at <= 0) throw new ArgumentException($"Child '{child}' should be clip@threshold or clip@x,y.");
+                        var motion = LoadMotion(child.Substring(0, at).Trim());
+                        var nums = child.Substring(at + 1).Split(',').Select(s => (float)ValueText.Parse(s.Trim(), typeof(float))).ToArray();
+                        if (twoD && nums.Length < 2) throw new ArgumentException($"Child '{child}' needs a position x,y for a {blendType} blend tree.");
+                        kids.Add((motion, nums));
+                    }
                     BlendTree tree;
                     var existing = AllStates(root).FirstOrDefault(s => string.Equals(s.path, op.state, StringComparison.OrdinalIgnoreCase)).state;
                     if (existing != null)
                     {
                         tree = new BlendTree { name = op.state.Split('/').Last(), hideFlags = HideFlags.HideInHierarchy };
                         AssetDatabase.AddObjectToAsset(tree, c);
+                        Undo.RegisterCreatedObjectUndo(tree, "add_blendtree");
                         existing.motion = tree;
                     }
                     else
                     {
                         var state = c.CreateBlendTreeInController(op.state, out tree, li);
                     }
-                    tree.blendType = string.IsNullOrEmpty(op.type) ? BlendTreeType.Simple1D : (BlendTreeType)Enum.Parse(typeof(BlendTreeType), op.type, true);
+                    tree.blendType = blendType;
                     if (!string.IsNullOrEmpty(op.parameter)) tree.blendParameter = op.parameter;
                     if (!string.IsNullOrEmpty(op.parameterY)) tree.blendParameterY = op.parameterY;
                     tree.useAutomaticThresholds = false;
-                    foreach (string child in (op.children ?? "").Split(new[] { ';' }, StringSplitOptions.RemoveEmptyEntries))
+                    foreach (var (motion, nums) in kids)
                     {
-                        int at = child.LastIndexOf('@');
-                        if (at <= 0) throw new ArgumentException($"Child '{child}' should be clip@threshold or clip@x,y.");
-                        var motion = LoadMotion(child.Substring(0, at).Trim());
-                        var nums = child.Substring(at + 1).Split(',').Select(s => float.Parse(s.Trim(), CultureInfo.InvariantCulture)).ToArray();
-                        if (tree.blendType == BlendTreeType.Simple1D || tree.blendType == BlendTreeType.Direct) tree.AddChild(motion, nums[0]);
-                        else tree.AddChild(motion, new Vector2(nums[0], nums.Length > 1 ? nums[1] : 0));
+                        if (!twoD) tree.AddChild(motion, nums[0]);
+                        else tree.AddChild(motion, new Vector2(nums[0], nums[1]));
                     }
                     return new { op = "add_blendtree", state = op.state, type = tree.blendType.ToString(), children = tree.children.Length };
                 }
                 default:
                     throw new ArgumentException($"Unknown op '{op.op}'. Ops: remove_state, rename_state, set_state, set_default, add_substatemachine, remove_substatemachine, set_transition, remove_transition, remove_parameter, set_parameter, set_layer, remove_layer, add_blendtree.");
             }
+        }
+
+        /// <summary>
+        /// Applies every op and saves the controller once, or, when one fails, puts the controller back as it was on
+        /// disk and in memory (states and transitions the batch removed included) and saves nothing.
+        /// </summary>
+        public static bool TryApplyAll(AnimatorController c, IList<AnimatorOp> ops, List<object> results, out int failedAt, out string error)
+        {
+            failedAt = -1;
+            error = null;
+            using var rollback = AssetRollback.Begin(new[] { AssetDatabase.GetAssetPath(c) }, revertUndo: true);
+            for (int i = 0; i < ops.Count; i++)
+            {
+                try { results.Add(Apply(c, ops[i])); }
+                catch (Exception e)
+                {
+                    failedAt = i;
+                    error = AnimationErrors.Message(e);
+                    results.Clear();
+                    rollback.Rollback();
+                    return false;
+                }
+            }
+            EditorUtility.SetDirty(c);
+            AssetDatabase.SaveAssetIfDirty(c);
+            return true;
         }
 
         public static IEnumerable<AnimatorStateTransition> AllTransitions(AnimatorStateMachine root) =>

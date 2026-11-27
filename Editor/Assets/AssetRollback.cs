@@ -13,6 +13,9 @@ namespace UnityCLIExtensions
     /// unloading the objects, so the next access reloads them from disk), deletes asset files created inside the
     /// watched folders, and restores any file that changed or went missing. <see cref="Dispose"/> drops the copies.
     /// Reimporting is not enough: Unity keeps a loaded native asset's in-memory state across a reimport.
+    /// Unloading can't bring back a sub-asset the batch destroyed (an AnimatorController's state, transition or
+    /// sub-state machine): pass <c>revertUndo</c> for assets whose editing API records Undo, and the rollback first
+    /// reverts the batch's Undo group, which recreates them.
     /// </summary>
     public sealed class AssetRollback : IDisposable
     {
@@ -20,11 +23,16 @@ namespace UnityCLIExtensions
         private readonly Dictionary<string, string> _files = new Dictionary<string, string>(); // asset path -> backup copy
         private readonly List<string> _folders = new List<string>();
         private readonly HashSet<string> _existingInFolders = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        private int _undoGroup = -1;
 
         private AssetRollback(string backupDir) { _backupDir = backupDir; }
 
-        /// <summary>Watches the given asset files, and every asset file inside the given folders (new ones included).</summary>
-        public static AssetRollback Begin(IEnumerable<string> assetPaths, IEnumerable<string> folders = null)
+        /// <summary>
+        /// Watches the given asset files, and every asset file inside the given folders (new ones included). With
+        /// <paramref name="revertUndo"/>, the edits made after this call go in an Undo group of their own that
+        /// <see cref="Rollback"/> reverts.
+        /// </summary>
+        public static AssetRollback Begin(IEnumerable<string> assetPaths, IEnumerable<string> folders = null, bool revertUndo = false)
         {
             var r = new AssetRollback(Path.Combine("Temp", "CLIExtensions", "rollback", Guid.NewGuid().ToString("N")));
             Directory.CreateDirectory(r._backupDir);
@@ -59,12 +67,34 @@ namespace UnityCLIExtensions
                 if (File.Exists(p + ".meta")) File.Copy(p + ".meta", copy + ".meta", true);
                 r._files[p] = copy;
             }
+            if (revertUndo)
+            {
+                // Every object in the files is recorded whole, so the revert also undoes changes the editing API
+                // doesn't record itself (a state's name set directly).
+                Undo.IncrementCurrentGroup();
+                r._undoGroup = Undo.GetCurrentGroup();
+                foreach (var p in paths) AssetDatabase.LoadAllAssetsAtPath(p);
+                var objects = Loaded(paths);
+                if (objects.Length > 0) Undo.RegisterCompleteObjectUndo(objects, "cliext batch");
+            }
             return r;
         }
 
         /// <summary>Puts the watched assets back as they were at <see cref="Begin"/>, on disk and in memory.</summary>
         public void Rollback()
         {
+            // With revertUndo: the batch's Undo group puts the objects back, sub-assets it destroyed (an
+            // AnimatorController's states and transitions) included. Unloading instead would lose those: Unity can't
+            // reload a sub-asset destroyed in memory from the unchanged file, so the next save would drop it.
+            bool reverted = false;
+            if (_undoGroup >= 0)
+            {
+                Undo.RevertAllDownToGroup(_undoGroup);
+                _undoGroup = -1;
+                reverted = true;
+                foreach (var o in Loaded(_files.Keys)) EditorUtility.ClearDirty(o);
+            }
+
             // Asset files the batch created inside the watched folders.
             foreach (var folder in _folders)
             {
@@ -78,7 +108,7 @@ namespace UnityCLIExtensions
             }
 
             // In-memory edits: unloaded objects reload from disk on their next access, keeping their ids.
-            Unload(_files.Keys);
+            if (!reverted) Unload(_files.Keys);
 
             // Files the batch changed or deleted.
             var restored = new List<string>();
@@ -113,15 +143,21 @@ namespace UnityCLIExtensions
         // a VFX Graph's editor model, which would otherwise keep the batch's edits and save them with the next change.
         private static void Unload(IEnumerable<string> paths)
         {
-            var set = new HashSet<string>(paths, StringComparer.OrdinalIgnoreCase);
-            if (set.Count == 0) return;
-            foreach (var o in Resources.FindObjectsOfTypeAll<UnityEngine.Object>())
+            foreach (var o in Loaded(paths))
             {
-                if (o == null || o is GameObject || o is Component || o is AssetBundle) continue;
-                if (!EditorUtility.IsPersistent(o) || !set.Contains(AssetDatabase.GetAssetPath(o))) continue;
                 EditorUtility.ClearDirty(o);
                 Resources.UnloadAsset(o);
             }
+        }
+
+        private static UnityEngine.Object[] Loaded(IEnumerable<string> paths)
+        {
+            var set = new HashSet<string>(paths, StringComparer.OrdinalIgnoreCase);
+            if (set.Count == 0) return Array.Empty<UnityEngine.Object>();
+            return Resources.FindObjectsOfTypeAll<UnityEngine.Object>()
+                .Where(o => o != null && !(o is GameObject) && !(o is Component) && !(o is AssetBundle))
+                .Where(o => EditorUtility.IsPersistent(o) && set.Contains(AssetDatabase.GetAssetPath(o)))
+                .ToArray();
         }
 
         private static bool SameBytes(string a, string b)

@@ -24,7 +24,7 @@ namespace UnityCLIExtensions.Animation
         internal static ExitCode Inspect(CommandContext cmd, [CliArg("path", "The .controller asset path or GUID", Required = true)] string path)
         {
             try { cmd.Result.Write(AnimatorEditing.Describe(AnimatorEditing.Load(path))); return ExitCode.Success; }
-            catch (ArgumentException e) { cmd.Fail(e.Message); return ExitCode.NotFound; }
+            catch (ArgumentException e) { cmd.Fail(e.Message); return AnimationErrors.Exit(e); }
         }
 
         [CliGroupCommand(Group, "Check an AnimatorController: states with no motion, unreachable states, transitions that can never fire, conditions on missing or mistyped parameters, " +
@@ -34,17 +34,17 @@ namespace UnityCLIExtensions.Animation
         {
             AnimatorController c;
             try { c = AnimatorEditing.Load(path); }
-            catch (ArgumentException e) { cmd.Fail(e.Message); return ExitCode.NotFound; }
+            catch (ArgumentException e) { cmd.Fail(e.Message); return AnimationErrors.Exit(e); }
             var issues = AnimatorEditing.Validate(c);
             foreach (var i in issues) cmd.Result.WriteRecord(i);
             int errors = issues.Count(i => (string)i.GetType().GetProperty("severity").GetValue(i) == "error");
-            if (errors > 0) { cmd.Fail($"{errors} error(s)."); return ExitCode.Failed; }
+            if (errors > 0) { cmd.Fail($"{errors} error(s) in the controller; each record says where. Fix them with cliext.animator edit."); return ExitCode.Failed; }
             return ExitCode.Success;
         }
 
         [CliGroupCommand(Group, "Edit an AnimatorController with a JSON list of ops, saved once: remove_state, rename_state, set_state (motion, set=\"speed=1.2;tag=Move;writeDefaultValues=false;speedParameterActive=true;speedParameter=Speed\"), " +
                                 "set_default, add_substatemachine, remove_substatemachine, set_transition (from, to or Exit, from Any; conditions=\"Speed Greater 0.1;Grounded If\"; set=\"hasExitTime=false;duration=0.1\"), " +
-                                "remove_transition, remove_parameter (also strips its conditions), set_parameter (default value), set_layer (set=\"defaultWeight=1;blendingMode=Additive;iKPass=true\"), remove_layer, " +
+                                "remove_transition, remove_parameter (also strips its conditions), set_parameter (default value), set_layer (set=\"defaultWeight=1;blendingMode=Additive;iKPass=true\"), remove_layer (layer, required). Ops take layer (name or index, default the first). " +
                                 "add_blendtree (state, type Simple1D|SimpleDirectional2D|FreeformDirectional2D|FreeformCartesian2D|Direct, parameter, parameterY, children=\"Assets/Walk.anim@0;Assets/Run.anim@1\"). " +
                                 "Pipeline's animation.animator commands add states, transitions, parameters and layers. An op that fails saves nothing: the controller is left as it was.",
             Name = "edit", Tags = new[] { "cliext", "animation" }, Effect = CommandEffect.Destructive)]
@@ -62,24 +62,14 @@ namespace UnityCLIExtensions.Animation
 
             AnimatorController c;
             try { c = AnimatorEditing.Load(path); }
-            catch (ArgumentException e) { cmd.Fail(e.Message); return ExitCode.NotFound; }
-            string assetPath = AssetDatabase.GetAssetPath(c);
-            using var rollback = AssetRollback.Begin(new[] { assetPath });
+            catch (ArgumentException e) { cmd.Fail(e.Message); return AnimationErrors.Exit(e); }
             var results = new List<object>();
-            for (int i = 0; i < list.ops.Length; i++)
+            if (!AnimatorEditing.TryApplyAll(c, list.ops, results, out int failedAt, out string message))
             {
-                try { results.Add(AnimatorEditing.Apply(c, list.ops[i])); }
-                catch (Exception e)
-                {
-                    string message = e is ArgumentException ? e.Message : e.ToString();
-                    rollback.Rollback();
-                    cmd.Result.Write(new { path, applied = 0, failedAt = i, error = message, saved = false });
-                    cmd.Fail($"Op {i} ({list.ops[i].op}) failed: {message} Nothing was saved.");
-                    return ExitCode.Failed;
-                }
+                cmd.Result.Write(new { path, applied = 0, failedAt, error = message, saved = false });
+                cmd.Fail($"Op {failedAt} ({list.ops[failedAt].op}) failed: {message} Nothing was saved.");
+                return ExitCode.Failed;
             }
-            EditorUtility.SetDirty(c);
-            AssetDatabase.SaveAssets();
             var issues = AnimatorEditing.Validate(c).Where(x => (string)x.GetType().GetProperty("severity").GetValue(x) == "error").ToArray();
             cmd.Result.Write(new { path, applied = results.Count, results, errors = issues });
             return ExitCode.Success;
@@ -93,8 +83,10 @@ namespace UnityCLIExtensions.Animation
             Name = "live", Tags = new[] { "cliext", "animation" }, Effect = CommandEffect.ReadOnly)]
         internal static ExitCode Live(CommandContext cmd, [CliArg("object", "GameObject name or hierarchy path with an Animator", Required = true)] string obj)
         {
+            if (!NeedPlayMode(cmd, "live")) return ExitCode.Failed;
             var animator = FindAnimator(obj, out string error);
             if (animator == null) { cmd.Fail(error); return ExitCode.NotFound; }
+            if (animator.runtimeAnimatorController == null) { cmd.Fail(NoController(animator)); return ExitCode.Failed; }
             var names = StateNames(animator);
             string Name(int hash) => names.TryGetValue(hash, out var n) ? n : hash.ToString();
             cmd.Result.Write(new
@@ -142,35 +134,72 @@ namespace UnityCLIExtensions.Animation
             [CliArg("layer", "The layer index for --state (default -1: the first layer that has the state)")] int layer = -1,
             [CliArg("fade", "Cross-fade seconds for --state")] float fade = 0.1f)
         {
+            bool hasState = !string.IsNullOrWhiteSpace(state), hasParameter = !string.IsNullOrWhiteSpace(parameter);
+            if (hasState == hasParameter)
+            {
+                cmd.Fail(hasState ? "Pass --parameter (with --value) or --state, not both." : "Pass --parameter with --value to set a parameter, or --state to play a state.");
+                return ExitCode.InvalidUsage;
+            }
+            if (!NeedPlayMode(cmd, "drive")) return ExitCode.Failed;
             var animator = FindAnimator(obj, out string error);
             if (animator == null) { cmd.Fail(error); return ExitCode.NotFound; }
-            if (!string.IsNullOrWhiteSpace(state))
+            if (animator.runtimeAnimatorController == null) { cmd.Fail(NoController(animator)); return ExitCode.Failed; }
+            if (hasState)
             {
-                animator.CrossFadeInFixedTime(state, fade, layer);
+                if (layer < -1 || layer >= animator.layerCount) { cmd.Fail($"No layer {layer}: the Animator has {animator.layerCount} (0-{animator.layerCount - 1}, or -1 for the first that has the state)."); return ExitCode.InvalidUsage; }
+                int hash = Animator.StringToHash(state.Trim());
+                var layers = layer >= 0 ? new[] { layer } : Enumerable.Range(0, animator.layerCount).ToArray();
+                if (!layers.Any(l => animator.HasState(l, hash)))
+                {
+                    var names = StateNames(animator).Values.ToList();
+                    cmd.Fail($"No state '{state}'{(layer >= 0 ? $" on layer {layer}" : "")}. Give Layer.State or the state's name." +
+                             AnimationErrors.Hint(state, names, "States", "cliext.animator inspect"));
+                    return ExitCode.NotFound;
+                }
+                animator.CrossFadeInFixedTime(hash, fade, layer);
                 cmd.Result.Write(new { state, layer, fade });
                 return ExitCode.Success;
             }
             var p = animator.parameters.FirstOrDefault(x => x.name == parameter);
-            if (p == null) { cmd.Fail($"No parameter '{parameter}'. Parameters: {string.Join(", ", animator.parameters.Select(x => x.name))}"); return ExitCode.NotFound; }
-            switch (p.type)
+            if (p == null) { cmd.Fail($"No parameter '{parameter}'." + AnimationErrors.Hint(parameter, animator.parameters.Select(x => x.name), "Parameters", "cliext.animator live")); return ExitCode.NotFound; }
+            if (string.IsNullOrEmpty(value) && p.type != AnimatorControllerParameterType.Trigger)
             {
-                case AnimatorControllerParameterType.Float: animator.SetFloat(p.nameHash, (float)ValueText.Parse(value, typeof(float))); break;
-                case AnimatorControllerParameterType.Int: animator.SetInteger(p.nameHash, (int)ValueText.Parse(value, typeof(int))); break;
-                case AnimatorControllerParameterType.Bool: animator.SetBool(p.nameHash, (bool)ValueText.Parse(value, typeof(bool))); break;
-                case AnimatorControllerParameterType.Trigger:
-                    if (string.IsNullOrEmpty(value) || (bool)ValueText.Parse(value, typeof(bool))) animator.SetTrigger(p.nameHash); else animator.ResetTrigger(p.nameHash);
-                    break;
+                cmd.Fail($"'{p.name}' is {p.type}: pass --value ({(p.type == AnimatorControllerParameterType.Bool ? "true or false" : "a number")}).");
+                return ExitCode.InvalidUsage;
             }
+            try
+            {
+                switch (p.type)
+                {
+                    case AnimatorControllerParameterType.Float: animator.SetFloat(p.nameHash, (float)ValueText.Parse(value, typeof(float))); break;
+                    case AnimatorControllerParameterType.Int: animator.SetInteger(p.nameHash, (int)ValueText.Parse(value, typeof(int))); break;
+                    case AnimatorControllerParameterType.Bool: animator.SetBool(p.nameHash, (bool)ValueText.Parse(value, typeof(bool))); break;
+                    case AnimatorControllerParameterType.Trigger:
+                        if (string.IsNullOrEmpty(value) || (bool)ValueText.Parse(value, typeof(bool))) animator.SetTrigger(p.nameHash); else animator.ResetTrigger(p.nameHash);
+                        break;
+                }
+            }
+            catch (ArgumentException e) { cmd.Fail(e.Message); return ExitCode.InvalidUsage; }
             cmd.Result.Write(new { parameter = p.name, type = p.type.ToString(), value });
             return ExitCode.Success;
         }
+
+        private static bool NeedPlayMode(CommandContext cmd, string command)
+        {
+            if (EditorApplication.isPlaying) return true;
+            cmd.Fail($"cliext.animator {command} works on a running Animator: enter Play mode first (editor.playmode start). To read or change the controller asset, use cliext.animator inspect or edit.");
+            return false;
+        }
+
+        private static string NoController(Animator animator) =>
+            $"{animator.gameObject.name}'s Animator has no controller. Give it one (the Animator's Controller field), then run this again.";
 
         private static Animator FindAnimator(string obj, out string error)
         {
             error = null;
             var go = GameObject.Find(obj) ?? UnityEngine.Object.FindObjectsByType<Animator>(FindObjectsInactive.Include)
                 .Select(a => a.gameObject).FirstOrDefault(g => string.Equals(g.name, obj, StringComparison.OrdinalIgnoreCase));
-            if (go == null) { error = $"No GameObject '{obj}' in the open scenes."; return null; }
+            if (go == null) { error = $"No GameObject '{obj}' in the open scenes. Give its name or hierarchy path (scene get_hierarchy lists them)."; return null; }
             var animator = go.GetComponent<Animator>() ?? go.GetComponentInChildren<Animator>();
             if (animator == null) error = $"{go.name} has no Animator.";
             return animator;

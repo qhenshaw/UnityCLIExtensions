@@ -1061,6 +1061,474 @@ Add-Check 'sg.edit-usage' 'cliext.shadergraph' 'cliext.shadergraph edit with no 
     "no ops 2, bad JSON 2, unknown op $($op.exit), empty move/rename/set $($mv.exit)/$($rn.exit)/$($sv.exit)"
 }
 
+# --- cliext.animator, cliext.anim -------------------------------------------------------------------------------------
+
+# Scratch copies of the TestLevel models (new GUIDs, via AssetDatabase.CopyAsset), a generic .anim and a two-state
+# controller, made once by Need-AnimAssets; the committed assets are only read.
+$script:animCtl = "$scratchRel/CliTestAnim.controller"
+$script:animClip = "$scratchRel/CliTestBob.anim"
+$script:animIdle = "$scratchRel/CliTestIdle.fbx"
+$script:animChar = "$scratchRel/CliTestCharacter.fbx"
+$script:animMask = "$scratchRel/CliTestUpper.mask"
+$script:animReady = $false
+$animRow = 'cliext.animator, cliext.anim'
+
+function Need-AnimAssets {
+    if ($script:animReady) { return }
+    $code = @'
+string dir = "{{dir}}";
+if (!UnityEditor.AssetDatabase.IsValidFolder("Assets/_CliextTests")) UnityEditor.AssetDatabase.CreateFolder("Assets", "_CliextTests");
+if (!UnityEditor.AssetDatabase.IsValidFolder(dir)) UnityEditor.AssetDatabase.CreateFolder("Assets/_CliextTests", "CliTest");
+foreach (var p in new[] { "{{ctl}}", "{{clip}}", "{{idle}}", "{{char}}", "{{mask}}" }) UnityEditor.AssetDatabase.DeleteAsset(p);
+if (!UnityEditor.AssetDatabase.CopyAsset("Assets/TestLevel/Animations/standing idle.fbx", "{{idle}}")) return "copy idle failed";
+if (!UnityEditor.AssetDatabase.CopyAsset("Assets/TestLevel/Characters/characterMedium.fbx", "{{char}}")) return "copy character failed";
+var clip = new UnityEngine.AnimationClip();
+clip.SetCurve("", typeof(UnityEngine.Transform), "m_LocalPosition.y", UnityEngine.AnimationCurve.Linear(0, 0, 1, 1));
+UnityEditor.AssetDatabase.CreateAsset(clip, "{{clip}}");
+var c = UnityEditor.Animations.AnimatorController.CreateAnimatorControllerAtPath("{{ctl}}");
+c.AddParameter("Speed", UnityEngine.AnimatorControllerParameterType.Float);
+c.AddParameter("Jump", UnityEngine.AnimatorControllerParameterType.Trigger);
+c.AddParameter("Grounded", UnityEngine.AnimatorControllerParameterType.Bool);
+var sm = c.layers[0].stateMachine;
+var idle = sm.AddState("Idle");
+idle.motion = UnityEditor.AssetDatabase.LoadAllAssetsAtPath("{{idle}}").OfType<UnityEngine.AnimationClip>().First(x => !x.name.StartsWith("__preview__"));
+var run = sm.AddState("Run");
+var t = idle.AddTransition(run); t.AddCondition(UnityEditor.Animations.AnimatorConditionMode.Greater, 0.1f, "Speed"); t.hasExitTime = false;
+var back = run.AddTransition(idle); back.AddCondition(UnityEditor.Animations.AnimatorConditionMode.Less, 0.1f, "Speed"); back.hasExitTime = false;
+sm.defaultState = idle;
+UnityEditor.EditorUtility.SetDirty(c);
+UnityEditor.AssetDatabase.SaveAssets();
+return "ok";
+'@
+    $code = $code.Replace('{{dir}}', $scratchRel).Replace('{{ctl}}', $script:animCtl).Replace('{{clip}}', $script:animClip).Replace('{{idle}}', $script:animIdle).Replace('{{char}}', $script:animChar).Replace('{{mask}}', $script:animMask)
+    $r = Invoke-Cli @('script', 'eval', '--file', (Write-WorkFile 'anim-setup.cs' $code), '--timeout', '120', '--format', 'json') 180
+    Expect ($r.exit -eq 0 -and "$($r.stdout)" -match 'ok') "scratch animation assets: exit $($r.exit): $(Short ($r.stdout + $r.stderr))"
+    $script:animReady = $true
+}
+function Get-AnimHash([string]$rel) { (Get-FileHash (Join-Path $projectPath ($rel -replace '/', '\'))).Hash }
+function Write-AnimOps([string]$name, [string]$json) { Write-WorkFile $name $json }
+function Get-AnimController { $r = Invoke-Cli @('cliext.animator', 'inspect', '--path', $script:animCtl, '--format', 'json'); Expect ($r.exit -eq 0) "inspect: exit $($r.exit): $(Short $r.stderr)"; $r.json }
+function Get-AnimClip([string]$path) { $r = Invoke-Cli @('cliext.anim', 'clip', '--path', $path, '--keys', 'true', '--format', 'json'); Expect ($r.exit -eq 0) "clip: exit $($r.exit): $(Short $r.stderr)"; $r.json }
+function Get-AnimTakes { $r = Invoke-Cli @('cliext.anim', 'takes', '--path', $script:animIdle, '--format', 'json'); Expect ($r.exit -eq 0) "takes: exit $($r.exit): $(Short $r.stderr)"; $r.json }
+function Get-AnimKeys($clip, [string]$property) { @((@($clip.curves) | Where-Object { $_.property -eq $property } | Select-Object -First 1).values) -join ' ' }
+function Get-AnimMemory {
+    # The controller as the Editor holds it in memory (not reloaded from disk): states with their transition counts,
+    # sub-state machines, parameters with defaults, and the first layer's default state.
+    $code = @'
+var c = UnityEditor.AssetDatabase.LoadAssetAtPath<UnityEditor.Animations.AnimatorController>("{{ctl}}");
+var sm = c.layers[0].stateMachine;
+return string.Join(",", sm.states.Select(s => s.state.name + "[" + s.state.transitions.Length + "]" + (s.state.motion == null ? "" : "=" + s.state.motion.name)))
+    + "|" + string.Join(",", sm.stateMachines.Select(m => m.stateMachine.name))
+    + "|" + string.Join(",", c.parameters.Select(p => p.name + "=" + p.defaultFloat.ToString(System.Globalization.CultureInfo.InvariantCulture)))
+    + "|" + c.layers.Length + "|" + (sm.defaultState != null ? sm.defaultState.name : "");
+'@
+    $r = Invoke-Cli @('script', 'eval', '--file', (Write-WorkFile 'anim-mem.cs' $code.Replace('{{ctl}}', $script:animCtl)), '--format', 'json')
+    Expect ($r.exit -eq 0) "script eval: exit $($r.exit): $(Short ($r.stdout + $r.stderr))"
+    $r.stdout.Trim().Trim('"')
+}
+function Expect-AnimFailure($r, [string]$hint, [string]$file, [string]$before, [string]$what, [int]$exit = 6) {
+    Expect ($r.exit -ne 124) "${what}: timed out"
+    Expect ($r.exit -eq $exit) "${what}: exit $($r.exit), expected ${exit}: $(Short ($r.stdout + $r.stderr))"
+    Expect ("$($r.stderr)" -match $hint) "${what}: the error doesn't say '$hint': $(Short $r.stderr)"
+    Expect ("$($r.stderr)" -notmatch '   at |Exception:') "${what}: a stack trace instead of a message: $(Short $r.stderr)"
+    if ($before) { Expect ((Get-AnimHash $file) -eq $before) "${what}: $file changed on disk" }
+}
+function Test-AnimFailures([string[]]$command, [string]$file, [object[]]$cases) {
+    # Each case: ops JSON, the hint the error must hold, a label. Every one exits 6 and leaves the file as it was.
+    $before = Get-AnimHash $file
+    $seen = @()
+    $i = 0
+    foreach ($c in $cases) {
+        $i++
+        $r = Invoke-Cli ($command + @('--ops-file', (Write-AnimOps "anim-fail-$i.json" $c[0]), '--format', 'json'))
+        Expect-AnimFailure $r $c[1] $file $before $c[2]
+        Expect ($r.json.saved -eq $false -and $r.json.failedAt -eq 0) "$($c[2]): reply $(Short $r.stdout)"
+        $seen += $c[2]
+    }
+    "$($seen.Count) failures exit 6 with the fix, file unchanged"
+}
+
+Add-Check 'anim.takes' $animRow 'cliext.anim takes lists a copied model''s rig, take and clip; a missing model exits 13 saying how to get one, a .anim exits 2' {
+    Need-AnimAssets
+    $t = Get-AnimTakes
+    Expect ($t.animationType -eq 'Human') "rig: $($t.animationType)"
+    Expect (@($t.takes | ForEach-Object { $_.name }) -contains 'mixamo.com') "takes: $(Short ($t.takes | ConvertTo-Json -Compress))"
+    Expect (@($t.clips | ForEach-Object { $_.name }) -contains 'standing idle') "clips: $(Short ($t.clips | ConvertTo-Json -Compress))"
+    $none = Invoke-Cli @('cliext.anim', 'takes', '--path', "$scratchRel/NoSuch.fbx", '--format', 'json')
+    Expect-AnimFailure $none 'No model at.*Import the model' '' '' 'missing model' 13
+    $anim = Invoke-Cli @('cliext.anim', 'takes', '--path', $script:animClip, '--format', 'json')
+    Expect-AnimFailure $anim 'is an AnimationClip, not a model' '' '' 'a .anim as the model' 2
+    "Human rig, take mixamo.com, clip 'standing idle'; missing 13, .anim 2"
+}
+
+Add-Check 'anim.edit-clips' $animRow 'cliext.anim edit_clips adds a clip, sets loop and events, and takes shows them after the reimport; bad clip names, ranges, events, masks and no-op ops fail and leave the import settings as they were' {
+    Need-AnimAssets
+    $ops = '[{"op":"add_clip","name":"IdleShort","first":0,"last":20,"set":"loopTime=true"},{"op":"set_clip","name":"standing idle","set":"loopPose=true"},{"op":"set_events","name":"IdleShort","events":"0.5:Step;0.9:Step:Left"}]'
+    $r = Invoke-Cli @('cliext.anim', 'edit_clips', '--path', $script:animIdle, '--ops-file', (Write-AnimOps 'anim-clips.json' $ops), '--format', 'json') 180
+    Expect ($r.exit -eq 0 -and $r.json.applied -eq 3) "exit $($r.exit): $(Short ($r.stdout + $r.stderr))"
+    $t = Get-AnimTakes
+    $short = @($t.clips) | Where-Object { $_.name -eq 'IdleShort' }
+    Expect ($null -ne $short -and $short.first -eq 0 -and $short.last -eq 20 -and $short.loopTime -eq $true) "IdleShort: $(Short ($short | ConvertTo-Json -Compress))"
+    Expect ((@($short.events) -join ',') -eq '0.5:Step,0.9:Step:Left') "events: $(@($short.events) -join ',')"
+    Expect ((@($t.clips) | Where-Object { $_.name -eq 'standing idle' }).loopPose -eq $true) 'standing idle loopPose not set'
+    $sub = Invoke-Cli @('cliext.anim', 'clip', '--path', "$($script:animIdle)@IdleShort", '--format', 'json')
+    Expect ($sub.exit -eq 0 -and [math]::Abs($sub.json.length - (20 / 30)) -lt 0.01) "the imported IdleShort clip: exit $($sub.exit): $(Short ($sub.stdout + $sub.stderr))"
+    $meta = "$($script:animIdle).meta"
+    $detail = Test-AnimFailures @('cliext.anim', 'edit_clips', '--path', $script:animIdle) $meta @(
+        @('[{"op":"set_clip","name":"IdleShrt","set":"loopTime=false"}]', 'Did you mean: IdleShort', 'unknown clip, close match'),
+        @('[{"op":"remove_clip","name":"Zzqx"}]', 'Clips:.*cliext\.anim takes', 'unknown clip, no match'),
+        @('[{"op":"add_clip","first":0,"last":10}]', 'add_clip needs a name', 'add_clip without a name'),
+        @('[{"op":"add_clip","name":"IdleShort"}]', 'already has a clip', 'duplicate clip name'),
+        @('[{"op":"add_clip","name":"Back","first":40,"last":10}]', 'first must be 0 or more and last after it', 'last before first'),
+        @('[{"op":"add_clip","name":"X","take":"Nope"}]', 'No take.*mixamo\.com', 'unknown take'),
+        @('[{"op":"set_clip","name":"IdleShort"}]', 'set_clip needs first, last or set', 'set_clip that changes nothing'),
+        @('[{"op":"set_clip","name":"IdleShort","set":"loopPose=maybe"}]', 'true or false', 'non-boolean setting'),
+        @('[{"op":"set_events","name":"IdleShort","events":"x:Step"}]', "isn't a number", 'non-numeric event time'),
+        @('[{"op":"set_events","name":"IdleShort","events":"1.5:Step"}]', 'normalized times from 0 to 1', 'event time past the end'),
+        @('[{"op":"set_mask","name":"IdleShort","mask":"Assets/_CliextTests/CliTest/NoSuch.mask"}]', 'cliext\.anim mask --path', 'missing mask'),
+        @('[{"op":"frob"}]', 'Unknown op.*add_clip, set_clip', 'unknown op')
+    )
+    $before = Get-AnimHash $meta
+    $batch = '[{"op":"remove_clip","name":"standing idle"},{"op":"add_clip","name":"Extra"},{"op":"set_clip","name":"IdleShort","set":"loopTime=false"},{"op":"set_clip","name":"NoSuchClip","set":"loopTime=true"}]'
+    $b = Invoke-Cli @('cliext.anim', 'edit_clips', '--path', $script:animIdle, '--ops-file', (Write-AnimOps 'anim-clips-batch.json' $batch), '--format', 'json')
+    Expect-AnimFailure $b 'Op 3 \(set_clip\) failed.*Nothing was saved' $meta $before 'batch with one bad op'
+    Expect ($b.json.failedAt -eq 3 -and $b.json.saved -eq $false) "batch reply: $(Short $b.stdout)"
+    $t2 = Get-AnimTakes
+    Expect ((@($t2.clips | ForEach-Object { $_.name }) -join ',') -eq 'standing idle,IdleShort') "clips after the failed batch: $(@($t2.clips | ForEach-Object { $_.name }) -join ',')"
+    Expect ((@($t2.clips) | Where-Object { $_.name -eq 'IdleShort' }).loopTime -eq $true) "the failed batch's loopTime=false was kept"
+    "IdleShort 0-20 looping with 2 events; $detail; bad batch saved nothing"
+}
+
+Add-Check 'anim.clip' $animRow 'cliext.anim clip describes an .anim and a model clip; a missing .anim exits 13 naming animation.clip create, a missing model clip lists the clips, a controller exits 2' {
+    Need-AnimAssets
+    $c = Get-AnimClip $script:animClip
+    Expect ((Get-AnimKeys $c 'm_LocalPosition.y') -eq '0=0 1=1') "y keys: $(Get-AnimKeys $c 'm_LocalPosition.y')"
+    Expect ($c.length -eq 1 -and $c.humanoid -eq $false) "length $($c.length), humanoid $($c.humanoid)"
+    $m = Get-AnimClip "$($script:animIdle)@standing idle"
+    Expect ($m.humanoid -eq $true -and $m.length -gt 1) "model clip: humanoid $($m.humanoid), length $($m.length)"
+    $none = Invoke-Cli @('cliext.anim', 'clip', '--path', "$scratchRel/NoSuch.anim", '--format', 'json')
+    Expect-AnimFailure $none 'animation\.clip create --path' '' '' 'missing .anim' 13
+    $sub = Invoke-Cli @('cliext.anim', 'clip', '--path', "$($script:animIdle)@Standing Idel", '--format', 'json')
+    Expect-AnimFailure $sub "No clip 'Standing Idel'.*standing idle" '' '' 'missing model clip' 13
+    $ctl = Invoke-Cli @('cliext.anim', 'clip', '--path', $script:animCtl, '--format', 'json')
+    Expect-AnimFailure $ctl 'is an AnimatorController, not an AnimationClip' '' '' 'a controller as the clip' 2
+    "y keys 0=0 1=1; model clip humanoid $([math]::Round($m.length, 2))s; missing 13, missing model clip 13, controller 2"
+}
+
+Add-Check 'anim.edit-clip' $animRow 'cliext.anim edit_clip adds keys, an event and settings, and clip shows them; a missing time, value, function or curve, a bad tangent or type, and no-op ops fail with the fix and save nothing' {
+    Need-AnimAssets
+    $ops = '[{"op":"set_key","property":"m_LocalPosition.y","time":0.5,"value":2,"tangent":"linear"},{"op":"set_key","property":"m_LocalPosition.y","time":1,"value":3},{"op":"add_event","time":0.25,"function":"Step","parameter":"Left"},{"op":"set_settings","set":"loopTime=true","value":30}]'
+    $r = Invoke-Cli @('cliext.anim', 'edit_clip', '--path', $script:animClip, '--ops-file', (Write-AnimOps 'anim-clip.json' $ops), '--format', 'json')
+    Expect ($r.exit -eq 0 -and $r.json.applied -eq 4) "exit $($r.exit): $(Short ($r.stdout + $r.stderr))"
+    $c = Get-AnimClip $script:animClip
+    Expect ((Get-AnimKeys $c 'm_LocalPosition.y') -eq '0=0 0.5=2 1=3') "y keys: $(Get-AnimKeys $c 'm_LocalPosition.y')"
+    Expect (@($c.events).Count -eq 1 -and $c.events[0].function -eq 'Step' -and $c.events[0].stringParameter -eq 'Left') "events: $(Short ($c.events | ConvertTo-Json -Compress))"
+    Expect ($c.settings.loopTime -eq $true -and $c.frameRate -eq 30) "loopTime $($c.settings.loopTime), frameRate $($c.frameRate)"
+    $detail = Test-AnimFailures @('cliext.anim', 'edit_clip', '--path', $script:animClip) $script:animClip @(
+        @('[{"op":"set_key","property":"m_LocalPosition.y","value":1}]', 'set_key needs a time', 'set_key without a time'),
+        @('[{"op":"set_key","property":"m_LocalPosition.y","time":0.2}]', 'set_key needs a value', 'set_key without a value'),
+        @('[{"op":"set_key","property":"m_LocalPosition.y","time":0.2,"value":"abc"}]', "isn't a number", 'non-numeric value'),
+        @('[{"op":"set_key","property":"m_LocalPosition.y","time":0.2,"value":1,"tangent":"smooth"}]', 'Use one of: auto, linear, constant, free', 'unknown tangent'),
+        @('[{"op":"set_key","type":"Transfrm","property":"m_LocalPosition.y","time":0.2,"value":1}]', 'Did you mean: Transform', 'misspelled component type'),
+        @('[{"op":"remove_key","property":"m_LocalPosition.y","time":0.7}]', 'No key at 0.7s.*0, 0.5, 1', 'remove_key where there is none'),
+        @('[{"op":"remove_key","path":"Arm","property":"m_LocalPosition.y","time":0}]', 'no curve.*Curves:.*cliext\.anim clip', 'remove_key on a curve the clip lacks'),
+        @('[{"op":"add_event","time":0.1}]', 'add_event needs a function', 'add_event without a function'),
+        @('[{"op":"add_event","function":"Hit"}]', 'add_event needs a time', 'add_event without a time'),
+        @('[{"op":"remove_event","function":"Nope"}]', 'No event calling Nope.*0.25:Step', 'remove_event that matches nothing'),
+        @('[{"op":"remove_event"}]', 'needs a time or a function', 'remove_event with nothing to match'),
+        @('[{"op":"set_settings"}]', 'set_settings needs', 'set_settings that changes nothing'),
+        @('[{"op":"set_settings","set":"looptim=true"}]', 'no settable .looptim.*loopTime', 'unknown setting')
+    )
+    $imp = Invoke-Cli @('cliext.anim', 'edit_clip', '--path', "$($script:animIdle)@standing idle", '--ops-file', (Write-AnimOps 'anim-imported.json' '[{"op":"add_event","time":0.1,"function":"X"}]'), '--format', 'json')
+    Expect-AnimFailure $imp 'cliext\.anim edit_clips on the model' "$($script:animIdle).meta" (Get-AnimHash "$($script:animIdle).meta") 'a model''s clip' 2
+    "y 0=0 0.5=2 1=3, Step(Left) at 0.25, loop at 30 fps; $detail; a model's clip exit 2"
+}
+
+Add-Check 'anim.edit-clip-rollback' $animRow 'an edit_clip batch with one bad op saves nothing, on disk or in memory, and the next good edit saves only its own change' {
+    Need-AnimAssets
+    $before = Get-AnimHash $script:animClip
+    $c0 = Get-AnimClip $script:animClip
+    $ops = '[{"op":"set_key","property":"m_LocalPosition.x","time":0,"value":5},{"op":"remove_key","property":"m_LocalPosition.y","time":0},{"op":"add_event","time":0.3,"function":"Hit"},{"op":"remove_event","function":"Step"},{"op":"set_settings","set":"loopTime=false","value":24},{"op":"remove_key","property":"m_LocalPosition.y","time":9}]'
+    $r = Invoke-Cli @('cliext.anim', 'edit_clip', '--path', $script:animClip, '--ops-file', (Write-AnimOps 'anim-clip-bad.json' $ops), '--format', 'json')
+    Expect-AnimFailure $r 'Op 5 \(remove_key\) failed.*Nothing was saved' $script:animClip $before 'bad batch'
+    Expect ($r.json.saved -eq $false -and $r.json.failedAt -eq 5 -and $r.json.applied -eq 0) "reply: $(Short $r.stdout)"
+    $c1 = Get-AnimClip $script:animClip
+    Expect (($c1.curves | ConvertTo-Json -Compress) -eq ($c0.curves | ConvertTo-Json -Compress)) "curves in memory changed: $(Short ($c1.curves | ConvertTo-Json -Compress))"
+    Expect ((@($c1.events | ForEach-Object { $_.function }) -join ',') -eq 'Step' -and $c1.settings.loopTime -eq $true -and $c1.frameRate -eq 30) "events/settings in memory: $(@($c1.events | ForEach-Object { $_.function }) -join ','), loopTime $($c1.settings.loopTime), $($c1.frameRate) fps"
+    $ok = Invoke-Cli @('cliext.anim', 'edit_clip', '--path', $script:animClip, '--ops-file', (Write-AnimOps 'anim-clip-good.json' '[{"op":"add_event","time":0.75,"function":"Land"}]'), '--format', 'json')
+    Expect ($ok.exit -eq 0) "good edit: exit $($ok.exit): $(Short ($ok.stdout + $ok.stderr))"
+    $text = Get-Content (Join-Path $projectPath ($script:animClip -replace '/', '\')) -Raw
+    Expect ($text -match 'functionName: Land' -and $text -match 'functionName: Step' -and $text -notmatch 'functionName: Hit') 'the saved events are not Step and Land only'
+    $c2 = Get-AnimClip $script:animClip
+    Expect ((Get-AnimKeys $c2 'm_LocalPosition.y') -eq '0=0 0.5=2 1=3') "the failed batch's key removal was saved: $(Get-AnimKeys $c2 'm_LocalPosition.y')"
+    Expect ((Get-AnimKeys $c2 'm_LocalPosition.x') -notmatch '=5') "the failed batch's x key was saved: $(Get-AnimKeys $c2 'm_LocalPosition.x')"
+    Expect ($c2.settings.loopTime -eq $true -and $c2.frameRate -eq 30) "the failed batch's settings were saved: loopTime $($c2.settings.loopTime), $($c2.frameRate) fps"
+    'failed at op 5, file and memory unchanged; next edit saved only its own event'
+}
+
+Add-Check 'anim.mask' $animRow 'cliext.anim mask creates a mask, lists a model''s transforms and turns one off; a path outside Assets, an unknown body part, a bad bool, a missing --from model or an unknown transform fail, create nothing and change nothing' {
+    Need-AnimAssets
+    $bare = $script:animMask -replace '\.mask$', ''
+    $r = Invoke-Cli @('cliext.anim', 'mask', '--path', $bare, '--humanoid', 'Head=false;LeftArm=false', '--format', 'json')
+    Expect ($r.exit -eq 0 -and $r.json.created -eq $true -and $r.json.path -eq $script:animMask) "create: exit $($r.exit): $(Short ($r.stdout + $r.stderr))"
+    $f = Invoke-Cli @('cliext.anim', 'mask', '--path', $script:animMask, '--from', $script:animChar, '--transforms', 'Root/HipsCtrl/Hips/Spine/*=false', '--format', 'json')
+    Expect ($f.exit -eq 0 -and $f.json.created -eq $false -and $f.json.transforms -gt 10) "--from and --transforms: exit $($f.exit): $(Short ($f.stdout + $f.stderr))"
+    $off = @($f.json.transformsOff)
+    Expect ($off.Count -gt 1 -and @($off | Where-Object { $_ -ne 'Root/HipsCtrl/Hips/Spine' -and $_ -notlike 'Root/HipsCtrl/Hips/Spine/*' }).Count -eq 0) "transforms off: $(Short ($off -join ', '))"
+    $read = Write-WorkFile 'anim-mask.cs' ("var m = UnityEditor.AssetDatabase.LoadAssetAtPath<UnityEngine.AvatarMask>(`"$($script:animMask)`"); return m.GetHumanoidBodyPartActive(UnityEngine.AvatarMaskBodyPart.Head) + `"/`" + m.GetHumanoidBodyPartActive(UnityEngine.AvatarMaskBodyPart.LeftArm) + `"/`" + m.GetHumanoidBodyPartActive(UnityEngine.AvatarMaskBodyPart.RightArm) + `"/`" + m.transformCount;")
+    $s = Invoke-Cli @('script', 'eval', '--file', $read, '--format', 'json')
+    Expect ("$($s.stdout)" -match "False/False/True/$($f.json.transforms)") "the mask asset: $(Short ($s.stdout + $s.stderr))"
+    $before = Get-AnimHash $script:animMask
+    $cases = @(
+        @(@('--path', 'NotAssets/CliTest.mask', '--humanoid', 'Head=false'), "isn't under Assets/", 2, 'path outside Assets'),
+        @(@('--path', "$scratchRel/CliTestNew.mask", '--humanoid', 'Hed=false'), 'Use one of: Root, Body, Head.*RightHandIK\.', 2, 'unknown body part'),
+        @(@('--path', $script:animMask, '--humanoid', 'Head=maybe'), 'true or false', 2, 'non-boolean body part'),
+        @(@('--path', "$scratchRel/CliTestNew.mask", '--from', "$scratchRel/NoSuch.fbx"), 'No model at.*Import the model', 13, 'missing --from model'),
+        @(@('--path', $script:animMask, '--humanoid', 'RightArm=false', '--transforms', 'Hips=false'), 'Did you mean: Root/HipsCtrl', 6, 'unknown transform after a good body part'),
+        @(@('--path', "$scratchRel/CliTestNew.mask", '--transforms', 'Hips=false'), 'pass --from a model', 6, 'transforms on a new mask with none')
+    )
+    $seen = @()
+    foreach ($k in $cases) {
+        $x = Invoke-Cli (@('cliext.anim', 'mask') + $k[0] + @('--format', 'json'))
+        Expect-AnimFailure $x $k[1] $script:animMask $before $k[3] $k[2]
+        $seen += "$($k[3]) $($x.exit)"
+    }
+    Expect (-not (Test-Path (Join-Path $scratch 'CliTestNew.mask'))) 'a failed call created CliTestNew.mask'
+    Expect (-not (Test-Path (Join-Path $projectPath 'NotAssets'))) 'a NotAssets folder was made'
+    $s2 = Invoke-Cli @('script', 'eval', '--file', $read, '--format', 'json')
+    Expect ("$($s2.stdout)" -match "False/False/True/") "a failed call changed the mask in memory: $(Short $s2.stdout)"
+    "created with Head and LeftArm off; $($f.json.transforms) transforms, $($off.Count) off; $($seen -join ', ')"
+}
+
+Add-Check 'anim.check' $animRow 'cliext.anim check passes humanoid clips on the humanoid model, fails (exit 6, saying why) on a generic clip, and a missing model or --clips entry exits 13' {
+    Need-AnimAssets
+    $ok = Invoke-Cli @('cliext.anim', 'check', '--model', $script:animChar, '--clips', $script:animCtl, '--format', 'json')
+    Expect ($ok.exit -eq 0) "controller clips: exit $($ok.exit): $(Short ($ok.stdout + $ok.stderr))"
+    Expect (@(@($ok.json) | Where-Object { $_.clip -eq 'standing idle' -and $_.ok -eq $true }).Count -eq 1) "no ok record for standing idle: $(Short $ok.stdout)"
+    $bad = Invoke-Cli @('cliext.anim', 'check', '--model', $script:animChar, '--clips', "$($script:animCtl);$($script:animClip)", '--format', 'json')
+    Expect ($bad.exit -eq 6) "a generic clip: exit $($bad.exit), expected 6"
+    Expect (@(@($bad.json) | Where-Object { $_.ok -eq $false -and "$($_.issues)" -match 'Generic clip on a humanoid model' }).Count -eq 1) "no record for the generic clip: $(Short $bad.stdout)"
+    Expect ("$($bad.stderr)" -match 'problem') "stderr doesn't say why it exited 6: $(Short $bad.stderr)"
+    $nm = Invoke-Cli @('cliext.anim', 'check', '--model', "$scratchRel/NoSuch.fbx", '--clips', $script:animCtl, '--format', 'json')
+    Expect-AnimFailure $nm 'No model or prefab at' '' '' 'missing model' 13
+    $nc = Invoke-Cli @('cliext.anim', 'check', '--model', $script:animChar, '--clips', "$scratchRel/NoSuch.controller", '--format', 'json')
+    Expect-AnimFailure $nc "nothing at '.*NoSuch\.controller'" '' '' 'missing --clips entry' 13
+    "humanoid clips ok; generic clip exit 6; missing model 13, missing --clips 13"
+}
+
+Add-Check 'anim.animator-inspect-validate' $animRow 'cliext.animator inspect describes the controller and validate flags a transition that can never fire (exit 6), which an edit fixes' {
+    Need-AnimAssets
+    $g = Get-AnimController
+    Expect ((@($g.parameters | ForEach-Object { $_.name }) -join ',') -eq 'Speed,Jump,Grounded') "parameters: $(@($g.parameters | ForEach-Object { $_.name }) -join ',')"
+    $idle = @($g.layers[0].states) | Where-Object { $_.path -eq 'Idle' }
+    Expect ($g.layers[0].defaultState -eq 'Idle' -and "$($idle.motion)" -match 'CliTestIdle\.fbx@standing idle') "Idle: $(Short ($idle | ConvertTo-Json -Compress))"
+    Expect ((@($idle.transitions)[0].conditions -join ',') -eq 'Speed Greater 0.1') "Idle -> Run: $(Short ($idle.transitions | ConvertTo-Json -Compress))"
+    $v = Invoke-Cli @('cliext.animator', 'validate', '--path', $script:animCtl, '--format', 'json')
+    Expect ($v.exit -eq 0) "validate: exit $($v.exit): $(Short ($v.stdout + $v.stderr))"
+    Expect (@(@($v.json) | Where-Object { $_.where -eq 'Base Layer/Run' -and $_.problem -match 'No motion' }).Count -eq 1) "no warning for Run's missing motion: $(Short $v.stdout)"
+    $e = Invoke-Cli @('cliext.animator', 'edit', '--path', $script:animCtl, '--ops-file', (Write-AnimOps 'anim-never.json' '[{"op":"set_transition","from":"Run","to":"Idle","conditions":""}]'), '--format', 'json')
+    Expect ($e.exit -eq 0 -and @($e.json.errors).Count -eq 1) "clearing Run -> Idle's conditions: exit $($e.exit), errors $(Short ($e.json.errors | ConvertTo-Json -Compress))"
+    $bad = Invoke-Cli @('cliext.animator', 'validate', '--path', $script:animCtl, '--format', 'json')
+    Expect ($bad.exit -eq 6 -and "$($bad.stderr)" -match 'error') "validate with a dead transition: exit $($bad.exit): $(Short $bad.stderr)"
+    Expect (@(@($bad.json) | Where-Object { $_.severity -eq 'error' -and $_.problem -match 'never fire' }).Count -eq 1) "no error record: $(Short $bad.stdout)"
+    $fix = Invoke-Cli @('cliext.animator', 'edit', '--path', $script:animCtl, '--ops-file', (Write-AnimOps 'anim-fix.json' '[{"op":"set_transition","from":"Run","to":"Idle","conditions":"Speed Less 0.1"}]'), '--format', 'json')
+    Expect ($fix.exit -eq 0 -and @($fix.json.errors).Count -eq 0) "restoring the condition: exit $($fix.exit): $(Short ($fix.stdout + $fix.stderr))"
+    $ok = Invoke-Cli @('cliext.animator', 'validate', '--path', $script:animCtl, '--format', 'json')
+    Expect ($ok.exit -eq 0) "validate after the fix: exit $($ok.exit)"
+    'inspect shows Idle, its clip and transition; a dead transition makes validate exit 6; fixed, exit 0'
+}
+
+Add-Check 'anim.animator-edit' $animRow 'cliext.animator edit sets a motion, conditions, a 1D blend tree, a sub-state machine, a rename, a default and a layer in one call; inspect shows them all' {
+    Need-AnimAssets
+    $idleClip = "$($script:animIdle)@standing idle"
+    $ops = @"
+[{"op":"set_state","state":"Run","motion":"$idleClip","set":"speed=1.5;tag=Move"},
+ {"op":"set_transition","from":"Idle","to":"Run","conditions":"Speed Greater 0.2;Grounded If","set":"duration=0.2"},
+ {"op":"add_blendtree","state":"Move","parameter":"Speed","children":"$idleClip@0;$($script:animClip)@1"},
+ {"op":"add_substatemachine","name":"Air"},
+ {"op":"set_parameter","name":"Speed","value":"0.25"},
+ {"op":"rename_state","state":"Move","name":"Locomotion"},
+ {"op":"set_layer","set":"iKPass=true"}]
+"@
+    $r = Invoke-Cli @('cliext.animator', 'edit', '--path', $script:animCtl, '--ops-file', (Write-AnimOps 'anim-edit.json' $ops), '--format', 'json')
+    Expect ($r.exit -eq 0 -and $r.json.applied -eq 7) "exit $($r.exit): $(Short ($r.stdout + $r.stderr))"
+    $g = Get-AnimController
+    $l = $g.layers[0]
+    $run = @($l.states) | Where-Object { $_.path -eq 'Run' }
+    Expect ("$($run.motion)" -match 'standing idle' -and $run.speed -eq 1.5 -and $run.tag -eq 'Move') "Run: $(Short ($run | ConvertTo-Json -Compress))"
+    $idle = @($l.states) | Where-Object { $_.path -eq 'Idle' }
+    $t = @($idle.transitions)[0]
+    Expect (($t.conditions -join ',') -eq 'Speed Greater 0.2,Grounded If' -and $t.duration -eq 0.2) "Idle -> Run: $(Short ($t | ConvertTo-Json -Compress))"
+    $loco = @($l.states) | Where-Object { $_.path -eq 'Locomotion' }
+    Expect ($null -ne $loco -and $loco.blendTree.type -eq 'Simple1D' -and $loco.blendTree.parameter -eq 'Speed' -and @($loco.blendTree.children).Count -eq 2) "Locomotion: $(Short ($loco | ConvertTo-Json -Compress -Depth 5))"
+    Expect (@($l.subMachines) -contains 'Air' -and $l.ik -eq $true) "sub-machines $(@($l.subMachines) -join ','), ik $($l.ik)"
+    Expect ((@($g.parameters) | Where-Object { $_.name -eq 'Speed' }).default -eq '0.25') 'Speed default is not 0.25'
+    "7 ops in one call; Run has a motion, Idle -> Run 2 conditions, Locomotion a 1D tree of 2, Air, IK on"
+}
+
+Add-Check 'anim.animator-edit-errors' $animRow 'cliext.animator edit fails (exit 6) with the fix on unknown states, parameters, layers, modes, motions and blend tree parameters, bad numbers, and ops that would do nothing, saving nothing' {
+    Need-AnimAssets
+    Test-AnimFailures @('cliext.animator', 'edit', '--path', $script:animCtl) $script:animCtl @(
+        @('[{"op":"remove_state","state":"Runn"}]', 'Did you mean: Run', 'unknown state, close match'),
+        @('[{"op":"remove_state","state":"Zzqx"}]', 'States:.*cliext\.animator inspect', 'unknown state, no match'),
+        @('[{"op":"set_transition","from":"Idle","to":"Run","conditions":"Sped Greater 0.1"}]', 'Did you mean: Speed', 'condition on a misspelled parameter'),
+        @('[{"op":"set_transition","from":"Idle","to":"Run","conditions":"Speed Biggr 0.1"}]', 'Use one of: If, IfNot, Greater', 'unknown condition mode'),
+        @('[{"op":"set_transition","from":"Idle","to":"Run","conditions":"Speed Greater abc"}]', "'abc' isn't a Single value", 'non-numeric threshold'),
+        @('[{"op":"set_transition","from":"Idle","to":"Run","conditions":"Speed Greater"}]', 'needs a threshold', 'Greater without a threshold'),
+        @('[{"op":"set_transition","from":"Run","to":"Locomotion"}]', 'set_transition needs conditions', 'set_transition that changes nothing'),
+        @('[{"op":"remove_transition","from":"Run","to":"Run"}]', 'No transition from Run to Run.*inspect', 'missing transition'),
+        @('[{"op":"set_state","state":"Run","motion":"Assets/_CliextTests/CliTest/NoSuch.anim"}]', 'animation\.clip create', 'missing motion'),
+        @('[{"op":"set_state","state":"Run","set":"speed=fast"}]', "'fast' isn't a Single value", 'non-numeric speed'),
+        @('[{"op":"set_state","state":"Run"}]', 'set_state needs a motion or set', 'set_state that changes nothing'),
+        @('[{"op":"rename_state","state":"Run"}]', 'rename_state needs a name', 'rename without a name'),
+        @('[{"op":"rename_state","state":"Run","name":"Idle"}]', 'already a state .Idle', 'rename onto another state'),
+        @('[{"op":"set_default","state":"Idle"}]', 'already the default', 'set_default to the default'),
+        @('[{"op":"add_substatemachine"}]', 'add_substatemachine needs a name', 'sub-state machine without a name'),
+        @('[{"op":"remove_substatemachine","state":"Ground"}]', 'Sub-state machines: Air', 'unknown sub-state machine'),
+        @('[{"op":"set_parameter","name":"Jump","value":"1"}]', 'Trigger: it has no default', 'default on a Trigger'),
+        @('[{"op":"set_parameter","name":"Speed"}]', 'set_parameter needs a value', 'set_parameter without a value'),
+        @('[{"op":"remove_parameter","name":"Sped"}]', 'Did you mean: Speed', 'remove a misspelled parameter'),
+        @('[{"op":"set_layer","set":"blendingMode=Mix"}]', 'Use one of: Override, Additive', 'unknown blending mode'),
+        @('[{"op":"set_layer"}]', 'set_layer needs set', 'set_layer that changes nothing'),
+        @('[{"op":"set_layer","layer":"Upper","set":"defaultWeight=1"}]', "No layer 'Upper'.*Base Layer", 'unknown layer'),
+        @('[{"op":"remove_layer"}]', 'remove_layer needs the layer', 'remove_layer without a layer'),
+        @('[{"op":"add_blendtree","state":"Strafe","type":"Simple3D","parameter":"Speed"}]', 'Use one of: Simple1D, SimpleDirectional2D', 'unknown blend tree type'),
+        @('[{"op":"add_blendtree","state":"Strafe","parameter":"Nope"}]', "No parameter 'Nope'", 'blend tree on a missing parameter'),
+        @('[{"op":"add_blendtree","state":"Strafe","parameter":"Grounded"}]', 'needs a Float parameter', 'blend tree on a Bool'),
+        @('[{"op":"add_blendtree","state":"Strafe","parameter":"Speed","children":"Assets/_CliextTests/CliTest/CliTestBob.anim@x"}]', "'x' isn't a Single value", 'non-numeric child threshold'),
+        @('[{"op":"frob"}]', 'Unknown op.*remove_state, rename_state', 'unknown op')
+    )
+}
+
+Add-Check 'anim.animator-rollback' $animRow 'an animator edit batch with one bad op saves nothing, on disk or in memory (removed states and transitions come back), and the next good edit saves only its own change' {
+    Need-AnimAssets
+    $before = Get-AnimHash $script:animCtl
+    $m0 = Get-AnimMemory
+    $g0 = Get-AnimController
+    $ops = '[{"op":"add_substatemachine","name":"Ground"},{"op":"remove_state","state":"Run"},{"op":"remove_substatemachine","state":"Air"},{"op":"remove_parameter","name":"Grounded"},{"op":"rename_state","state":"Idle","name":"Rest"},{"op":"set_state","state":"Locomotion","set":"speed=3"},{"op":"add_blendtree","state":"Strafe","parameter":"Speed"},{"op":"set_parameter","name":"Speed","value":"9"},{"op":"remove_state","state":"NoSuchState"}]'
+    $r = Invoke-Cli @('cliext.animator', 'edit', '--path', $script:animCtl, '--ops-file', (Write-AnimOps 'anim-bad-batch.json' $ops), '--format', 'json')
+    Expect-AnimFailure $r 'Op 8 \(remove_state\) failed.*Nothing was saved' $script:animCtl $before 'bad batch'
+    Expect ($r.json.saved -eq $false -and $r.json.failedAt -eq 8 -and $r.json.applied -eq 0) "reply: $(Short $r.stdout)"
+    $m1 = Get-AnimMemory
+    Expect ($m1 -eq $m0) "in memory: '$m0' -> '$m1'"
+    $good = Invoke-Cli @('cliext.animator', 'edit', '--path', $script:animCtl, '--ops-file', (Write-AnimOps 'anim-good.json' '[{"op":"set_state","state":"Idle","set":"tag=Rest"}]'), '--format', 'json')
+    Expect ($good.exit -eq 0) "good edit: exit $($good.exit): $(Short ($good.stdout + $good.stderr))"
+    $g2 = Get-AnimController
+    Expect ((@($g2.layers[0].states) | Where-Object { $_.path -eq 'Idle' }).tag -eq 'Rest') "the good edit's tag isn't there"
+    # Apart from Idle's tag, the controller is as it was before the failed batch.
+    $strip = { param($g) foreach ($s in @($g.layers[0].states)) { if ($s.path -eq 'Idle') { $s.tag = '' } }; $g | ConvertTo-Json -Compress -Depth 8 }
+    $j0 = & $strip $g0; $j2 = & $strip $g2
+    Expect ($j2 -eq $j0) "the saved controller differs beyond the good edit: $(Short $j2 200)"
+    $text = Get-Content (Join-Path $projectPath ($script:animCtl -replace '/', '\')) -Raw
+    Expect ($text -match 'm_Name: Run' -and $text -match 'm_Name: Air' -and $text -notmatch 'm_Name: (Ground|Strafe|Rest)\r?\n') 'the file on disk has the failed batch''s states or lost Run/Air'
+    "failed at op 8, file and memory unchanged ($m1); next edit saved only Idle's tag"
+}
+
+Add-Check 'anim.missing-asset' $animRow 'every cliext.animator and cliext.anim command given an asset that does not exist exits 13 at once, naming how to make or get one; an asset of another type exits 2' {
+    Need-AnimAssets
+    $f = Write-AnimOps 'anim-one.json' '[{"op":"set_default","state":"Idle"}]'
+    $noCtl = "$scratchRel/NoSuch.controller"; $noAnim = "$scratchRel/NoSuch.anim"; $noFbx = "$scratchRel/NoSuch.fbx"
+    $cases = @(
+        @(@('cliext.animator', 'inspect', '--path', $noCtl), 'animation\.animator create_controller'),
+        @(@('cliext.animator', 'validate', '--path', $noCtl), 'animation\.animator create_controller'),
+        @(@('cliext.animator', 'edit', '--path', $noCtl, '--ops-file', $f), 'animation\.animator create_controller'),
+        @(@('cliext.anim', 'clip', '--path', $noAnim), 'animation\.clip create'),
+        @(@('cliext.anim', 'edit_clip', '--path', $noAnim, '--ops-file', $f), 'animation\.clip create'),
+        @(@('cliext.anim', 'takes', '--path', $noFbx), 'Import the model'),
+        @(@('cliext.anim', 'edit_clips', '--path', $noFbx, '--ops-file', $f), 'Import the model'),
+        @(@('cliext.anim', 'check', '--model', $noFbx, '--clips', $script:animCtl), 'Import the model'),
+        @(@('cliext.anim', 'mask', '--path', "$scratchRel/CliTestNew.mask", '--from', $noFbx), 'Import the model')
+    )
+    $bad = @()
+    foreach ($c in $cases) {
+        $r = Invoke-Cli ($c[0] + @('--format', 'json')) 60
+        if ($r.exit -ne 13 -or "$($r.stderr)" -notmatch $c[1] -or $r.ms -gt 30000) { $bad += "$($c[0][1]) $($c[0][2]): exit $($r.exit) in $($r.ms) ms ($(Short $r.stderr 80))" }
+    }
+    $wrong = @(
+        @(@('cliext.animator', 'inspect', '--path', $script:animClip), 'is an AnimationClip, not an AnimatorController'),
+        @(@('cliext.animator', 'edit', '--path', $script:animIdle, '--ops-file', $f), 'not an AnimatorController'),
+        @(@('cliext.anim', 'edit_clip', '--path', $script:animCtl, '--ops-file', $f), 'is an AnimatorController, not an AnimationClip'),
+        @(@('cliext.anim', 'edit_clips', '--path', $script:animClip, '--ops-file', $f), 'not a model'),
+        @(@('cliext.anim', 'check', '--model', $script:animClip, '--clips', $script:animCtl), 'not a model or prefab'),
+        @(@('cliext.anim', 'mask', '--path', $script:animClip), 'not an AvatarMask')
+    )
+    foreach ($c in $wrong) {
+        $r = Invoke-Cli ($c[0] + @('--format', 'json')) 60
+        if ($r.exit -ne 2 -or "$($r.stderr)" -notmatch $c[1]) { $bad += "$($c[0][1]) $($c[0][2]) (wrong type): exit $($r.exit) ($(Short $r.stderr 80))" }
+    }
+    Expect ($bad.Count -eq 0) ($bad -join '; ')
+    foreach ($left in 'NoSuch.controller', 'NoSuch.anim', 'NoSuch.fbx', 'CliTestNew.mask', 'CliTestBob.anim.mask') { Expect (-not (Test-Path (Join-Path $scratch $left))) "a failed call left $left" }
+    "all $($cases.Count) missing exit 13 with the way to get one; $($wrong.Count) wrong types exit 2"
+}
+
+Add-Check 'anim.play-mode' $animRow 'cliext.animator live and drive refuse Edit mode with the fix; in Play mode they read and drive the Player''s Animator, reject bad parameters, values and states, and an edit still applies and stays' {
+    Need-AnimAssets
+    foreach ($cmd in @(@('live'), @('drive', '--parameter', 'Speed', '--value', '1'))) {
+        $e = Invoke-Cli (@('cliext.animator') + $cmd + @('--object', 'Player', '--format', 'json'))
+        Expect-AnimFailure $e 'enter Play mode first \(editor\.playmode start\)' '' '' "$($cmd[0]) in Edit mode" 6
+    }
+    $none = Invoke-Cli @('cliext.animator', 'drive', '--object', 'Player', '--format', 'json')
+    Expect-AnimFailure $none 'Pass --parameter with --value.*or --state' '' '' 'drive with nothing to do' 2
+    $scenes = Invoke-Cli @('scene', 'list_open', '--format', 'json')
+    $open = @($scenes.json) | Where-Object { $_.isActive } | Select-Object -First 1
+    Expect (-not (@($scenes.json) | Where-Object { $_.isDirty })) "an open scene has unsaved changes: $(Short $scenes.stdout)"
+    $level = 'Assets/Scenes/TestLevel.unity'
+    $openCs = { param($p) Write-WorkFile 'anim-open.cs' "UnityEditor.SceneManagement.EditorSceneManager.OpenScene(`"$p`", UnityEditor.SceneManagement.OpenSceneMode.Single); return UnityEngine.SceneManagement.SceneManager.GetActiveScene().path + `"|`" + UnityEngine.SceneManagement.SceneManager.GetActiveScene().isDirty;" }
+    if ($open.path -ne $level) { [void](Invoke-Cli @('script', 'eval', '--file', (& $openCs $level), '--format', 'json')) }
+    $assign = Write-WorkFile 'anim-assign.cs' ("var a = UnityEngine.GameObject.Find(`"Player`").GetComponentInChildren<UnityEngine.Animator>(); a.runtimeAnimatorController = UnityEditor.AssetDatabase.LoadAssetAtPath<UnityEditor.Animations.AnimatorController>(`"$($script:animCtl)`"); return a.name;")
+    $start = Invoke-Cli @('editor.playmode', 'start', '--format', 'json')
+    try {
+        Expect ((Wait-Editor 120) -eq 0) "Play mode didn't start: $(Short ($start.stdout + $start.stderr))"
+        $nc = Invoke-Cli @('cliext.animator', 'live', '--object', 'Player', '--format', 'json')
+        Expect-AnimFailure $nc 'has no controller' '' '' 'live with no controller' 6
+        $as = Invoke-Cli @('script', 'eval', '--file', $assign, '--format', 'json')
+        Expect ($as.exit -eq 0) "assigning the controller in Play mode: $(Short ($as.stdout + $as.stderr))"
+        $d = Invoke-Cli @('cliext.animator', 'drive', '--object', 'Player', '--parameter', 'Speed', '--value', '0.8', '--format', 'json')
+        Expect ($d.exit -eq 0) "drive Speed: exit $($d.exit): $(Short ($d.stdout + $d.stderr))"
+        $b = Invoke-Cli @('cliext.animator', 'drive', '--object', 'Player', '--parameter', 'Grounded', '--value', 'true', '--format', 'json')
+        Expect ($b.exit -eq 0) "drive Grounded: exit $($b.exit): $(Short ($b.stdout + $b.stderr))"
+        $l = Invoke-Cli @('cliext.animator', 'live', '--object', 'Player', '--format', 'json')
+        Expect ($l.exit -eq 0 -and $l.json.controller -eq 'CliTestAnim' -and $l.json.playing -eq $true) "live: exit $($l.exit): $(Short ($l.stdout + $l.stderr))"
+        $p = @{}; foreach ($x in @($l.json.parameters)) { $p[$x.name] = "$($x.value)" }
+        Expect ($p['Speed'] -eq '0.8' -and $p['Grounded'] -eq 'true') "live parameters: $(Short ($l.json.parameters | ConvertTo-Json -Compress))"
+        $st = Invoke-Cli @('cliext.animator', 'drive', '--object', 'Player', '--state', 'Base Layer.Locomotion', '--fade', '0', '--format', 'json')
+        Expect ($st.exit -eq 0) "drive --state: exit $($st.exit): $(Short ($st.stdout + $st.stderr))"
+        $cases = @(
+            @(@('--parameter', 'Speed', '--value', 'fast'), "isn't a Single value", 2, 'non-numeric value'),
+            @(@('--parameter', 'Grounded'), 'pass --value \(true or false\)', 2, 'Bool without a value'),
+            @(@('--parameter', 'Sped', '--value', '1'), 'Did you mean: Speed', 13, 'misspelled parameter'),
+            @(@('--state', 'Base Layer.Fly'), "No state 'Base Layer.Fly'.*Base Layer\.Idle", 13, 'unknown state'),
+            @(@('--state', 'Idle', '--layer', '3'), 'No layer 3', 2, 'layer out of range'),
+            @(@('--parameter', 'Speed', '--value', '1', '--state', 'Idle'), 'not both', 2, 'parameter and state')
+        )
+        $seen = @()
+        foreach ($c in $cases) {
+            $x = Invoke-Cli (@('cliext.animator', 'drive', '--object', 'Player') + $c[0] + @('--format', 'json'))
+            Expect-AnimFailure $x $c[1] '' '' $c[3] $c[2]
+            $seen += "$($c[3]) $($x.exit)"
+        }
+        $nobody = Invoke-Cli @('cliext.animator', 'live', '--object', 'NoSuchObject', '--format', 'json')
+        Expect-AnimFailure $nobody "No GameObject 'NoSuchObject'.*scene get_hierarchy" '' '' 'unknown object' 13
+        $later = Invoke-Cli @('cliext.animator', 'live', '--object', 'Player', '--format', 'json')
+        $state = "$(@($later.json.layers)[0].state)"
+        Expect ($state -eq 'Base Layer.Locomotion') "after drive --state the layer is in '$state'"
+        $ed = Invoke-Cli @('cliext.animator', 'edit', '--path', $script:animCtl, '--ops-file', (Write-AnimOps 'anim-play-edit.json' '[{"op":"set_state","state":"Run","set":"tag=Played"}]'), '--format', 'json')
+        Expect ($ed.exit -eq 0) "edit in Play mode: exit $($ed.exit): $(Short ($ed.stdout + $ed.stderr))"
+    }
+    finally {
+        [void](Invoke-Cli @('editor.playmode', 'stop', '--format', 'json'))
+        [void](Wait-Editor 120)
+        # Back to the scene that was open, from disk: nothing of the run is kept in it.
+        $back = Invoke-Cli @('script', 'eval', '--file', (& $openCs $(if ($open.path) { $open.path } else { $level })), '--format', 'json')
+    }
+    Expect ("$($back.stdout)" -match '\|False') "the scene is dirty after the run: $(Short ($back.stdout + $back.stderr))"
+    $mode = Invoke-Cli @('script', 'eval', '--file', (Write-WorkFile 'anim-mode.cs' 'return UnityEditor.EditorApplication.isPlaying ? "playing" : "edit";'), '--format', 'json')
+    Expect ("$($mode.stdout)" -match 'edit') "still in Play mode: $(Short $mode.stdout)"
+    $run = @((Get-AnimController).layers[0].states) | Where-Object { $_.path -eq 'Run' }
+    Expect ($run.tag -eq 'Played') "the Play mode edit didn't stay: Run's tag is '$($run.tag)'"
+    "Edit mode refused (6); live read Speed 0.8 and Grounded; drive --state reached Locomotion; $($seen -join ', '); edit kept; scene clean"
+}
+
 # --- Cross-cutting ----------------------------------------------------------------------------------------------------
 
 $batchEdits = @(
