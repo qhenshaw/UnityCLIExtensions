@@ -15,6 +15,14 @@ Nothing is written into the project.
 -Run       unity command lines run in order after -Until, such as the project's own debug menu commands:
            -Run "debugmenu do --section Effects --label 'Preview gun looks'". Quote arguments with spaces in single or
            double quotes. A leading "unity command" is optional. A step that exits non-zero fails the capture.
+           Several steps: -Run "a" "b" won't work (the second is taken as a shot); give -Run "a","b" (an array), or
+           one string with the steps separated by ';;': -Run "cliext.vfx check --path X.vfx;;debugmenu do --label Fire".
+           Through `powershell -File`, -Run "a","b" reaches the script as the one string "a,b"; it is split again at
+           each comma (outside quotes, no space after it) followed by "<group> <command>" (a word, a space and a
+           lowercase command name: "debugmenu do", "cliext.playmode time_scale") or by "unity command", so both forms
+           work. Commas inside an argument (--position 1,2,3, --tags Red,Blue) stay. When in doubt, use ';;'.
+-DryRun    Print the -Run steps as parsed (one argument list each) and the shots, then exit 0 without touching the
+           Editor: a check of the quoting.
 Shots      One argument each after the named parameters, in either form:
            NAME@SECONDS   captured that many real seconds after the last -Run step (or after -Until, or once Play
                           mode started). Taken first, in time order; the JSON reports when each was really taken.
@@ -56,6 +64,7 @@ param(
     [switch]$Stay,
     [string[]]$Run,
     [double]$TimeScale = -1,
+    [switch]$DryRun,
     # The shots: NAME@SECONDS, NAME=FILE or NAME=FILE|key=value;key=value, one argument each, after the named parameters.
     [Parameter(ValueFromRemainingArguments = $true)][string[]]$Shot
 )
@@ -137,6 +146,51 @@ function Split-CommandLine([string]$line) {
     return , $parts.ToArray()
 }
 
+# -Run as given -> one command line per step. Each element may hold several commands separated by ';;'. Through
+# `powershell -File`, -Run "a","b" arrives as the one string "a,b": a comma outside quotes, with no space after it,
+# that is followed by "<group> <command>" (a word, a space, then a lowercase command name such as do or time_scale),
+# or by "unity command", starts a new step. Any other comma (--position 1,2,3, --tags Red,Blue) stays in its argument.
+function Split-RunSteps([string[]]$given) {
+    $steps = New-Object System.Collections.Generic.List[string]
+    foreach ($element in @($given | Where-Object { $_ -and $_.Trim() })) {
+        foreach ($chunk in ($element -split ';;')) {
+            if (-not $chunk.Trim()) { continue }
+            $start = 0
+            $quote = [char]0
+            for ($i = 0; $i -lt $chunk.Length; $i++) {
+                $ch = $chunk[$i]
+                if ($quote -ne [char]0) { if ($ch -eq $quote) { $quote = [char]0 }; continue }
+                if ($ch -eq [char]'"' -or $ch -eq [char]"'") { $quote = $ch; continue }
+                if ($ch -ne [char]',' -or $i + 1 -ge $chunk.Length -or [char]::IsWhiteSpace($chunk[$i + 1])) { continue }
+                $rest = $chunk.Substring($i + 1)
+                if ($rest -cmatch '^(unity\s+command\s+)?[A-Za-z][\w.-]*\s+[a-z][a-z0-9_]*(\s|$)') {
+                    $steps.Add($chunk.Substring($start, $i - $start).Trim())
+                    $start = $i + 1
+                }
+            }
+            $last = $chunk.Substring($start).Trim()
+            if ($last) { $steps.Add($last) }
+        }
+    }
+    return , $steps.ToArray()
+}
+
+# Every -Run step must parse before anything runs.
+$runSteps = Split-RunSteps $Run
+foreach ($line in $runSteps) {
+    try { [void](Split-CommandLine $line) } catch { [Console]::Error.WriteLine($_.Exception.Message); exit 2 }
+}
+if ($DryRun) {
+    $parsed = New-Object System.Collections.ArrayList
+    foreach ($line in $runSteps) { [void]$parsed.Add((Split-CommandLine $line)) }
+    [ordered]@{
+        result = 'dry-run'
+        run = $parsed
+        shots = @($Shot)
+    } | ConvertTo-Json -Depth 5
+    exit 0
+}
+
 $script:timeScaleBefore = $null
 function Restore-TimeScale {
     if ($null -eq $script:timeScaleBefore) { return }
@@ -195,7 +249,7 @@ if ($Until) {
 
 # 5. The project's own commands, in order. Run once each: a retry could trigger an effect twice.
 $runs = @()
-foreach ($line in @($Run | Where-Object { $_ -and $_.Trim() })) {
+foreach ($line in $runSteps) {
     try { $commandArgs = Split-CommandLine $line } catch { Fail 'run' $_.Exception.Message }
     $r = Invoke-Unity $commandArgs 1
     if ($r.ExitCode -ne 0) { Fail "run '$line'" $r.Output }

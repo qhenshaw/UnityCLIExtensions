@@ -979,6 +979,34 @@ Add-Check 'sg.remove' 'cliext.shadergraph' 'cliext.shadergraph remove takes out 
     "removed Add and Speed; again: exit $($bad.exit)"
 }
 
+Add-Check 'sg.target-mode' 'cliext.shadergraph' 'cliext.shadergraph edit set_target turns alpha clipping on (adding Alpha Clip Threshold, which add_block refused before) and set_mode makes a float a 0-1 slider and a colour HDR; inspect shows both; an unknown mode or setting fails with the valid values and saves nothing' {
+    Need-SgIds
+    $before = Get-SgHash
+    $refused = Invoke-Cli @('cliext.shadergraph', 'edit', '--path', $script:sgPath, '--ops-file', (Write-WorkFile 'sg-clip-early.json' '[{"op":"add_block","block":"Alpha Clip Threshold"}]'), '--format', 'json')
+    Expect-SgFailure $refused 'set_target.*alphaClip' $before 'add_block before alpha clipping'
+    $badMode = Invoke-Cli @('cliext.shadergraph', 'edit', '--path', $script:sgPath, '--ops-file', (Write-WorkFile 'sg-bad-mode.json' '[{"op":"set_mode","id":"Tint","mode":"slider"}]'), '--format', 'json')
+    Expect-SgFailure $badMode 'Use one of: default, hdr' $before 'unknown colour mode'
+    $badSetting = Invoke-Cli @('cliext.shadergraph', 'edit', '--path', $script:sgPath, '--ops-file', (Write-WorkFile 'sg-bad-setting.json' '[{"op":"set_target","setting":"alphaClipping","value":"true"}]'), '--format', 'json')
+    Expect-SgFailure $badSetting 'Did you mean alphaClip' $before 'unknown target setting'
+    $ops = '[{"op":"set_target","setting":"alphaClip","value":"true"},' +
+           '{"op":"add_property","type":"float","name":"Cutoff","reference":"_Cutoff","value":"0.3","as":"cut"},' +
+           '{"op":"set_mode","id":"$cut","mode":"slider","min":0,"max":1},' +
+           '{"op":"set_mode","id":"Tint","mode":"hdr"}]'
+    $r = Invoke-Cli @('cliext.shadergraph', 'edit', '--path', $script:sgPath, '--ops-file', (Write-WorkFile 'sg-target-mode.json' $ops), '--format', 'json') 180
+    Expect ($r.exit -eq 0) "exit $($r.exit): $(Short ($r.stdout + $r.stderr))"
+    Expect (@($r.json.results[0].blocksAdded) -contains 'Alpha Clip Threshold') "set_target didn't add Alpha Clip Threshold: $(Short ($r.json.results[0] | ConvertTo-Json -Compress))"
+    $g = Get-SgGraph
+    Expect ("$($g.targets[0].settings.alphaClip)" -match '^(?i)true$') "inspect targets settings alphaClip: $(Short ($g.targets[0].settings | ConvertTo-Json -Compress))"
+    Expect (@($g.fragment | Where-Object { $_.name -eq 'Alpha Clip Threshold' }).Count -eq 1) "no Alpha Clip Threshold block: $(@($g.fragment | ForEach-Object { $_.name }) -join ', ')"
+    $cut = @($g.properties | Where-Object { $_.name -eq 'Cutoff' })[0]
+    $tint = @($g.properties | Where-Object { $_.name -eq 'Tint' })[0]
+    Expect ($cut.mode -eq 'Slider(0, 1)') "Cutoff mode '$($cut.mode)'"
+    Expect ($tint.mode -eq 'HDR') "Tint mode '$($tint.mode)'"
+    $range = Invoke-Cli @('script', 'eval', '--file', (Write-WorkFile 'sg-range.cs' "var s = UnityEditor.AssetDatabase.LoadAssetAtPath<UnityEngine.Shader>(`"$($script:sgPath)`"); int i = s.FindPropertyIndex(`"_Cutoff`"); return s.GetPropertyType(i) + `" `" + s.GetPropertyRangeLimits(i).y;"), '--format', 'json')
+    Expect ("$($range.stdout)" -match 'Range 1') "the compiled shader's _Cutoff: $(Short $range.stdout)"
+    'add_block refused until set_target alphaClip; Alpha Clip Threshold added; Cutoff Slider(0, 1) compiles to Range; Tint HDR; bad mode and setting save nothing'
+}
+
 Add-Check 'sg.batch-rollback' 'cliext.shadergraph' 'an edit batch with one bad op saves nothing, on disk or in memory, and the next good edit saves only its own change' {
     Need-SgIds
     $before = Get-SgHash
@@ -1310,6 +1338,25 @@ Add-Check 'anim.mask' $animRow 'cliext.anim mask creates a mask, lists a model''
     "created with Head and LeftArm off; $($f.json.transforms) transforms, $($off.Count) off; $($seen -join ', ')"
 }
 
+Add-Check 'anim.mask-folders' $animRow 'cliext.anim mask (and cliext.shadergraph create) into folders that do not exist make them; into a folder made on disk but not imported yet, they use it and make no "<Folder> 1" beside it' {
+    $paths = "$scratchRel/MaskNew/Deep/Upper.mask", "$scratchRel/MaskDisk/Upper.mask"
+    $diskDir = Join-Path $scratch 'MaskDisk'
+    $sgDir = Join-Path $scratch 'SgDisk'
+    New-Item -ItemType Directory -Force $diskDir | Out-Null
+    New-Item -ItemType Directory -Force $sgDir | Out-Null
+    $results = @()
+    foreach ($p in $paths) {
+        $r = Invoke-Cli @('cliext.anim', 'mask', '--path', $p, '--humanoid', 'Head=false', '--format', 'json')
+        Expect ($r.exit -eq 0 -and $r.json.created -eq $true -and $r.json.path -eq $p) "mask at ${p}: exit $($r.exit): $(Short ($r.stdout + $r.stderr))"
+        $results += $p
+    }
+    $sg = Invoke-Cli @('cliext.shadergraph', 'create', '--path', "$scratchRel/SgDisk/OnDisk.shadergraph", '--target', 'Universal', '--material', 'Unlit', '--format', 'json') 180
+    Expect ($sg.exit -eq 0 -and $sg.json.path -eq "$scratchRel/SgDisk/OnDisk.shadergraph") "shadergraph create into an on-disk folder: exit $($sg.exit): $(Short ($sg.stdout + $sg.stderr))"
+    foreach ($stray in 'MaskDisk 1', 'SgDisk 1', 'MaskNew 1') { Expect (-not (Test-Path (Join-Path $scratch $stray))) "a stray '$stray' folder was made" }
+    Expect ((Test-Path "$diskDir.meta") -and (Test-Path "$sgDir.meta")) 'the on-disk folders were not imported (no .meta)'
+    "masks at $($results -join ', '); shader graph in the on-disk folder; no '<Folder> 1'"
+}
+
 Add-Check 'anim.check' $animRow 'cliext.anim check passes humanoid clips on the humanoid model, fails (exit 6, saying why) on a generic clip, and a missing model or --clips entry exits 13' {
     Need-AnimAssets
     $ok = Invoke-Cli @('cliext.anim', 'check', '--model', $script:animChar, '--clips', $script:animCtl, '--format', 'json')
@@ -1408,6 +1455,37 @@ Add-Check 'anim.animator-edit-errors' $animRow 'cliext.animator edit fails (exit
         @('[{"op":"add_blendtree","state":"Strafe","parameter":"Speed","children":"Assets/_CliextTests/CliTest/CliTestBob.anim@x"}]', "'x' isn't a Single value", 'non-numeric child threshold'),
         @('[{"op":"frob"}]', 'Unknown op.*remove_state, rename_state', 'unknown op')
     )
+}
+
+Add-Check 'anim.motion-refs' $animRow 'a bare model path with several clips, or a clip name two clips share, as a set_state motion, a blend tree child or an anim clip path exits 2 listing the clips with their lengths (and edit_clips for a shared name), saving nothing; a model with one clip may be given bare' {
+    Need-AnimAssets
+    $before = Get-AnimHash $script:animCtl
+    $run = 'Assets/TestLevel/Animations/kenney run.fbx'
+    $idle = 'Assets/TestLevel/Animations/kenney idle.fbx'
+    $cases = @(
+        @("[{`"op`":`"set_state`",`"state`":`"Run`",`"motion`":`"$run`"}]", "is a model with 2 clips.*$([regex]::Escape($run))@<clip>.*kenney run 1 \(", 'bare model with 2 clips'),
+        @("[{`"op`":`"set_state`",`"state`":`"Run`",`"motion`":`"$idle@kenney idle`"}]", "2 clips named 'kenney idle'.*1 frame.*cliext\.anim edit_clips", 'a name two clips share'),
+        @("[{`"op`":`"add_blendtree`",`"state`":`"Strafe`",`"parameter`":`"Speed`",`"children`":`"$run@0;$($script:animClip)@1`"}]", 'is a model with 2 clips', 'bare model as a blend tree child')
+    )
+    $seen = @()
+    $i = 0
+    foreach ($c in $cases) {
+        $i++
+        $r = Invoke-Cli @('cliext.animator', 'edit', '--path', $script:animCtl, '--ops-file', (Write-AnimOps "anim-ref-$i.json" $c[0]), '--format', 'json')
+        Expect-AnimFailure $r $c[1] $script:animCtl $before $c[2] 2
+        $seen += "$($c[2]) $($r.exit)"
+    }
+    $clip = Invoke-Cli @('cliext.anim', 'clip', '--path', "$idle@kenney idle", '--format', 'json')
+    Expect-AnimFailure $clip "2 clips named 'kenney idle'" '' '' 'anim clip by a shared name' 2
+    $seen += "anim clip $($clip.exit)"
+    $speed0 = (@((Get-AnimController).layers[0].states) | Where-Object { $_.path -eq 'Run' }).speed
+    $one = Invoke-Cli @('cliext.animator', 'edit', '--path', $script:animCtl, '--ops-file', (Write-AnimOps 'anim-ref-one.json' "[{`"op`":`"set_state`",`"state`":`"Run`",`"motion`":`"$($script:animIdle)`",`"set`":`"speed=1.25`"}]"), '--format', 'json')
+    Expect ($one.exit -eq 0) "a bare model with one clip: exit $($one.exit): $(Short ($one.stdout + $one.stderr))"
+    $runState = @((Get-AnimController).layers[0].states) | Where-Object { $_.path -eq 'Run' }
+    Expect ("$($runState.motion)" -match 'standing idle') "Run's motion: $($runState.motion)"
+    $back = Invoke-Cli @('cliext.animator', 'edit', '--path', $script:animCtl, '--ops-file', (Write-AnimOps 'anim-ref-back.json' "[{`"op`":`"set_state`",`"state`":`"Run`",`"set`":`"speed=$([string]::Format([Globalization.CultureInfo]::InvariantCulture, '{0}', $speed0))`"}]"), '--format', 'json')
+    Expect ($back.exit -eq 0) "putting Run's speed back: exit $($back.exit): $(Short ($back.stdout + $back.stderr))"
+    "$($seen -join ', '); the one-clip model given bare sets standing idle"
 }
 
 Add-Check 'anim.animator-rollback' $animRow 'an animator edit batch with one bad op saves nothing, on disk or in memory (removed states and transitions come back), and the next good edit saves only its own change' {
@@ -1745,7 +1823,7 @@ Add-Check 'tl.edit-rollback' $tlRow 'a timeline edit batch with removed tracks a
     Need-TlAssets
     $before = Get-TlHash
     $m0 = Get-TlMemory
-    $ops = '[{"op":"remove_track","track":"Group"},{"op":"remove_clip","track":"Audio","clip":"Book"},{"op":"add_clip","track":"Anim","clip":"Assets/TestLevel/Animations/kenney run.fbx","time":2,"name":"Extra"},{"op":"add_marker","time":1.25},{"op":"rename_track","track":"Anim","name":"Renamed"},{"op":"set_clip","track":"Active","clip":"0","set":"duration=5"},{"op":"remove_track","track":"NoSuchTrack"}]'
+    $ops = '[{"op":"remove_track","track":"Group"},{"op":"remove_clip","track":"Audio","clip":"Book"},{"op":"add_clip","track":"Anim","clip":"Assets/TestLevel/Animations/kenney run.fbx@kenney run 2","time":2,"name":"Extra"},{"op":"add_marker","time":1.25},{"op":"rename_track","track":"Anim","name":"Renamed"},{"op":"set_clip","track":"Active","clip":"0","set":"duration=5"},{"op":"remove_track","track":"NoSuchTrack"}]'
     $r = Invoke-Cli @('cliext.timeline', 'edit', '--path', $script:tlPath, '--ops-file', (Write-WorkFile 'tl-bad-batch.json' $ops), '--format', 'json')
     Expect-TlFailure $r 'Op 6 \(remove_track\) failed.*Nothing was saved' $before 'bad batch'
     Expect ($r.json.saved -eq $false -and $r.json.failedAt -eq 6 -and $r.json.applied -eq 0) "reply: $(Short $r.stdout)"
@@ -1862,6 +1940,74 @@ Add-Check 'tl.play-mode' $tlRow 'in Play mode, cliext.timeline director plays a 
     "played (time $($later.json.time)s), paused at 0.5, stopped; back in Edit mode, scene clean"
 }
 
+Add-Check 'tl.scrub-restore' $tlRow 'in a saved scratch scene with a humanoid rig, cliext.timeline director --time in Edit mode names the active clip and its local time, --read returns the scrubbed bone pose, and the rig and the scene are left as saved; --keep-pose true leaves the frame and marks the scene dirty' {
+    Need-TlAssets
+    $scenePath = "$scratchRel/CliTestScrub.unity"
+    # A rig of the TestLevel character bound to Anim, in a scene saved to disk and reopened additively, so it starts clean.
+    $setup = @'
+var scene = UnityEditor.SceneManagement.EditorSceneManager.NewScene(UnityEditor.SceneManagement.NewSceneSetup.EmptyScene, UnityEditor.SceneManagement.NewSceneMode.Additive);
+var model = UnityEditor.AssetDatabase.LoadAssetAtPath<UnityEngine.GameObject>("Assets/TestLevel/Characters/characterMedium.fbx");
+var rig = (UnityEngine.GameObject)UnityEditor.PrefabUtility.InstantiatePrefab(model, scene); rig.name = "CliTestScrubRig";
+var dgo = new UnityEngine.GameObject("CliTestScrubDirector"); UnityEngine.SceneManagement.SceneManager.MoveGameObjectToScene(dgo, scene);
+var d = dgo.AddComponent<UnityEngine.Playables.PlayableDirector>(); d.playOnAwake = false;
+var t = UnityEditor.AssetDatabase.LoadAssetAtPath<UnityEngine.Timeline.TimelineAsset>("{{path}}"); d.playableAsset = t;
+d.SetGenericBinding(t.GetRootTracks().First(x => x.name == "Anim"), rig.GetComponent<UnityEngine.Animator>());
+UnityEditor.SceneManagement.EditorSceneManager.SaveScene(scene, "{{scene}}");
+UnityEditor.SceneManagement.EditorSceneManager.CloseScene(scene, true);
+var again = UnityEditor.SceneManagement.EditorSceneManager.OpenScene("{{scene}}", UnityEditor.SceneManagement.OpenSceneMode.Additive);
+return "ok|" + again.isDirty;
+'@
+    $poseCode = @'
+var s = UnityEngine.SceneManagement.SceneManager.GetSceneByPath("{{scene}}");
+var arm = UnityEngine.GameObject.Find("CliTestScrubRig").GetComponentsInChildren<UnityEngine.Transform>().First(x => x.name == "LeftForeArm");
+var r = arm.localEulerAngles;
+return string.Format(System.Globalization.CultureInfo.InvariantCulture, "{0:0.0},{1:0.0},{2:0.0}|{3}", r.x, r.y, r.z, s.isDirty);
+'@
+    $pose = Write-WorkFile 'tl-scrub-pose.cs' $poseCode.Replace('{{scene}}', $scenePath)
+    $r = Invoke-Cli @('script', 'eval', '--file', (Write-WorkFile 'tl-scrub-setup.cs' $setup.Replace('{{path}}', $script:tlPath).Replace('{{scene}}', $scenePath)), '--format', 'json')
+    try {
+        Expect ("$($r.stdout)" -match 'ok\|False') "scratch scene: $(Short ($r.stdout + $r.stderr))"
+        $find = Invoke-Cli @('script', 'eval', '--file', (Write-WorkFile 'tl-scrub-path.cs' 'var t = UnityEngine.GameObject.Find("CliTestScrubRig").GetComponentsInChildren<UnityEngine.Transform>().First(x => x.name == "LeftForeArm"); var p = t.name; for (var q = t.parent; q != null; q = q.parent) p = q.name + "/" + p; return p;'), '--format', 'json')
+        $armPath = $find.stdout.Trim().Trim('"')
+        $p0 = (Invoke-Cli @('script', 'eval', '--file', $pose, '--format', 'json')).stdout.Trim().Trim('"')
+        $d = Invoke-Cli @('cliext.timeline', 'director', '--director', 'CliTestScrubDirector', '--time', '0.5', '--read', $armPath, '--format', 'json')
+        Expect ($d.exit -eq 0) "scrub: exit $($d.exit): $(Short ($d.stdout + $d.stderr))"
+        $anim = @($d.json.tracks | Where-Object { $_.track -eq 'Anim' })[0]
+        Expect ($anim.clips[0].clip -eq 'Idle' -and [math]::Abs($anim.clips[0].localTime - 0.5) -lt 1e-3) "tracks: $(Short ($d.json.tracks | ConvertTo-Json -Compress -Depth 5))"
+        Expect ("$($d.json.scene)" -match '^unchanged') "scene note: $($d.json.scene)"
+        $read = $d.json.read[0].localRotation
+        $readText = (@($read | ForEach-Object { [string]::Format([Globalization.CultureInfo]::InvariantCulture, '{0:0.0}', [double]$_) }) -join ',')
+        $p1 = (Invoke-Cli @('script', 'eval', '--file', $pose, '--format', 'json')).stdout.Trim().Trim('"')
+        Expect ($p1 -eq $p0) "the rig after the scrub: $p1, before: $p0"
+        Expect ($p1 -match '\|False$') "the scene is dirty after the scrub: $p1"
+        Expect (($p0 -split '\|')[0] -ne $readText) "--read gave the saved pose ($readText), not the scrubbed one"
+        $k = Invoke-Cli @('cliext.timeline', 'director', '--director', 'CliTestScrubDirector', '--time', '0.5', '--keep-pose', 'true', '--format', 'json')
+        Expect ($k.exit -eq 0 -and "$($k.json.scene)" -match '^kept') "keep-pose: exit $($k.exit): $(Short ($k.stdout + $k.stderr))"
+        $p2 = (Invoke-Cli @('script', 'eval', '--file', $pose, '--format', 'json')).stdout.Trim().Trim('"')
+        Expect ($p2 -match '\|True$' -and ($p2 -split '\|')[0] -ne ($p0 -split '\|')[0]) "after --keep-pose: $p2 (saved $p0)"
+        $usage = Invoke-Cli @('cliext.timeline', 'director', '--director', 'CliTestScrubDirector', '--read', $armPath, '--format', 'json')
+        Expect-TlFailure $usage '--read reports the pose at --time' '' '--read without --time' 2
+        $missing = Invoke-Cli @('cliext.timeline', 'director', '--director', 'CliTestScrubDirector', '--time', '0.5', '--read', 'NoSuchBone', '--format', 'json')
+        Expect-TlFailure $missing "No GameObject 'NoSuchBone'" '' 'unknown --read object' 13
+    }
+    finally {
+        $close = "var s = UnityEngine.SceneManagement.SceneManager.GetSceneByPath(`"$scenePath`"); if (s.IsValid()) UnityEditor.SceneManagement.EditorSceneManager.CloseScene(s, true); UnityEditor.AssetDatabase.DeleteAsset(`"$scenePath`"); return `"ok`";"
+        [void](Invoke-Cli @('script', 'eval', '--file', (Write-WorkFile 'tl-scrub-close.cs' $close), '--format', 'json'))
+    }
+    "Anim plays Idle at local 0.5; read $readText while sampled; rig back at $p0; keep-pose left the frame and dirtied the scene"
+}
+
+Add-Check 'tl.clip-refs' $tlRow 'cliext.timeline edit add_clip given a take name two clips share, or a bare model with several clips, exits 2 listing them with their lengths and saves nothing' {
+    Need-TlAssets
+    $before = Get-TlHash
+    $idle = 'Assets/TestLevel/Animations/kenney idle.fbx'
+    $shared = Invoke-Cli @('cliext.timeline', 'edit', '--path', $script:tlPath, '--ops-file', (Write-WorkFile 'tl-ref-shared.json' "[{`"op`":`"add_clip`",`"track`":`"Anim`",`"clip`":`"$idle@kenney idle`",`"time`":3}]"), '--format', 'json')
+    Expect-TlFailure $shared "2 clips named 'kenney idle'.*1 frame.*cliext\.anim edit_clips" $before 'a take name two clips share' 2
+    $bare = Invoke-Cli @('cliext.timeline', 'edit', '--path', $script:tlPath, '--ops-file', (Write-WorkFile 'tl-ref-bare.json' "[{`"op`":`"add_clip`",`"track`":`"Anim`",`"clip`":`"$idle`",`"time`":3}]"), '--format', 'json')
+    Expect-TlFailure $bare 'is a model with 2 clips.*@<clip>' $before 'a bare model with 2 clips' 2
+    "shared name $($shared.exit), bare model $($bare.exit); .playable unchanged"
+}
+
 # --- cliext.input -----------------------------------------------------------------------------------------------------
 
 # Edit checks work on a scratch copy of the project's InputSystem_Actions.inputactions (AssetDatabase.CopyAsset, so it
@@ -1968,7 +2114,8 @@ Add-Check 'input.edit' $inRow 'cliext.input edit runs all 13 op kinds in one cal
 '@
     $r = Invoke-Cli @('cliext.input', 'edit', '--path', $script:inPath, '--ops-file', (Write-WorkFile 'in-edit.json' $ops), '--format', 'json')
     Expect ($r.exit -eq 0 -and $r.json.applied -eq 15) "exit $($r.exit): $(Short ($r.stdout + $r.stderr))"
-    Expect (@($r.json.warnings).Count -eq 1 -and "$($r.json.warnings)" -match 'buttonSouht.*Did you mean: buttonSouth') "warnings: $(Short ($r.json.warnings -join ' | '))"
+    # Two warnings: the misspelled control, and buttonEast, which the committed asset binds to Player/Crouch.
+    Expect (@($r.json.warnings).Count -eq 2 -and "$($r.json.warnings)" -match 'buttonSouht.*Did you mean: buttonSouth' -and "$($r.json.warnings)" -match 'buttonEast is also bound to Player/Crouch') "warnings: $(Short ($r.json.warnings -join ' | ') 300)"
     $j = Get-InInspect
     Expect ((@($j.maps | ForEach-Object { $_.name }) -join ',') -eq 'Player,UI,Dbg') "maps: $(@($j.maps | ForEach-Object { $_.name }) -join ',')"
     $jump = Get-InAction $j 'Player' 'Jump'
@@ -1987,7 +2134,7 @@ Add-Check 'input.edit' $inRow 'cliext.input edit runs all 13 op kinds in one cal
     Expect ($pad -and ($pad.devices -join ',') -eq '<Gamepad>,optional <Keyboard>' -and -not ($schemes | Where-Object { $_.name -eq 'XR' })) "schemes: $(Short ($schemes | ConvertTo-Json -Compress))"
     $mem = Get-InMemory
     Expect ($mem -eq (Get-InSig $j)) "in memory differs from the file: $(Short $mem 300)"
-    "15 ops (13 kinds), one warning; Jump kept its id; inspect and memory agree"
+    "15 ops (13 kinds), two warnings (a typo, an overlap with Crouch); Jump kept its id; inspect and memory agree"
 }
 
 Add-Check 'input.edit-errors' $inRow 'cliext.input edit fails (exit 6, one line, with the fix) on unknown maps, actions, bindings, schemes, ops, action types, interactions, processors, composites and parts, missing fields and ops that would change nothing, saving nothing' {
@@ -2080,6 +2227,25 @@ Add-Check 'input.missing-asset' $inRow 'cliext.input edit given an .inputactions
     Expect ($bad.Count -eq 0) ($bad -join '; ')
     Expect (-not (Test-Path (Join-Path $scratch 'NoSuch.inputactions')) -and -not (Test-Path (Join-Path $projectPath 'NotAssets'))) 'a failed call created a file'
     'missing 13 naming Create > Input Actions; a scene 2; outside Assets 2'
+}
+
+Add-Check 'input.edit-warnings' $inRow 'cliext.input edit warns (and still saves) when an added binding''s control is already bound to another action, naming it, and when a binding''s groups match no control scheme, suggesting the close one; a group the same batch adds a scheme for gives none' {
+    Reset-InAsset
+    $ops = '[{"op":"add_action","map":"Player","action":"Dash","type":"Button"},' +
+           '{"op":"add_binding","map":"Player","action":"Dash","path":"<Keyboard>/leftShift","groups":"Keyboard"},' +
+           '{"op":"add_binding","map":"Player","action":"Dash","path":"<Gamepad>/leftShoulder","groups":"Gamepad"},' +
+           '{"op":"add_binding","map":"Player","action":"Dash","path":"<Keyboard>/f12","groups":"Arcade"},' +
+           '{"op":"add_scheme","name":"Arcade","devices":"<Keyboard>"}]'
+    $r = Invoke-Cli @('cliext.input', 'edit', '--path', $script:inPath, '--ops-file', (Write-WorkFile 'in-warn.json' $ops), '--format', 'json')
+    Expect ($r.exit -eq 0 -and $r.json.applied -eq 5) "edit: exit $($r.exit): $(Short ($r.stdout + $r.stderr))"
+    $w = @($r.json.warnings)
+    Expect (@($w | Where-Object { $_ -match '<Keyboard>/leftShift is also bound to Player/Sprint' }).Count -eq 1) "no overlap warning naming Player/Sprint: $(Short ($w -join ' | ') 300)"
+    Expect (@($w | Where-Object { $_ -match "groups 'Keyboard'.*matches no control scheme.*Did you mean: Keyboard&Mouse" }).Count -eq 1) "no groups warning for Keyboard: $(Short ($w -join ' | ') 300)"
+    Expect (@($w | Where-Object { $_ -match 'Arcade|leftShoulder|f12' }).Count -eq 0) "a warning for a scheme the batch adds or a free control: $(Short ($w -join ' | ') 300)"
+    Expect ("$($r.stderr)" -match 'also bound to Player/Sprint') "the warning isn't on stderr: $(Short $r.stderr)"
+    $dash = Get-InAction (Get-InInspect) 'Player' 'Dash'
+    Expect (@($dash.bindings).Count -eq 3) "Dash wasn't saved with its bindings: $(Short ($dash | ConvertTo-Json -Compress -Depth 4))"
+    "$($w.Count) warnings: overlap with Player/Sprint, groups Keyboard (did you mean Keyboard&Mouse); saved"
 }
 
 Add-Check 'input.edit-mode' $inRow 'in Edit mode, add_device, set, press, record_start and replay exit 6 naming editor.playmode start and add no device; devices and replay_status still answer' {
@@ -2592,6 +2758,12 @@ return UnityEngine.UIElements.UQueryExtensions.Q<UnityEngine.UIElements.Toggle>(
         Expect ((Get-UiStatus) -eq 'ready') "a failed call changed the label: '$(Get-UiStatus)'"
         $vals2 = Invoke-Cli @('script', 'eval', '--file', (Write-WorkFile 'ui-read2.cs' $readValues), '--format', 'json')
         Expect ($vals2.stdout -eq $vals.stdout) "a failed call changed a field: $(Short $vals2.stdout)"
+        # Every field has the class unity-base-field: an ambiguous selector sets the first (TextField#player) and says so.
+        $amb = Invoke-Cli (@('cliext.uitk', 'set_value', '--selector', '.unity-base-field', '--value', 'Cid') + $D + @('--format', 'json'))
+        Expect ($amb.exit -eq 0 -and $amb.json.matches -ge 4 -and $amb.json.element -match 'TextField#player$') "set_value on an ambiguous selector: exit $($amb.exit): $(Short ($amb.stdout + $amb.stderr))"
+        Expect ("$($amb.stderr)" -match "matched $($amb.json.matches) elements; only the first was set: .*TextField#player; .*Toggle#sound") "no warning naming the matches: $(Short $amb.stderr 300)"
+        $one = Invoke-Cli (@('cliext.uitk', 'set_value', '--selector', '#player', '--value', 'Dee') + $D + @('--format', 'json'))
+        Expect ($one.exit -eq 0 -and $one.json.matches -eq 1 -and "$($one.stderr)" -notmatch 'matched') "set_value on one match: exit $($one.exit): $(Short ($one.stdout + $one.stderr))"
         [void](Invoke-Cli @('script', 'eval', '--file', (Write-WorkFile 'ui-disable.cs' $disable), '--format', 'json'))
         $dc = Invoke-Cli (@('cliext.uitk', 'click', '--selector', '#start') + $D + @('--format', 'json'))
         Expect-UiFailure $dc "is disabled: a player can't click it" '' 'click on a disabled Button'
@@ -4561,6 +4733,27 @@ Add-Check 'env.ps51-quoted-code' 'Environment' 'the core skill says to pass C# s
     $warned = $skill -match '(?s)script eval --code.{0,200}--file'
     Expect $warned "inline --code broken: $broken; the core skill does not say to use --file for snippets and quoted text"
     "inline --code broken: $broken; skill says to use files: $warned"
+}
+
+Add-Check 'env.play-capture-run' 'Environment' 'cliext-play-capture.ps1 -Run "a","b" through powershell -File (which joins them into "a,b") and through & (a real array), and "a;;b", each give two steps; commas inside an argument stay; a bad quote exits 2' {
+    # What an agent gets typing the same thing; -DryRun prints the parsed steps without touching the Editor.
+    $ErrorActionPreference = 'Continue'
+    $capture = Join-Path $tools 'cliext-play-capture.ps1'
+    function Steps($out) { $j = ($out | Out-String) | ConvertFrom-Json; @($j.run | ForEach-Object { (@($_) -join ' ') }) }
+    $viaFile = & powershell -NoProfile -ExecutionPolicy Bypass -File $capture -Project $projectPath -DryRun -Run "cliext.playmode time_scale --value 0.01","debugmenu do --section 'A, B' --position 1,2,3" a@0
+    $s1 = Steps $viaFile
+    Expect ($s1.Count -eq 2 -and $s1[0] -eq 'cliext.playmode time_scale --value 0.01' -and $s1[1] -eq 'debugmenu do --section A, B --position 1,2,3') "via -File: $($s1 -join ' | ')"
+    $viaAmp = & $capture -Project $projectPath -DryRun -Run "debugmenu do --label One","debugmenu do --label Two" a@0
+    $s2 = Steps $viaAmp
+    Expect ($s2.Count -eq 2 -and $s2[1] -eq 'debugmenu do --label Two') "via &: $($s2 -join ' | ')"
+    $viaSep = & powershell -NoProfile -ExecutionPolicy Bypass -File $capture -Project $projectPath -DryRun -Run "unity command scene save;;debugmenu do --tags Red,Blue" a@0
+    $s3 = Steps $viaSep
+    Expect ($s3.Count -eq 2 -and $s3[0] -eq 'scene save' -and $s3[1] -eq 'debugmenu do --tags Red,Blue') "with ;;: $($s3 -join ' | ')"
+    $one = @(Steps (& powershell -NoProfile -ExecutionPolicy Bypass -File $capture -Project $projectPath -DryRun -Run "debugmenu do --label Fire,Ice" a@0))
+    Expect ($one.Count -eq 1 -and $one[0] -eq 'debugmenu do --label Fire,Ice') "one step: $($one -join ' | ')"
+    $null = & powershell -NoProfile -ExecutionPolicy Bypass -File $capture -Project $projectPath -DryRun -Run "debugmenu do --label 'One" a@0 2>&1
+    Expect ($LASTEXITCODE -eq 2) "an unclosed quote: exit $LASTEXITCODE"
+    "-File joined: 2 steps; & array: 2; ';;': 2; commas in arguments kept; unclosed quote exit 2"
 }
 
 # --- T3 environment (run with -T3Ready, before agent scenario runs) -------------------------------------------------

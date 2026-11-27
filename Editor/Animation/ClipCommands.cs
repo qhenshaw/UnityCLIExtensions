@@ -289,8 +289,8 @@ namespace UnityCLIExtensions.Animation
             {
                 string model = path.Substring(0, at), name = path.Substring(at + 1);
                 if (AssetDatabase.LoadMainAssetAtPath(model) == null) throw new AnimNotFoundException($"No model at '{model}'. {HowToGetAModel}");
-                var clips = AssetDatabase.LoadAllAssetsAtPath(model).OfType<AnimationClip>().Where(c => !c.name.StartsWith("__preview__")).ToList();
-                return clips.FirstOrDefault(c => c.name == name)
+                var clips = AnimationErrors.ModelClips(model);
+                return AnimationErrors.ModelClip(model, name)
                        ?? throw new AnimNotFoundException($"No clip '{name}' in '{model}'." + AnimationErrors.Hint(name, clips.Select(c => c.name), "Clips", "cliext.anim takes"));
             }
             AnimationErrors.RequireType(path, "AnimationClip", typeof(AnimationClip),
@@ -575,9 +575,9 @@ namespace UnityCLIExtensions.Animation
                 bool created = false;
                 if (existing == null)
                 {
+                    // Missing folders are made (one already on disk is imported, not made again as "<Folder> 1").
                     string dir = System.IO.Path.GetDirectoryName(p)?.Replace('\\', '/');
-                    if (!string.IsNullOrEmpty(dir) && !AssetDatabase.IsValidFolder(dir))
-                        throw new AnimNotFoundException($"No folder '{dir}' for the new mask. Make it first, or pass a path in an existing folder.");
+                    if (!string.IsNullOrEmpty(dir) && !AssetDatabase.IsValidFolder(dir)) ProjectFolders.Ensure(dir);
                     AssetDatabase.CreateAsset(work, p);
                     mask = work;
                     work = null;
@@ -633,8 +633,9 @@ namespace UnityCLIExtensions.Animation
                 if (main == null)
                 {
                     int at = p.LastIndexOf('@');
-                    var sub = at > 0 && AssetDatabase.LoadMainAssetAtPath(p.Substring(0, at)) != null
-                        ? AssetDatabase.LoadAllAssetsAtPath(p.Substring(0, at)).OfType<AnimationClip>().FirstOrDefault(c => c.name == p.Substring(at + 1)) : null;
+                    AnimationClip sub;
+                    try { sub = at > 0 && AssetDatabase.LoadMainAssetAtPath(p.Substring(0, at)) != null ? AnimationErrors.ModelClip(p.Substring(0, at), p.Substring(at + 1)) : null; }
+                    catch (ClipReferenceException e) { cmd.Fail($"--clips: {e.Message}"); return ExitCode.InvalidUsage; }
                     if (sub == null) { cmd.Fail($"--clips: nothing at '{entry}'. Give an AnimatorController, an .anim, a model or Model.fbx@Clip that exists."); return ExitCode.NotFound; }
                     list.Add(sub);
                     continue;

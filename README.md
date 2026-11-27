@@ -381,6 +381,9 @@ powershell -NoProfile -ExecutionPolicy Bypass -File <package>/Tools~/cliext-play
 - `-Run` takes `unity command` lines, run in order after `-Until`: any command the project or Pipeline offers, such
   as a debug menu's. Quote arguments that have spaces (single or double quotes); a leading `unity command` is
   optional. Each runs once (a retry could trigger an effect twice); one that exits non-zero fails the capture.
+  Several steps: `-Run "a","b"` (through `powershell -File` that arrives as the one string `a,b`, which the script
+  splits again at each comma followed by `<group> <command>`), or one string with `;;` between them. `-DryRun` prints
+  the steps as parsed and exits without touching the Editor.
 - A shot written `NAME@SECONDS` is captured that many real seconds after the last `-Run` step. Timed shots are taken
   first, in time order, then the `NAME=FILE` ones. The JSON reports when each was really taken (`at`) and how far
   after its target (`late`), since every capture takes a moment.
@@ -546,7 +549,18 @@ Function's `functionBody`, a texture type, ... as `inspect --id` lists them), or
 Ops: `add_node`, `add_property` (type: float, vector2-4, color, texture2d, texture2darray, texture3d, cubemap,
 boolean, matrix2-4, gradient, samplerstate), `add_block`, `add_port`/`remove_port` (Custom Function ports),
 `remove`, `set`, `link`, `unlink` (every link into `to`, or only the one from `from`), `move`, `rename` (a property's
-name and reference), `expose`. Links are type-checked as the window checks them.
+name and reference), `expose`, `set_target`, `set_mode`. Links are type-checked as the window checks them.
+
+**Graph Settings and property modes.** `set_target` changes a target setting from the Graph Settings tab
+(`{"op":"set_target","setting":"alphaClip","value":"true"}`; also `surfaceType` Opaque/Transparent,
+`allowMaterialOverride`, `castShadows`, `renderFace`, ... and the material's own, such as Lit's `workflowMode`; `inspect`
+lists them under `targets[].settings`, and `target` picks one when the graph has several). As in the window, the blocks
+the new setting uses are added (`blocksAdded`: Alpha Clip Threshold when alpha clipping goes on) and the ones it no
+longer uses are marked inactive. Blocks such as Alpha and Alpha Clip Threshold aren't offered to `add_block` until
+then. `set_mode` sets a property's mode: a float's `default`, `slider` (with `min` and `max`; a default outside the
+range is clamped) or `integer`, and a colour's `default` or `hdr`
+(`{"op":"set_mode","id":"Dissolve Amount","mode":"slider","min":0,"max":1}`); `inspect` shows it as `mode`. Either op
+fails when it would change nothing.
 
 Every edit runs on a copy loaded from the file: an op that fails saves nothing. After saving, each pass of the shader
 is compiled for the current platform, so HLSL errors (a Custom Function's body) come back at once, each reported once
@@ -577,7 +591,9 @@ applies a JSON list of ops and saves once (an op that fails saves nothing):
 Ops: `add_map`, `remove_map`, `rename_map`, `add_action`, `remove_action`, `rename_action`, `set_action` (type,
 control type, interactions, processors; the action moves to the end of its map), `add_binding`, `add_composite`
 (`parts` as `name=path;...`), `set_binding` and `remove_binding` (by `index` or `id`), `add_scheme` (`devices`
-separated by `;`, `?` for optional), `remove_scheme`. Unknown device layouts in a path come back as warnings.
+separated by `;`, `?` for optional), `remove_scheme`. Unknown device layouts in a path come back as warnings, and so
+do a binding's control that another action in the asset is already bound to (naming it: `<Keyboard>/leftShift is also
+bound to Player/Sprint`) and `groups` that match none of the asset's control schemes once the batch has run.
 
 **Drive the game.** In Play mode:
 ```
@@ -625,7 +641,10 @@ Pipeline's `animation.animator` commands create controllers and add layers, para
   `index` among several, `conditions` as `Param Mode [Threshold]` separated by `;`, checked against the parameter's
   type), `remove_transition`, `remove_parameter` (also removes the conditions that use it), `set_parameter` (default
   value), `set_layer`, `remove_layer`, `add_blendtree` (on a new or existing state). A motion is a clip path, or a
-  model's clip as `Assets/Char.fbx@Run`.
+  model's clip as `Assets/Char.fbx@Run`. A bare model path is its clip only when it has one; with several it fails
+  (exit 2) listing them, and so does a name two of its clips share (a model can import a 1-frame pose under the same
+  name): cut a uniquely named clip with `cliext.anim edit_clips` (`add_clip`). The same holds for `cliext.anim` and
+  `cliext.timeline add_clip`.
 - `live --object <GameObject>` (Play mode): each layer's current state by name, normalized time, clips and their
   weights, the transition in progress, and every parameter's value.
 - `drive --object <GameObject> --parameter Speed --value 1` sets a parameter (a Trigger with `true`/`false` sets or
@@ -670,8 +689,13 @@ Pipeline's `animation.timeline` commands create a timeline and add tracks and cl
   track; a track is its name, its path through groups, or its index.
 - `bind --director <GameObject> --track Moves --object Player`: binds a track to a scene object (the component the
   track needs, such as its Animator), or `none`.
-- `director --director <GameObject> [--time 1.5] [--action play|pause|resume|stop]`: scrubs (evaluating that frame,
-  in Edit mode too), plays and reads a director's time, duration and state.
+- `director --director <GameObject> [--time 1.5] [--action play|pause|resume|stop] [--read "Player/Hips;Prop"]
+  [--keep-pose true]`: scrubs (evaluating that frame, in Edit mode too), plays and reads a director's time, duration
+  and state, and `tracks`: each track's active clip (two while they blend, with weights), its local time, the
+  AnimationClip it plays and that clip's length. In Edit mode a scrub is sampled as the Timeline window previews it:
+  the bound objects are put back afterwards, so saving the scene doesn't save the scrubbed pose (`scene` says so).
+  `--read` returns the named objects' position and rotation at that time, before they are put back; `--keep-pose
+  true` leaves the frame in the scene instead and marks it unsaved.
 
 ## UI Toolkit
 `cliext.uitk` edits UXML and USS files and works with the live UI in Play mode.
@@ -701,6 +725,8 @@ UXML ops: `add` (no selector adds at the top level), `remove`, `move`, `set_attr
 - `click --selector "#start"`: clicks a button the way a navigation submit does, so its `clicked` handlers run once.
 - `set_value --selector "#volume" --value 0.5`: sets a field's value (TextField, Toggle, Slider, DropdownField, ...;
   its change event fires) or a label's text.
+- `click` and `set_value` act on the first match and return `matches`; when the selector matches more than one, they
+  warn naming the matches, so narrow it (`#name`, or a parent) to pick the one meant.
 
 ## Splines
 With the Splines package in the project, `cliext.splines` works with the SplineContainers in the open scenes:
@@ -780,7 +806,8 @@ platform override. Each changed asset comes back with `name: old -> new`.
   `auto|linear|constant|free`; replaces a key at that time), `remove_key`, `add_event` (seconds, function, parameter),
   `remove_event`, `set_settings` (`loopTime`, `loopBlend`, `cycleOffset`, `mirror`, ...).
 - `mask --path Upper.mask [--humanoid "LeftLeg=false;RightLeg=false"] [--from Hero.fbx] [--transforms
-  "Hips/LeftUpLeg/*=false"]`: creates or changes an AvatarMask; `--from` lists a model's transforms in it.
+  "Hips/LeftUpLeg/*=false"]`: creates or changes an AvatarMask, making missing folders; `--from` lists a model's
+  transforms in it.
 - `check --model Hero.prefab --clips "Hero.controller;Assets/Anims/Extra.fbx"`: whether the clips fit the model:
   humanoid clips on a model without a humanoid avatar, generic clips on a humanoid, an invalid avatar, animated paths
   the model doesn't have, curves for components it doesn't have (a SpriteRenderer clip on a 3D model), legacy clips.
@@ -902,20 +929,20 @@ All under `unity command --project-path <project>`:
 | `cliext.vfx edit --path <vfx> --ops <json> \| --ops-file <path>` | Many edits, one save and compile. |
 | `cliext.vfx check --path <vfx> [--strict true]` | Mistakes that compile but show nothing, VFX Graph's own warnings, and the attributes each event reads from script. |
 | `cliext.shadergraph types [--filter text] [--targets true]` | The nodes by menu path, or the targets and materials. |
-| `cliext.shadergraph inspect --path <graph> [--id node]` | Blocks, nodes, slots, properties and compile errors. |
+| `cliext.shadergraph inspect --path <graph> [--id node]` | Target settings, blocks, nodes, slots, properties (with their modes) and compile errors. |
 | `cliext.shadergraph create --path <graph> --target T [--material M] \| --from <graph>` | Creates a graph. |
 | `cliext.shadergraph add` / `add_property` / `remove` / `set` / `link` / `unlink` | One edit, then save and compile. |
-| `cliext.shadergraph edit --path <graph> --ops-file <path>` | Many edits, one save and compile. |
-| `cliext.input inspect --path <inputactions>` / `edit --ops-file <path>` | Read and edit maps, actions, bindings and schemes. |
+| `cliext.shadergraph edit --path <graph> --ops-file <path>` | Many edits, one save and compile; `set_target` (alpha clipping, surface type, ...) and `set_mode` (slider, integer, HDR) included. |
+| `cliext.input inspect --path <inputactions>` / `edit --ops-file <path>` | Read and edit maps, actions, bindings and schemes; warns on controls bound twice and groups with no scheme. |
 | `cliext.input add_device` / `remove_device` / `devices` | Virtual input devices. |
 | `cliext.input set` / `press` / `actions` | Drive controls and read the game's actions (Play mode). |
 | `cliext.input record_start` / `record_stop` / `replay` / `replay_status` | Record and replay input. |
 | `cliext.animator inspect` / `validate` / `edit --path <controller>` | Read, check and edit an AnimatorController. |
 | `cliext.animator live` / `drive --object <GameObject>` | An Animator's live state, and driving it (Play mode). |
 | `cliext.cinemachine list` / `create` / `set` / `blend` | Cinemachine cameras, the live camera and blends. |
-| `cliext.timeline inspect` / `edit` / `bind` / `director` | Timeline clips, tracks, markers, bindings and scrubbing. |
+| `cliext.timeline inspect` / `edit` / `bind` / `director [--read objs] [--keep-pose true]` | Timeline clips, tracks, markers, bindings and scrubbing (Edit-mode scrubs put the bound objects back; the active clip per track). |
 | `cliext.uitk inspect` / `edit --path <uxml or uss>` | Read and edit UXML and USS, checked by the importer. |
-| `cliext.uitk tree` / `query` / `click` / `set_value` | The live visual tree, clicking and setting values. |
+| `cliext.uitk tree` / `query` / `click` / `set_value` | The live visual tree, clicking and setting values (`matches`, and a warning for an ambiguous selector). |
 | `cliext.splines list` / `inspect` / `create` / `edit` / `sample` | SplineContainers, knots, and sampling. |
 | `cliext.addressables status` / `init` / `entries` / `edit` / `build` / `analyze` | Addressables groups, entries, builds and Analyze. |
 | `cliext.import batch --folder <f> --set "k=v;..."` | Import settings across many assets. |

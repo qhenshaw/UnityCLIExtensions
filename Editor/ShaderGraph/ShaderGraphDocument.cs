@@ -187,16 +187,10 @@ namespace UnityCLIExtensions.ShaderGraph
         private static void CreateParentFolders(string path)
         {
             string folder = Path.GetDirectoryName(path)?.Replace('\\', '/');
-            if (!string.IsNullOrEmpty(folder) && !AssetDatabase.IsValidFolder(folder)) CreateFolders(folder);
-        }
-
-        private static void CreateFolders(string folder)
-        {
-            string parent = Path.GetDirectoryName(folder)?.Replace('\\', '/');
-            if (string.IsNullOrEmpty(parent) || !(parent == "Assets" || parent.StartsWith("Assets/") || parent.StartsWith("Packages/")))
+            if (string.IsNullOrEmpty(folder) || AssetDatabase.IsValidFolder(folder)) return;
+            if (!ProjectFolders.IsProjectFolder(folder))
                 throw new UsageException($"'{folder}' isn't under Assets/ (or inside a package): pass a path such as Assets/Shaders/Glow.shadergraph.");
-            if (!AssetDatabase.IsValidFolder(parent)) CreateFolders(parent);
-            AssetDatabase.CreateFolder(parent, Path.GetFileName(folder));
+            ProjectFolders.Ensure(folder);
         }
 
         /// <summary>
@@ -279,6 +273,11 @@ namespace UnityCLIExtensions.ShaderGraph
             if (node == null) throw new ArgumentException($"No node with id '{id}'. See cliext.shadergraph inspect.");
             return node;
         }
+
+        /// <summary>For tests, which can't see Shader Graph's internals: the blocks add_block offers, the fragment blocks, the first target's settings.</summary>
+        internal string[] AvailableBlockNames() => ShaderGraphOps.AvailableBlocks(graph).Select(d => d.displayName).ToArray();
+        internal string[] FragmentBlockNames() => graph.fragmentContext.blocks.Select(b => b.value.descriptor?.displayName).ToArray();
+        internal Dictionary<string, string> FirstTargetSettings() => ShaderGraphOps.DescribeTargetSettings(graph.activeTargets.First());
 
         public bool HasNode(string id) => !string.IsNullOrWhiteSpace(id) && graph.GetNodeFromId(id.Trim()) != null;
 

@@ -195,11 +195,11 @@ namespace UnityCLIExtensions.Timeline
             TimelineAsset t;
             try { t = Load(path); } catch (ArgumentException e) { cmd.Fail(e.Message); return AnimationErrors.Exit(e); }
             var results = new List<object>();
-            if (!TryApplyAll(t, list.ops, results, out int failedAt, out string error))
+            if (!TryApplyAll(t, list.ops, results, out int failedAt, out string error, out Exception failure))
             {
                 cmd.Result.Write(new { path, applied = 0, failedAt, error, saved = false });
                 cmd.Fail($"Op {failedAt} ({list.ops[failedAt].op}) failed: {error} Nothing was saved.");
-                return ExitCode.Failed;
+                return AnimationErrors.BatchExit(failure);
             }
             cmd.Result.Write(new { path, applied = results.Count, results, duration = t.duration });
             return ExitCode.Success;
@@ -209,10 +209,14 @@ namespace UnityCLIExtensions.Timeline
         /// Applies every op and saves once; on the first failure puts the timeline back as it was, on disk and in memory
         /// (removed tracks, clips and their assets included, through the batch's Undo group), and saves nothing.
         /// </summary>
-        internal static bool TryApplyAll(TimelineAsset t, IList<TimelineOp> ops, List<object> results, out int failedAt, out string error)
+        internal static bool TryApplyAll(TimelineAsset t, IList<TimelineOp> ops, List<object> results, out int failedAt, out string error) =>
+            TryApplyAll(t, ops, results, out failedAt, out error, out _);
+
+        internal static bool TryApplyAll(TimelineAsset t, IList<TimelineOp> ops, List<object> results, out int failedAt, out string error, out Exception failure)
         {
             string assetPath = AssetDatabase.GetAssetPath(t);
             using var rollback = AssetRollback.Begin(new[] { assetPath }, revertUndo: true);
+            failure = null;
             for (int i = 0; i < ops.Count; i++)
             {
                 try { results.Add(Apply(t, ops[i])); }
@@ -220,6 +224,7 @@ namespace UnityCLIExtensions.Timeline
                 {
                     results.Clear();
                     rollback.Rollback();
+                    failure = e;
                     failedAt = i;
                     error = AnimationErrors.Message(e);
                     return false;
@@ -407,7 +412,12 @@ namespace UnityCLIExtensions.Timeline
             int at = path.LastIndexOf('@');
             if (at > 0 && !File.Exists(path)) { sub = path.Substring(at + 1); path = path.Substring(0, at); }
             var all = AssetDatabase.LoadAllAssetsAtPath(path).OfType<T>().Where(c => !c.name.StartsWith("__preview__")).ToList();
-            var found = sub == null ? AssetDatabase.LoadAssetAtPath<T>(path) ?? all.FirstOrDefault() : all.FirstOrDefault(c => string.Equals(c.name, sub, StringComparison.OrdinalIgnoreCase));
+            T found;
+            if (typeof(T) == typeof(AnimationClip) && AssetImporter.GetAtPath(path) is ModelImporter)
+                // A model: a bare path names its clip only when it has one; a name two clips share names neither.
+                found = AnimationErrors.ModelClip(path, sub) as T;
+            else
+                found = sub == null ? AssetDatabase.LoadAssetAtPath<T>(path) ?? all.FirstOrDefault() : all.FirstOrDefault(c => string.Equals(c.name, sub, StringComparison.OrdinalIgnoreCase));
             if (found != null) return found;
             var main = AssetDatabase.LoadMainAssetAtPath(path);
             if (main == null)
@@ -470,14 +480,18 @@ namespace UnityCLIExtensions.Timeline
                 (inChild != null ? $" Its child '{inChild.gameObject.name}' has one: pass --object {inChild.gameObject.name}." : $" Add {AnimationErrors.A(bindingType.Name)} to it, or bind an object that has one."));
         }
 
-        [CliGroupCommand(Group, "Control a PlayableDirector: --time seconds scrubs to that time and evaluates (in Edit mode the scene shows that frame), --action play|pause|resume|stop (play, pause and resume need Play mode). " +
-                                "Returns the director's time, duration and state. An unknown director exits 13; a bad --time or --action exits 2.",
+        [CliGroupCommand(Group, "Control a PlayableDirector: --time seconds scrubs to that time and evaluates, --action play|pause|resume|stop (play, pause and resume need Play mode). " +
+                                "Returns the director's time, duration and state, and each track's active clip with its local time. In Edit mode a scrub is sampled as the Timeline window previews: " +
+                                "the bound objects are put back afterwards, so the scene keeps its saved pose; --read names objects whose pose at that time is returned, and --keep-pose true leaves the frame in the scene instead (and marks it dirty). " +
+                                "An unknown director or --read object exits 13; a bad --time or --action exits 2.",
             Name = "director", Tags = new[] { "cliext", "timeline" }, Effect = CommandEffect.Destructive)]
         internal static ExitCode Director(
             CommandContext cmd,
             [CliArg("director", "The GameObject with the PlayableDirector", Required = true)] string director,
             [CliArg("time", "Scrub to this time in seconds, 0 to the timeline's duration (default -1: don't scrub)")] double time = -1,
-            [CliArg("action", "play, pause, resume, stop, or empty to just read (play, pause and resume need Play mode)")] string action = "")
+            [CliArg("action", "play, pause, resume, stop, or empty to just read (play, pause and resume need Play mode)")] string action = "",
+            [CliArg("read", "Objects (names or hierarchy paths, separated by ;) whose position and rotation at --time are returned, before Edit mode puts them back")] string read = "",
+            [CliArg("keep-pose", "Edit mode: leave the scrubbed frame in the scene (it is then saved with the scene) instead of putting the bound objects back")] bool keepPose = false)
         {
             try
             {
@@ -485,7 +499,11 @@ namespace UnityCLIExtensions.Timeline
                 if (a != "" && a != "play" && a != "pause" && a != "resume" && a != "stop")
                     throw new AnimUsageException($"Unknown action '{action}'. Use one of: play, pause, resume, stop (or leave it out to just read).");
                 if (double.IsNaN(time) || (time < 0 && time != -1)) throw new AnimUsageException($"--time must be 0 or more seconds (or -1 not to scrub), not {Num(time)}.");
+                var readObjects = (read ?? "").Split(';').Select(s => s.Trim()).Where(s => s.Length > 0).ToList();
+                if (readObjects.Count > 0 && time < 0) throw new AnimUsageException("--read reports the pose at --time: pass --time too.");
+                if (keepPose && time < 0) throw new AnimUsageException("--keep-pose keeps a scrubbed frame: pass --time too.");
                 var d = FindDirector(director);
+                var readGos = readObjects.Select(FindGameObject).ToList();
                 if ((a != "" || time >= 0) && d.playableAsset == null)
                     throw new ArgumentException($"{d.name}'s director has no Playable Asset to {(a != "" ? a : "scrub")}. Set it to a .playable timeline first.");
                 if (time >= 0 && d.playableAsset != null && time > d.playableAsset.duration + 1e-6)
@@ -502,11 +520,11 @@ namespace UnityCLIExtensions.Timeline
                     case "resume": d.Resume(); break;
                     case "stop": d.Stop(); break;
                 }
+                List<object> pose = null;
+                string scene = null;
                 if (time >= 0)
                 {
-                    if (d.playableGraph.IsValid() == false) d.RebuildGraph();
-                    d.time = time;
-                    d.Evaluate();
+                    pose = Scrub(d, time, readGos, restore: !keepPose, out scene);
                     if (!Application.isPlaying) SceneView.RepaintAll();
                 }
                 cmd.Result.Write(new
@@ -516,11 +534,147 @@ namespace UnityCLIExtensions.Timeline
                     time = Math.Round(d.time, 4),
                     duration = d.duration,
                     state = d.state.ToString(),
-                    wrapMode = d.extrapolationMode.ToString()
+                    wrapMode = d.extrapolationMode.ToString(),
+                    tracks = d.playableAsset is TimelineAsset tl ? ActiveClips(tl, d.time) : null,
+                    read = pose,
+                    scene
                 });
                 return ExitCode.Success;
             }
             catch (ArgumentException e) { cmd.Fail(e.Message); return AnimationErrors.Exit(e); }
+        }
+
+        // Timeline's own collector (internal to Unity.Timeline.Editor): what the Timeline window uses to record the
+        // properties a timeline animates, so that leaving preview puts them back.
+        private static readonly Type PropertyCollectorType = Type.GetType("UnityEditor.Timeline.PropertyCollector, Unity.Timeline.Editor");
+        private static readonly System.Reflection.PropertyInfo PreviewDriverProperty = Type.GetType("UnityEditor.Timeline.WindowState, Unity.Timeline.Editor")
+            ?.GetProperty("previewDriver", System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic);
+
+        /// <summary>
+        /// Evaluates the director at <paramref name="time"/> and reads the poses of <paramref name="read"/>. In Edit mode,
+        /// with <paramref name="restore"/>, the evaluation runs in AnimationMode after gathering the timeline's animated
+        /// properties (as the Timeline window's preview does), so stopping it puts every bound object back.
+        /// </summary>
+        internal static List<object> Scrub(PlayableDirector d, double time, IList<GameObject> read, bool restore, out string scene)
+        {
+            var readings = new List<object>();
+            void Evaluate()
+            {
+                if (!d.playableGraph.IsValid()) d.RebuildGraph();
+                d.time = time;
+                d.Evaluate();
+                foreach (var go in read) readings.Add(DescribePose(go));
+            }
+            if (Application.isPlaying) { Evaluate(); scene = null; return readings; }
+            if (!restore)
+            {
+                Evaluate();
+                EditorSceneManager.MarkSceneDirty(d.gameObject.scene);
+                scene = "kept: the scene now holds this frame (marked unsaved); reopen it without saving to drop the pose";
+                return readings;
+            }
+            if (AnimationMode.InAnimationMode())
+            {
+                // The Timeline (or Animation) window is previewing: its own preview puts the objects back when it stops.
+                Evaluate();
+                scene = "previewed in the open Timeline or Animation window, which puts the objects back when its preview stops";
+                return readings;
+            }
+            // Timeline's preview driver: its property collector registers driven transforms under this one.
+            var driver = PreviewDriverProperty?.GetValue(null) as AnimationModeDriver;
+            bool ownDriver = driver == null;
+            if (ownDriver) { driver = ScriptableObject.CreateInstance<AnimationModeDriver>(); driver.hideFlags = HideFlags.HideAndDontSave; }
+            // Animation mode reverts what the collector recorded; a humanoid's bones that aren't keyed directly can
+            // keep a residue, so the bound hierarchies' transforms are also put back from a snapshot.
+            var snapshot = Snapshot(d);
+            try
+            {
+                AnimationMode.StartAnimationMode(driver);
+                if (PropertyCollectorType != null && !ownDriver && d.playableAsset is IPropertyPreview preview)
+                {
+                    var collector = (IPropertyCollector)Activator.CreateInstance(PropertyCollectorType, true);
+                    collector.PushActiveGameObject(null); // unbound tracks add nothing
+                    preview.GatherProperties(d, collector);
+                }
+                Evaluate();
+            }
+            finally
+            {
+                AnimationMode.StopAnimationMode(driver);
+                if (ownDriver) UnityEngine.Object.DestroyImmediate(driver);
+                snapshot?.Invoke();
+            }
+            scene = "unchanged: the bound objects were put back after sampling (pass --keep-pose true to keep the frame)";
+            return readings;
+        }
+
+        /// <summary>The bound hierarchies' transforms and active flags, as an action that puts back the ones that changed.</summary>
+        private static Action Snapshot(PlayableDirector d)
+        {
+            var saved = new List<Action>();
+            foreach (var output in d.playableAsset.outputs)
+            {
+                var bound = output.sourceObject != null ? d.GetGenericBinding(output.sourceObject) : null;
+                var go = bound is GameObject g ? g : bound is Component c ? c.gameObject : null;
+                if (go == null) continue;
+                foreach (var t in go.GetComponentsInChildren<Transform>(true))
+                {
+                    var (p, r, s, active) = (t.localPosition, t.localRotation, t.localScale, t.gameObject.activeSelf);
+                    saved.Add(() =>
+                    {
+                        if (t == null) return;
+                        if (t.localPosition != p) t.localPosition = p;
+                        if (t.localRotation != r) t.localRotation = r;
+                        if (t.localScale != s) t.localScale = s;
+                        if (t.gameObject.activeSelf != active) t.gameObject.SetActive(active);
+                    });
+                }
+            }
+            return () => { foreach (var a in saved) a(); };
+        }
+
+        private static object DescribePose(GameObject go)
+        {
+            double[] V(Vector3 v) => new[] { Math.Round(v.x, 4), Math.Round(v.y, 4), Math.Round(v.z, 4) };
+            var t = go.transform;
+            return new { @object = PathOf(t), position = V(t.position), rotation = V(t.eulerAngles), localPosition = V(t.localPosition), localRotation = V(t.localEulerAngles) };
+        }
+
+        private static string PathOf(Transform t) => t.parent == null ? t.name : PathOf(t.parent) + "/" + t.name;
+
+        /// <summary>Each track's clip at <paramref name="time"/> (or clips, while two blend), with the clip's local time and the AnimationClip it plays.</summary>
+        internal static object[] ActiveClips(TimelineAsset t, double time)
+        {
+            var list = new List<object>();
+            foreach (var (path, track) in Tracks(t))
+            {
+                if (track is GroupTrack) continue;
+                var clips = track.GetClips().ToList();
+                if (clips.Count == 0) continue;
+                var active = clips.Where(c => time >= c.start && (time < c.end || (Math.Abs(time - c.end) < 1e-6 && c.end >= t.duration - 1e-6))).ToList();
+                string extrapolated = null;
+                if (active.Count == 0)
+                {
+                    var held = clips.FirstOrDefault(c => c.hasPostExtrapolation && time >= c.end && time < c.extrapolatedStart + c.extrapolatedDuration)
+                               ?? clips.FirstOrDefault(c => c.hasPreExtrapolation && time < c.start && time >= c.extrapolatedStart);
+                    if (held != null) { active.Add(held); extrapolated = (time < held.start ? held.preExtrapolationMode : held.postExtrapolationMode).ToString(); }
+                }
+                list.Add(new
+                {
+                    track = path,
+                    muted = track.muted ? true : (bool?)null,
+                    clips = active.Select(c => new
+                    {
+                        clip = c.displayName,
+                        localTime = Math.Round(c.ToLocalTime(time), 4),
+                        animationClip = c.animationClip != null ? c.animationClip.name : null,
+                        clipLength = c.animationClip != null ? Math.Round(c.animationClip.length, 4) : (double?)null,
+                        weight = active.Count > 1 ? Math.Round(c.EvaluateMixIn(time) * c.EvaluateMixOut(time), 4) : (double?)null,
+                        extrapolated
+                    }).ToArray()
+                });
+            }
+            return list.ToArray();
         }
 
         private static PlayableDirector FindDirector(string name)

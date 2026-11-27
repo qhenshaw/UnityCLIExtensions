@@ -66,7 +66,7 @@ namespace UnityCLIExtensions.ShaderGraph
             {
                 path = doc.path,
                 subGraph = graph.isSubGraph,
-                targets = graph.activeTargets.Select(t => new { target = t.displayName, material = t.activeSubTarget?.displayName }).ToArray(),
+                targets = graph.activeTargets.Select(t => new { target = t.displayName, material = t.activeSubTarget?.displayName, settings = ShaderGraphOps.DescribeTargetSettings(t) }).ToArray(),
                 vertex = graph.vertexContext.blocks.Select(b => ShaderGraphOps.DescribeNode(graph, b.value, details)).ToArray(),
                 fragment = graph.fragmentContext.blocks.Select(b => ShaderGraphOps.DescribeNode(graph, b.value, details)).ToArray(),
                 blocksAvailable = ShaderGraphOps.AvailableBlocks(graph).Select(d => d.displayName).ToArray(),
@@ -172,8 +172,10 @@ namespace UnityCLIExtensions.ShaderGraph
             => RunOps(cmd, path, new[] { new ShaderGraphOp { op = "unlink", from = from, to = to } }, false);
 
         [CliGroupCommand(Group, "Apply many edits in order, then save and compile once. --ops (or --ops-file) is a JSON array: " +
-                                "{\"op\":\"add_node\",\"type\":\"Math/Basic/Multiply\",\"as\":\"mul\"}, then \"$mul\". Ops: add_node, add_property, add_block, add_port, remove_port, remove, set (slot, setting or property), link, unlink, move, rename, expose, " +
-                                "with the fields of the single commands; add_block takes block (see inspect blocksAvailable); add_port takes id (a Custom Function), name, type and value \"out\" for an output; " +
+                                "{\"op\":\"add_node\",\"type\":\"Math/Basic/Multiply\",\"as\":\"mul\"}, then \"$mul\". Ops: add_node, add_property, add_block, add_port, remove_port, remove, set (slot, setting or property), set_target, set_mode, link, unlink, move, rename, expose, " +
+                                "with the fields of the single commands; add_block takes block (see inspect blocksAvailable); " +
+                                "set_target takes setting and value for the Graph Settings (alphaClip true, surfaceType Transparent, allowMaterialOverride, castShadows, ...; see inspect targets settings; target names one when there are several) and adds the blocks they bring (Alpha Clip Threshold); " +
+                                "set_mode takes id (a property) and mode: a float's default, slider (with min and max) or integer, a colour's default or hdr;add_port takes id (a Custom Function), name, type and value \"out\" for an output; " +
                                 "remove_port takes id, name and value \"out\"; move takes id, x, y; rename takes id (a property) and name and/or reference; expose takes id (a property) and value true/false. " +
                                 "An op that fails saves nothing: the graph is left as it was. When the saved shader has compile or node errors the edit is kept but exits 6 (see compile in the reply). Refuses while the graph is open in a Shader Graph window (--force true to edit anyway).",
             Name = "edit", Tags = new[] { "cliext", "shadergraph" }, Effect = CommandEffect.Destructive)]

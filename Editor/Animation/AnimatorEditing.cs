@@ -114,7 +114,12 @@ namespace UnityCLIExtensions.Animation
             int at = spec.LastIndexOf('@');
             if (at > 0 && !spec.EndsWith(".anim", StringComparison.OrdinalIgnoreCase)) { path = spec.Substring(0, at); sub = spec.Substring(at + 1); }
             var assets = AssetDatabase.LoadAllAssetsAtPath(path).OfType<Motion>().Where(m => !m.name.StartsWith("__preview__")).ToList();
-            var motion = sub == null ? (AssetDatabase.LoadAssetAtPath<Motion>(path) ?? assets.FirstOrDefault())
+            Motion motion;
+            if (AssetImporter.GetAtPath(path) is ModelImporter)
+                // A model: a bare path names its clip only when it has one; a name two clips share names neither.
+                motion = AnimationErrors.ModelClip(path, sub);
+            else
+                motion = sub == null ? (AssetDatabase.LoadAssetAtPath<Motion>(path) ?? assets.FirstOrDefault())
                                      : assets.FirstOrDefault(m => string.Equals(m.name, sub, StringComparison.OrdinalIgnoreCase));
             return motion ?? throw new ArgumentException($"No motion '{spec}'." + (assets.Count > 0
                 ? $" Clips there: {string.Join(", ", assets.Select(m => m.name))}."
@@ -361,17 +366,22 @@ namespace UnityCLIExtensions.Animation
         /// Applies every op and saves the controller once, or, when one fails, puts the controller back as it was on
         /// disk and in memory (states and transitions the batch removed included) and saves nothing.
         /// </summary>
-        public static bool TryApplyAll(AnimatorController c, IList<AnimatorOp> ops, List<object> results, out int failedAt, out string error)
+        public static bool TryApplyAll(AnimatorController c, IList<AnimatorOp> ops, List<object> results, out int failedAt, out string error) =>
+            TryApplyAll(c, ops, results, out failedAt, out error, out _);
+
+        public static bool TryApplyAll(AnimatorController c, IList<AnimatorOp> ops, List<object> results, out int failedAt, out string error, out Exception failure)
         {
             failedAt = -1;
             error = null;
             using var rollback = AssetRollback.Begin(new[] { AssetDatabase.GetAssetPath(c) }, revertUndo: true);
+            failure = null;
             for (int i = 0; i < ops.Count; i++)
             {
                 try { results.Add(Apply(c, ops[i])); }
                 catch (Exception e)
                 {
                     failedAt = i;
+                    failure = e;
                     error = AnimationErrors.Message(e);
                     results.Clear();
                     rollback.Rollback();

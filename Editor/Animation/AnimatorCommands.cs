@@ -64,11 +64,11 @@ namespace UnityCLIExtensions.Animation
             try { c = AnimatorEditing.Load(path); }
             catch (ArgumentException e) { cmd.Fail(e.Message); return AnimationErrors.Exit(e); }
             var results = new List<object>();
-            if (!AnimatorEditing.TryApplyAll(c, list.ops, results, out int failedAt, out string message))
+            if (!AnimatorEditing.TryApplyAll(c, list.ops, results, out int failedAt, out string message, out Exception failure))
             {
                 cmd.Result.Write(new { path, applied = 0, failedAt, error = message, saved = false });
                 cmd.Fail($"Op {failedAt} ({list.ops[failedAt].op}) failed: {message} Nothing was saved.");
-                return ExitCode.Failed;
+                return AnimationErrors.BatchExit(failure);
             }
             var issues = AnimatorEditing.Validate(c).Where(x => (string)x.GetType().GetProperty("severity").GetValue(x) == "error").ToArray();
             cmd.Result.Write(new { path, applied = results.Count, results, errors = issues });

@@ -35,6 +35,13 @@ namespace UnityCLIExtensions.ShaderGraph
         public string name;
         /// <summary>For add_property: the reference name (_BaseMap).</summary>
         public string reference;
+        /// <summary>For set_target: which target (its display name), when the graph has more than one.</summary>
+        public string target;
+        /// <summary>For set_mode: default, slider, integer (a float) or default, hdr (a colour).</summary>
+        public string mode;
+        /// <summary>For set_mode slider: the range.</summary>
+        public float min = float.NaN;
+        public float max = float.NaN;
     }
 
     [Serializable]
@@ -100,7 +107,7 @@ namespace UnityCLIExtensions.ShaderGraph
                 {
                     if (string.IsNullOrWhiteSpace(op.block)) throw new ArgumentException("add_block needs a block name (see cliext.shadergraph inspect, blocksAvailable).");
                     var descriptor = AvailableBlocks(graph).FirstOrDefault(d => Matches(d, op.block))
-                                     ?? throw new ArgumentException($"No block '{op.block}' for this graph's targets. Available: {string.Join(", ", AvailableBlocks(graph).Select(d => d.displayName))}");
+                                     ?? throw new ArgumentException($"No block '{op.block}' for this graph's targets. Available: {string.Join(", ", AvailableBlocks(graph).Select(d => d.displayName))}." + BlockHint(op.block));
                     var context = descriptor.shaderStage == ShaderStage.Fragment ? graph.fragmentContext : graph.vertexContext;
                     var existing = context.blocks.Select(b => b.value).FirstOrDefault(b => b.descriptor == descriptor);
                     if (existing != null && !string.IsNullOrEmpty(op.@as)) aliases[op.@as] = existing.objectId;
@@ -243,10 +250,179 @@ namespace UnityCLIExtensions.ShaderGraph
                     property.generatePropertyBlock = string.IsNullOrEmpty(op.value) || ValueText.Parse(op.value, typeof(bool)) is true;
                     return new { op = "expose", id = op.id, exposed = property.generatePropertyBlock };
                 }
+                case "set_target":
+                    return SetTarget(graph, op);
+                case "set_mode":
+                    return SetMode(doc.FindProperty(Id(op.id)), op);
                 default:
-                    throw new ArgumentException($"Unknown op '{op.op}'. Ops: add_node, add_property, add_block, add_port, remove_port, remove, set, link, unlink, move, rename, expose.");
+                    throw new ArgumentException($"Unknown op '{op.op}'. Ops: {OpNames}.");
             }
         }
+
+        public const string OpNames = "add_node, add_property, add_block, add_port, remove_port, remove, set, set_target, set_mode, link, unlink, move, rename, expose";
+
+        // ---------------------------------------------------------------------------------------------------------
+        // Target settings (Graph Settings: alpha clipping, surface type, ...) and property modes
+
+        /// <summary>A target setting (on the target or its material type) that text can set.</summary>
+        internal sealed class TargetSetting
+        {
+            public object owner;
+            public System.Reflection.PropertyInfo member;
+            public bool onMaterial;
+        }
+
+        /// <summary>
+        /// The settings of a target (UniversalTarget's alphaClip, surfaceType, allowMaterialOverride, ...) and of its
+        /// material type (Lit's workflowMode, ...): public read/write bool, enum, int and float properties.
+        /// </summary>
+        public static IEnumerable<TargetSetting> TargetSettings(Target target)
+        {
+            const System.Reflection.BindingFlags flags = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public;
+            bool Settable(System.Reflection.PropertyInfo p) =>
+                p.CanRead && p.CanWrite && p.GetSetMethod() != null && p.GetIndexParameters().Length == 0 &&
+                (p.PropertyType == typeof(bool) || p.PropertyType.IsEnum || p.PropertyType == typeof(int) || p.PropertyType == typeof(float));
+            var skip = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "isHidden", "displayName" };
+            for (var t = target.GetType(); t != null && t != typeof(Target); t = t.BaseType)
+                foreach (var p in t.GetProperties(flags | System.Reflection.BindingFlags.DeclaredOnly))
+                    if (Settable(p) && !skip.Contains(p.Name)) yield return new TargetSetting { owner = target, member = p };
+            var sub = target.activeSubTarget;
+            if (sub == null) yield break;
+            for (var t = sub.GetType(); t != null && t != typeof(SubTarget); t = t.BaseType)
+                foreach (var p in t.GetProperties(flags | System.Reflection.BindingFlags.DeclaredOnly))
+                    if (Settable(p) && !skip.Contains(p.Name)) yield return new TargetSetting { owner = sub, member = p, onMaterial = true };
+        }
+
+        /// <summary>The target's settings as name → value, for inspect.</summary>
+        public static Dictionary<string, string> DescribeTargetSettings(Target target)
+        {
+            var d = new Dictionary<string, string>();
+            foreach (var s in TargetSettings(target))
+                if (!d.ContainsKey(s.member.Name)) d[s.member.Name] = SafeFormat(() => s.member.GetValue(s.owner));
+            return d;
+        }
+
+        private static object SetTarget(GraphData graph, ShaderGraphOp op)
+        {
+            var targets = graph.activeTargets.ToList();
+            if (targets.Count == 0) throw new ArgumentException("This graph has no target (a sub graph, or a graph made without --target): set_target needs one.");
+            Target target;
+            if (!string.IsNullOrWhiteSpace(op.target))
+                target = targets.FirstOrDefault(t => string.Equals(t.displayName, op.target.Trim(), StringComparison.OrdinalIgnoreCase))
+                         ?? throw new ArgumentException($"The graph has no target '{op.target}'. Its targets: {string.Join(", ", targets.Select(t => t.displayName))}.");
+            else if (targets.Count == 1) target = targets[0];
+            else throw new ArgumentException($"The graph has {targets.Count} targets: pass target ({string.Join(", ", targets.Select(t => t.displayName))}).");
+
+            var all = TargetSettings(target).ToList();
+            if (string.IsNullOrWhiteSpace(op.setting))
+                throw new ArgumentException($"set_target needs a setting. {target.displayName} has: {string.Join(", ", all.Select(s => s.member.Name))}.");
+            var setting = all.FirstOrDefault(s => string.Equals(s.member.Name, op.setting.Trim(), StringComparison.OrdinalIgnoreCase));
+            if (setting == null)
+            {
+                var close = all.Where(s => s.member.Name.IndexOf(op.setting.Trim(), StringComparison.OrdinalIgnoreCase) >= 0 ||
+                                           op.setting.Trim().IndexOf(s.member.Name, StringComparison.OrdinalIgnoreCase) >= 0).Select(s => s.member.Name).ToList();
+                throw new ArgumentException($"{target.displayName} has no setting '{op.setting}'." + (close.Count > 0 ? $" Did you mean {string.Join(", ", close)}?" : "") +
+                                            $" Settings: {string.Join(", ", all.Select(s => s.member.Name))}.");
+            }
+            if (op.value == null) throw new ArgumentException($"set_target needs a value for {setting.member.Name} ({ValueHint(setting.member.PropertyType)}).");
+            object parsed = ValueText.Parse(op.value, setting.member.PropertyType);
+            object before = setting.member.GetValue(setting.owner);
+            if (Equals(before, parsed)) throw new ArgumentException($"{target.displayName} {setting.member.Name} is already {ValueText.Format(before)}: nothing to change.");
+
+            var blocksBefore = new HashSet<BlockFieldDescriptor>(graph.GetActiveBlocksForAllActiveTargets());
+            setting.member.SetValue(setting.owner, parsed);
+            // As the Graph Settings inspector does: the blocks the new settings use are added (Alpha Clip Threshold
+            // when alpha clipping goes on), and the ones they don't use are marked inactive (never removed).
+            var active = graph.GetActiveBlocksForAllActiveTargets();
+            var added = new List<string>();
+            foreach (var descriptor in active)
+            {
+                if (blocksBefore.Contains(descriptor)) continue;
+                var context = descriptor.shaderStage == ShaderStage.Fragment ? graph.fragmentContext : graph.vertexContext;
+                if (context.blocks.Any(b => b.value.descriptor == descriptor)) continue;
+                var block = (BlockNode)Activator.CreateInstance(typeof(BlockNode));
+                block.Init(descriptor);
+                graph.AddBlock(block, context, context.blocks.Count);
+                added.Add(descriptor.displayName);
+            }
+            graph.UpdateActiveBlocks(graph.GetActiveBlocksForAllActiveTargets());
+            var inactive = graph.vertexContext.blocks.Concat(graph.fragmentContext.blocks)
+                .Where(b => b.value != null && !b.value.isActive).Select(b => b.value.descriptor?.displayName).ToArray();
+            return new
+            {
+                op = "set_target",
+                target = target.displayName,
+                setting = setting.member.Name,
+                value = ValueText.Format(setting.member.GetValue(setting.owner)),
+                was = ValueText.Format(before),
+                blocksAdded = added.Count > 0 ? added.ToArray() : null,
+                blocksInactive = inactive.Length > 0 ? inactive : null
+            };
+        }
+
+        private static string ValueHint(Type t) =>
+            t == typeof(bool) ? "true or false" : t.IsEnum ? string.Join(", ", Enum.GetNames(t)) : "a number";
+
+        private static object SetMode(AbstractShaderProperty property, ShaderGraphOp op)
+        {
+            string mode = (op.mode ?? op.value ?? "").Trim().ToLowerInvariant();
+            bool hasMin = !float.IsNaN(op.min), hasMax = !float.IsNaN(op.max);
+            switch (property)
+            {
+                case Vector1ShaderProperty f:
+                {
+                    FloatType type;
+                    switch (mode)
+                    {
+                        case "default": type = FloatType.Default; break;
+                        case "slider": case "range": type = FloatType.Slider; break;
+                        case "integer": case "int": type = FloatType.Integer; break;
+                        default: throw new ArgumentException($"'{(op.mode ?? op.value)}' isn't a mode for the float '{property.displayName}'. Use one of: default, slider (with min and max), integer.");
+                    }
+                    if ((hasMin || hasMax) && type != FloatType.Slider) throw new ArgumentException("min and max are for mode slider.");
+                    var range = f.rangeValues;
+                    if (type == FloatType.Slider)
+                    {
+                        if (hasMin) range.x = op.min;
+                        if (hasMax) range.y = op.max;
+                        if (range.x >= range.y) throw new ArgumentException($"The slider's min ({range.x}) must be below its max ({range.y}).");
+                    }
+                    if (f.floatType == type && f.rangeValues == range)
+                        throw new ArgumentException($"'{property.displayName}' is already {Describe(f)}: nothing to change.");
+                    f.floatType = type;
+                    f.rangeValues = range;
+                    float clamped = f.value;
+                    if (type == FloatType.Slider) clamped = Mathf.Clamp(f.value, range.x, range.y);
+                    if (type == FloatType.Integer) clamped = Mathf.Round(f.value);
+                    bool changedDefault = !Mathf.Approximately(clamped, f.value);
+                    f.value = clamped;
+                    return new { op = "set_mode", id = op.id, property = property.displayName, mode = Describe(f), value = ValueText.Format(f.value), defaultChanged = changedDefault ? true : (bool?)null };
+                }
+                case ColorShaderProperty c:
+                {
+                    if (hasMin || hasMax) throw new ArgumentException("min and max are for a float's slider mode.");
+                    ColorMode type;
+                    switch (mode)
+                    {
+                        case "default": case "ldr": type = ColorMode.Default; break;
+                        case "hdr": type = ColorMode.HDR; break;
+                        default: throw new ArgumentException($"'{(op.mode ?? op.value)}' isn't a mode for the colour '{property.displayName}'. Use one of: default, hdr.");
+                    }
+                    if (c.colorMode == type) throw new ArgumentException($"'{property.displayName}' is already {type}: nothing to change.");
+                    c.colorMode = type;
+                    return new { op = "set_mode", id = op.id, property = property.displayName, mode = type.ToString() };
+                }
+                default:
+                    throw new ArgumentException($"'{property.displayName}' is a {property.propertyType}: set_mode works on Float (default, slider, integer) and Color (default, hdr) properties.");
+            }
+        }
+
+        private static string Describe(Vector1ShaderProperty f) =>
+            f.floatType == FloatType.Slider ? $"Slider({ValueText.Format(f.rangeValues.x)}, {ValueText.Format(f.rangeValues.y)})" : f.floatType.ToString();
+
+        /// <summary>A property's mode for inspect: Slider(min, max), Integer, HDR, ...; null for types without one.</summary>
+        public static string PropertyMode(AbstractShaderProperty p) =>
+            p is Vector1ShaderProperty f ? Describe(f) : p is ColorShaderProperty c ? c.colorMode.ToString() : null;
 
         /// <summary>
         /// A node's own settings: the writable properties its type declares (not AbstractMaterialNode's), of a type
@@ -293,6 +469,15 @@ namespace UnityCLIExtensions.ShaderGraph
             // Every block the graph's targets know, active or not (the ones the current settings use come first).
             var active = graph.GetActiveBlocksForAllActiveTargets();
             return active.Distinct();
+        }
+
+        /// <summary>The target setting that offers a block the current settings don't (see set_target).</summary>
+        private static string BlockHint(string block)
+        {
+            string b = (block ?? "").Replace(" ", "").ToLowerInvariant();
+            if (b.Contains("alphaclip")) return " Alpha Clip Threshold comes with alpha clipping: first {\"op\":\"set_target\",\"setting\":\"alphaClip\",\"value\":\"true\"}.";
+            if (b == "alpha" || b.EndsWith(".alpha")) return " Alpha comes with alpha clipping or a transparent surface: first {\"op\":\"set_target\",\"setting\":\"alphaClip\",\"value\":\"true\"} (or setting surfaceType, value Transparent).";
+            return " A block can need a target setting first (see set_target and inspect targets settings).";
         }
 
         private static bool Matches(BlockFieldDescriptor d, string name) =>
@@ -345,7 +530,7 @@ namespace UnityCLIExtensions.ShaderGraph
         {
             object value = null;
             try { value = ValueText.Format(ShaderGraphDocument.ReadValue(p)); } catch { }
-            return new { id = p.objectId, name = p.displayName, reference = p.referenceName, type = p.propertyType.ToString(), value, exposed = p.generatePropertyBlock };
+            return new { id = p.objectId, name = p.displayName, reference = p.referenceName, type = p.propertyType.ToString(), mode = PropertyMode(p), value, exposed = p.generatePropertyBlock };
         }
     }
 }

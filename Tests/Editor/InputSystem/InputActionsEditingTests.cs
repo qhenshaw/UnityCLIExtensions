@@ -135,5 +135,42 @@ namespace UnityCLIExtensions.InputSystem.Tests
             Assert.DoesNotThrow(() => InputCommands.InputSystemFind("<Keyboard>/space"));
             Assert.DoesNotThrow(() => InputCommands.InputSystemFind("<Gamepad>/buttonSouth"));
         }
+
+        [Test]
+        public void AddBinding_ToAControlAnotherActionUses_WarnsNamingIt()
+        {
+            var a = InMemory();
+            var warnings = new List<string>();
+            InputActionsEditing.Apply(a, JsonUtility.FromJson<InputOp>("{\"op\":\"add_action\",\"map\":\"Player\",\"action\":\"Dash\",\"type\":\"Button\"}"), warnings);
+            InputActionsEditing.Apply(a, JsonUtility.FromJson<InputOp>("{\"op\":\"add_binding\",\"map\":\"Player\",\"action\":\"Dash\",\"path\":\"<Keyboard>/space\"}"), warnings);
+            Assert.AreEqual(1, warnings.Count, string.Join(" | ", warnings));
+            StringAssert.Contains("<Keyboard>/space is also bound to Player/Jump", warnings[0]);
+            warnings.Clear();
+            InputActionsEditing.Apply(a, JsonUtility.FromJson<InputOp>("{\"op\":\"add_binding\",\"map\":\"Player\",\"action\":\"Dash\",\"path\":\"<Keyboard>/leftShift\"}"), warnings);
+            Assert.IsEmpty(warnings, "A control no other action uses gives no warning.");
+            InputActionsEditing.Apply(a, JsonUtility.FromJson<InputOp>("{\"op\":\"add_composite\",\"map\":\"Player\",\"action\":\"Move\",\"composite\":\"2DVector\",\"parts\":\"Up=<Keyboard>/space;Down=<Keyboard>/s\"}"), warnings);
+            StringAssert.Contains("also bound to Player/Jump, Player/Dash", string.Join(" | ", warnings), "A composite's part is checked too.");
+        }
+
+        [Test]
+        public void Groups_ThatMatchNoControlScheme_Warn_UnlessTheBatchAddsTheScheme()
+        {
+            var a = InMemory();
+            var ops = new[]
+            {
+                JsonUtility.FromJson<InputOp>("{\"op\":\"add_binding\",\"map\":\"Player\",\"action\":\"Jump\",\"path\":\"<Gamepad>/buttonNorth\",\"groups\":\"Gamepads\"}"),
+                JsonUtility.FromJson<InputOp>("{\"op\":\"add_binding\",\"map\":\"Player\",\"action\":\"Jump\",\"path\":\"<Keyboard>/enter\",\"groups\":\"Keyboard&Mouse\"}"),
+                JsonUtility.FromJson<InputOp>("{\"op\":\"add_binding\",\"map\":\"Player\",\"action\":\"Jump\",\"path\":\"<Gamepad>/buttonEast\",\"groups\":\"Gamepad\"}")
+            };
+            foreach (var op in ops) InputActionsEditing.Apply(a, op, new List<string>());
+            var warnings = InputActionsEditing.GroupWarnings(a, ops).ToList();
+            Assert.AreEqual(2, warnings.Count, string.Join(" | ", warnings));
+            StringAssert.Contains("groups 'Gamepads'", warnings[0]);
+            StringAssert.Contains("Did you mean: Gamepad?", warnings[0]);
+            StringAssert.Contains("groups 'Keyboard&Mouse'", warnings[1]);
+
+            a.AddControlScheme("Keyboard&Mouse").WithRequiredDevice("<Keyboard>").Done();
+            Assert.AreEqual(1, InputActionsEditing.GroupWarnings(a, ops).Count(), "A scheme the batch adds (before the check) counts.");
+        }
     }
 }
