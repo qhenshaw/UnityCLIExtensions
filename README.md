@@ -705,8 +705,11 @@ Pipeline's `animation.timeline` commands create a timeline and add tracks and cl
   and state, and `tracks`: each track's active clip (two while they blend, with weights), its local time, the
   AnimationClip it plays and that clip's length. In Edit mode a scrub is sampled as the Timeline window previews it:
   the bound objects are put back afterwards, so saving the scene doesn't save the scrubbed pose (`scene` says so).
-  `--read` returns the named objects' position and rotation at that time, before they are put back; `--keep-pose
-  true` leaves the frame in the scene instead and marks it unsaved.
+  `--read` returns the named objects' position and rotation at that time, before they are put back; each is a name,
+  a path from the scene root (a leading `/` is optional) or a path relative to a bound object (`Root/Hips` under the
+  bound character), and a path that matches nothing says where an object of that name is. `--keep-pose true` leaves
+  the frame in the scene instead and marks it unsaved. The animation skill's `ops/pose.cs` compares a `--read` of
+  every bone with a clip, to prove which clip a character is posed in without changing the scene.
 
 ## UI Toolkit
 `cliext.uitk` edits UXML and USS files and works with the live UI in Play mode.
@@ -728,6 +731,12 @@ UXML ops: `add` (no selector adds at the top level), `remove`, `move`, `set_attr
 `>`. New elements go on their own indented lines. USS ops: `set_rule` (`selector` as written,
 `properties: "padding: 8px; color: #fff"`, merged into the rule or `replace: true`; a missing rule is added),
 `remove_rule`, `remove_property`. An op that fails saves nothing.
+
+**Style sheet links.** A UXML imported right after the USS it names was (re)imported can load with that style sheet
+null, so the UI draws unstyled although the file is right. `inspect` lists each `<Style src>` under `styleSheets`
+(the `.uss` it names, whether it `exists`, whether the imported asset `linked` it) with a warning naming the fix;
+`inspect --reimport true` reimports the UXML and relinks it. `edit` of a UXML checks the links after saving, reimports
+once when one is null, and returns `styleSheets`, `relinked` and `warnings`.
 
 **Live UI** (UIDocuments in the open scenes, so mostly Play mode):
 - `tree [--document <GameObject>] [--depth 8]`: each element's type, name, classes, text or value, screen rect, and
@@ -882,7 +891,9 @@ The package ships Claude Code skills in `Skills~/`:
   `unity-cliext-shadergraph` (Shader Graph), `unity-cliext-animation` (Animator, clips, Timeline),
   `unity-cliext-input` (Input System, including PlayMode input test templates), `unity-cliext-uitk` (UI Toolkit)
   and `unity-cliext-addressables` (Addressables). `unity-cliext-import` (import settings, presets, .unitypackage
-  files) and `unity-cliext-asset-packs` (taking a few assets from a large art pack) are installed in every project.
+  files) and `unity-cliext-asset-packs` (taking a few assets from a large art pack: an index and extractor script that
+  previews variants in a dry run and takes a trial extraction back out with `--remove`, and a material converter
+  template that takes the pack's folder) are installed in every project.
 - `clarify`, installed in every project: asks the user multiple-choice questions until a task has no open questions.
 
 Agents find skills in the project's `.claude/skills/`, so the package puts them there itself:
@@ -925,13 +936,15 @@ deletes only the failure log).
 with every character other than a letter or digit replaced by `-`), the failure log and the field notes, and reports by
 cliext command or area:
 - failed tool calls by cause (`cliext`, `pipeline`, `shell`, `hook`, `permission`, `other`), classified as the T3 scorer
-  does, including errors printed by compound calls that exited 0;
+  does, including errors printed by compound calls that exited 0 (the logged errors a console read prints are data,
+  not failures);
 - reads and searches of the package's own source or README;
 - Edit or Write of files cliext commands edit (`.shadergraph`, `.vfx`, `.controller`, `.anim`, `.overrideController`,
   `.mask`, `.playable`, `.inputactions`, `.uxml`, `.uss`, `.preset`), and shell commands that write them;
 - three or more `--help` calls on one command in one transcript;
 - `script eval` and `cliext.eval run` calls, with an excerpt of the snippet;
-- for each area, whether its skill was loaded before the first call in that area;
+- for each area, whether its skill was loaded before the first call in that area (with the Skill tool, or by reading
+  its `SKILL.md` with Read or printing it from the shell);
 - each field note and each failure in the window, matched to the tool call that made it (by time, and by the note's
   text or the failure's command and error), with the 15 calls before it and the 5 after, their arguments, a short
   excerpt of each output, the session id and the transcript path. One that matches no call says so.

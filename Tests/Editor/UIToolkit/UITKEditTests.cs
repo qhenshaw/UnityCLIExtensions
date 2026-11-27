@@ -64,6 +64,68 @@ namespace UnityCLIExtensions.Tests
         private static UxmlOp Op(string op, string selector, string type = null, string name = null, string @class = null, string properties = null) =>
             new UxmlOp { op = op, selector = selector, type = type, name = name, @class = @class, properties = properties };
 
+        private static string LoadedSheets(string uxmlPath) =>
+            string.Join(",", AssetDatabase.LoadAssetAtPath<VisualTreeAsset>(uxmlPath).stylesheets.Select(s => s == null ? "null" : AssetDatabase.GetAssetPath(s)));
+
+        // A UXML imported right after the USS it names was reimported holds a destroyed StyleSheet (null when loaded),
+        // although its serialized link is right: the UI draws unstyled. Seen with agents writing a new UXML and USS.
+        private static (string uxml, string uss) StaleLink()
+        {
+            string uss = Make("uss", "/* empty */\n");
+            string uxml = Make("uxml", "<ui:UXML xmlns:ui=\"UnityEngine.UIElements\"></ui:UXML>\n");
+            File.WriteAllText(FileUtil.GetPhysicalPath(uss), Uss);
+            AssetDatabase.ImportAsset(uss, ImportAssetOptions.ForceUpdate);
+            File.WriteAllText(FileUtil.GetPhysicalPath(uxml), $"<ui:UXML xmlns:ui=\"UnityEngine.UIElements\">\n    <ui:Style src=\"{Path.GetFileName(uss)}\" />\n    <ui:VisualElement class=\"panel\" />\n</ui:UXML>\n");
+            AssetDatabase.ImportAsset(uxml, ImportAssetOptions.ForceUpdate);
+            return (uxml, uss);
+        }
+
+        [Test]
+        public void StyleLinks_ReportAStaleStyleSheetAndReimportRelinksIt()
+        {
+            var (uxml, uss) = StaleLink();
+            if (LoadedSheets(uxml) != "null") Assert.Inconclusive($"This Unity linked the style sheet ({LoadedSheets(uxml)}): the stale link didn't happen.");
+            var doc = XDocument.Parse(Read(uxml));
+            var links = UITKCommands.StyleLinks(doc, uxml);
+            Assert.AreEqual(1, links.Count);
+            Assert.AreEqual(uss, links[0].sheet);
+            Assert.IsTrue(links[0].exists);
+            Assert.IsFalse(links[0].linked, "the stale link was reported linked");
+            StringAssert.Contains("--reimport true", UITKCommands.StyleLinkWarnings(links, uxml).Single());
+
+            UITKCommands.ReimportUxml(uxml);
+            Assert.AreEqual(uss, LoadedSheets(uxml));
+            Assert.IsTrue(UITKCommands.StyleLinks(doc, uxml).Single().linked);
+            Assert.IsEmpty(UITKCommands.StyleLinkWarnings(UITKCommands.StyleLinks(doc, uxml), uxml));
+        }
+
+        [Test]
+        public void Edit_RelinksAStyleSheetItsImportLeftNull()
+        {
+            string uss = Make("uss", "/* empty */\n");
+            string uxml = Make("uxml", "<ui:UXML xmlns:ui=\"UnityEngine.UIElements\"></ui:UXML>\n");
+            File.WriteAllText(FileUtil.GetPhysicalPath(uss), Uss);
+            AssetDatabase.ImportAsset(uss, ImportAssetOptions.ForceUpdate);
+            var r = UITKCommands.EditFile(uxml, new[] { new UxmlOp { op = "add", type = "Style", attributes = "src=" + Path.GetFileName(uss), index = 0 } });
+            Assert.IsTrue(r.saved, r.error);
+            Assert.IsNotNull(r.styleSheets, "edit didn't report the style sheet links");
+            Assert.IsTrue(r.styleSheets.Single().linked, "edit left the style sheet null");
+            Assert.IsEmpty(r.warnings);
+            Assert.AreEqual(uss, LoadedSheets(uxml));
+        }
+
+        [Test]
+        public void StyleSrcPath_ResolvesRelativeRootedAndProjectUrls()
+        {
+            string guid = AssetDatabase.AssetPathToGUID(Make("uss", Uss));
+            Assert.AreEqual("Assets/UI/HUD.uss", UITKCommands.StyleSrcPath("HUD.uss", "Assets/UI/HUD.uxml"));
+            Assert.AreEqual("Assets/Shared/Base.uss", UITKCommands.StyleSrcPath("../Shared/Base.uss", "Assets/UI/HUD.uxml"));
+            Assert.AreEqual("Assets/Shared/Base.uss", UITKCommands.StyleSrcPath("/Assets/Shared/Base.uss", "Assets/UI/HUD.uxml"));
+            Assert.AreEqual("Assets/My UI/A.uss", UITKCommands.StyleSrcPath("project://database/Assets/My%20UI/A.uss?fileID=1&type=3#A", "Assets/UI/HUD.uxml"));
+            Assert.AreEqual(AssetDatabase.GUIDToAssetPath(guid), UITKCommands.StyleSrcPath($"project://database/Assets/Old.uss?fileID=1&guid={guid}&type=3#Old", "Assets/UI/HUD.uxml"));
+            Assert.IsNull(UITKCommands.StyleSrcPath(" ", "Assets/UI/HUD.uxml"));
+        }
+
         [Test]
         public void FailedUxmlBatch_LeavesFileAndAssetAsBefore_NextEditSavesOnlyItsChange()
         {

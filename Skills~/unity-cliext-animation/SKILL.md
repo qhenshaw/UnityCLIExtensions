@@ -90,15 +90,22 @@ show the pose.
 
 In Edit mode the scrub is sampled the way the Timeline window previews it: the bound objects are put back
 afterwards, so the scene keeps its saved pose (the reply's `scene` says so) and saving doesn't save the scrubbed
-frame. `--read "<character>/Hips;<prop>"` returns those objects' position and rotation at that time. Leave out
-`--keep-pose true` (it leaves the frame in the scene, unsaved) unless the user wants the posed scene.
+frame. `--read "<objects>"` returns those objects' position and rotation at that time. An object is a name, a path
+from the scene root (a leading `/` is optional) or a path relative to a bound object (`Root/Hips` under the bound
+character): take paths from `scene get_hierarchy`, not from the model's name; a wrong path's error names where the
+object is. Leave out `--keep-pose true` (it leaves the frame in the scene, unsaved) unless the user wants the posed
+scene.
 
-To prove the pose itself matches a clip: `cliext.eval run --file <copy of ops/pose.cs> --vars
-"mode=snapshot;object=<character>;clip=-;time=0"`, scrub with `--keep-pose true`, then `pose.cs` with
-`mode=compare;clip=<model>@<clip>;time=<local time from tracks>` for that clip and a neighbour (the active one has a
-mean under about 1 degree, its max can still be several; the other is clearly away, mean 5+; `pose.cs` wraps the
-time of a looping clip). Then `mode=restore`, and `cliext.diff compare` against a snapshot taken before must show no
-Transform changes. Never save a scrubbed pose.
+To prove the pose itself matches a clip, read it with `--read` and compare it; nothing in the scene changes, so there
+is nothing to restore (putting a pose back by hand leaves float noise in the saved scene):
+1. `cliext.eval run --file <copy of ops/pose.cs> --vars "mode=bones;object=<character>;clip=-;time=0;read=-"`: every
+   bone's path, joined with `;`.
+2. `cliext.timeline director --director <d> --time <t> --read "<that list>" --format json`, saved to a file.
+3. `pose.cs` with `mode=compare;object=<character>;clip=<model>@<animationClip from tracks>;time=<localTime>;read=<that file>`
+   for the active clip and a neighbour: the active one has a mean under about 1 degree (its max can still be
+   several), the other is clearly away (mean 5+). `pose.cs` wraps the time of a looping clip.
+
+Never scrub with `--keep-pose true` to prove a pose, and never save a scrubbed pose.
 
 ## Failure and rollback
 

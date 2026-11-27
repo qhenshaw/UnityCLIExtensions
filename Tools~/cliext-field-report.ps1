@@ -133,6 +133,9 @@ public static class CliextFieldReport
     static readonly Regex ShellUnityRx = new Regex(@"\bunity(\.exe)?\s+(command|cmd)\b");
     static readonly Regex ExitCodeRx = new Regex(@"Exit code (-?\d+)");
     static readonly Regex SkillMd = new Regex(@"[\\/]([\w.-]+)[\\/]SKILL\.md$");
+    // Printing a SKILL.md from the shell (cat, Get-Content, type) loads the skill as well.
+    static readonly Regex ShellSkillMd = new Regex(@"\b(?:cat|Get-Content|gc|type|head|sed -n [^ ]+)\s+[^|;&\n]*?[\\/]([\w.-]+)[\\/]SKILL\.md");
+    static readonly Regex ConsoleReadRx = new Regex(@"\bconsole\s+(get|read|list|tail)\b");
 
     static bool ShellUnity(Call c) { return (c.Name == "PowerShell" || c.Name == "Bash") && ShellUnityRx.IsMatch(c.Summary); }
 
@@ -141,6 +144,10 @@ public static class CliextFieldReport
         var list = new List<string>();
         if (!ShellUnity(c)) return list;
         foreach (Match m in EmbeddedRx.Matches(c.Result)) list.Add(m.Value);
+        // Reading the console prints the project's logged errors: data the agent asked for, not a failed command, so a
+        // console read only counts the command-shaped failures.
+        if (ConsoleReadRx.IsMatch(c.Summary))
+            list = list.Where(f => !f.ToLowerInvariant().StartsWith("error:") && !f.Contains("\"logType\"")).ToList();
         return list;
     }
 
@@ -409,6 +416,9 @@ public static class CliextFieldReport
                             if (name == "Skill") t.Skills.Add(new KeyValuePair<int, string>(call.Index, Str(input, "skill") ?? ""));
                             Match sm = SkillMd.Match(Str(input, "file_path") ?? "");
                             if (name == "Read" && sm.Success) t.Skills.Add(new KeyValuePair<int, string>(call.Index, sm.Groups[1].Value + " (Read)"));
+                            if (name == "PowerShell" || name == "Bash")
+                                foreach (Match ss in ShellSkillMd.Matches(Str(input, "command") ?? ""))
+                                    t.Skills.Add(new KeyValuePair<int, string>(call.Index, ss.Groups[1].Value + " (shell)"));
                             byId[id] = call;
                             t.Calls.Add(call);
                         }
@@ -793,7 +803,7 @@ public static class CliextFieldReport
                 string area = kv.Key == "unity" ? "(any unity command)" : kv.Key;
                 string skill = kv.Key == "unity" ? "unity-cliext" : AreaSkill.ContainsKey(kv.Key) ? AreaSkill[kv.Key] : null;
                 if (skill == null) continue;
-                int loaded = t.Skills.Where(s => { string n = s.Value.Replace(" (Read)", ""); int colon = n.LastIndexOf(':'); if (colon >= 0) n = n.Substring(colon + 1); return n == skill; })
+                int loaded = t.Skills.Where(s => { string n = s.Value.Replace(" (Read)", "").Replace(" (shell)", ""); int colon = n.LastIndexOf(':'); if (colon >= 0) n = n.Substring(colon + 1); return n == skill; })
                     .Select(s => s.Key).DefaultIfEmpty(-1).Min();
                 int[] a;
                 if (!areaUse.TryGetValue(area, out a)) areaUse[area] = a = new int[4];

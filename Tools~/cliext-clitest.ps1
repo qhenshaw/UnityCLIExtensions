@@ -480,7 +480,38 @@ Add-Check 'failures.field-report' 'cliext.dialogs, cliext.watchdog, cliext.failu
     }
 }
 
-Add-Check 'failures.report-zip' 'cliext.dialogs, cliext.watchdog, cliext.failures' 'cliext-report.ps1 -NoEditor builds a zip with the field report, state files, versions, skills, the CLAUDE.md block and README.txt (zip and folder deleted after)' {
+Add-Check 'failures.field-report-score' 'cliext.dialogs, cliext.watchdog, cliext.failures' 'cliext-field-report.ps1 classifies as score.py does: a SKILL.md printed from the shell counts as loaded, and logged errors a console read prints are not failed calls' {
+    # A made-up transcript in its own transcript root, so the check doesn't depend on this machine's sessions.
+    $root = Join-Path $work 'fr-transcripts'
+    $slug = $projectPath -replace '[^A-Za-z0-9]', '-'
+    $dir = Join-Path $root "$slug\clitest-session\subagents"
+    New-Item -ItemType Directory -Force $dir | Out-Null
+    $ts = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ss.fffZ')
+    function Use($id, $name, $inp) { @{ type = 'assistant'; timestamp = $ts; sessionId = 'clitest-session'; agentId = 'clitest'; message = @{ role = 'assistant'; content = @(@{ type = 'tool_use'; id = $id; name = $name; input = $inp }) } } | ConvertTo-Json -Depth 8 -Compress }
+    function Res($id, $text) { @{ type = 'user'; timestamp = $ts; sessionId = 'clitest-session'; agentId = 'clitest'; message = @{ role = 'user'; content = @(@{ type = 'tool_result'; tool_use_id = $id; content = $text; is_error = $false }) } } | ConvertTo-Json -Depth 8 -Compress }
+    $lines = @(
+        (Use 't1' 'Bash' @{ command = 'cat /e/Game/.claude/skills/unity-cliext/SKILL.md' }), (Res 't1' '# Unity CLI Extensions'),
+        (Use 't2' 'PowerShell' @{ command = 'Get-Content E:\Game\.claude\skills\unity-cliext-uitk\SKILL.md | Select-Object -First 40' }), (Res 't2' '# uitk'),
+        (Use 't3' 'PowerShell' @{ command = 'unity command console get --tail 5 --format json' }), (Res 't3' "error: NullReferenceException in Player.Update`n{`"logType`":`"Error`",`"message`":`"x`"}"),
+        (Use 't4' 'PowerShell' @{ command = 'unity command scene list --format json' }), (Res 't4' "error: No command named 'scene list'")
+    )
+    [IO.File]::WriteAllText((Join-Path $dir 'agent-clitest.jsonl'), ($lines -join "`n") + "`n")
+    $out = Join-Path $work 'fr-score'
+    $ErrorActionPreference = 'Continue'
+    $log = & powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $tools 'cliext-field-report.ps1') -Project $projectPath -TranscriptRoot $root -Days 1 -Out $out -Quiet 2>&1 | Out-String
+    $exit = $LASTEXITCODE
+    $ErrorActionPreference = 'Stop'
+    Expect ($exit -eq 0) "exit $exit`: $(Short $log)"
+    $r = [IO.File]::ReadAllText((Join-Path $out 'field-report.json')) | ConvertFrom-Json
+    $s = @($r.sessions) | Where-Object { $_.agentId -eq 'clitest' } | Select-Object -First 1
+    Expect ($s -ne $null) "no session for the made-up transcript: $(Short ($r.sessions | ConvertTo-Json -Compress))"
+    $skills = @($s.skillsLoaded) -join ', '
+    Expect ($skills -eq 'unity-cliext (shell), unity-cliext-uitk (shell)') "skills loaded: '$skills', expected both (shell)"
+    Expect ($s.toolCalls -eq 4 -and $s.failedCalls -eq 1 -and $s.embeddedFailures -eq 1) "calls $($s.toolCalls), failed $($s.failedCalls), embedded $($s.embeddedFailures); expected 4, 1 (the guessed scene list), 1"
+    "skills: $skills; 4 calls, 1 failed (the console read's logged errors not counted)"
+}
+
+Add-Check 'failures.report-zip''cliext.dialogs, cliext.watchdog, cliext.failures' 'cliext-report.ps1 -NoEditor builds a zip with the field report, state files, versions, skills, the CLAUDE.md block and README.txt (zip and folder deleted after)' {
     $out = Join-Path $work 'report'
     $unz = Join-Path $work 'report-unzipped'
     try {
@@ -2116,6 +2147,16 @@ return string.Format(System.Globalization.CultureInfo.InvariantCulture, "{0:0.0}
         Expect-TlFailure $usage '--read reports the pose at --time' '' '--read without --time' 2
         $missing = Invoke-Cli @('cliext.timeline', 'director', '--director', 'CliTestScrubDirector', '--time', '0.5', '--read', 'NoSuchBone', '--format', 'json')
         Expect-TlFailure $missing "No GameObject 'NoSuchBone'" '' 'unknown --read object' 13
+        # The same bone as a rooted path and as a path relative to the bound rig reads the same pose; a wrong path names where the bone is.
+        $relPath = $armPath.Substring($armPath.IndexOf('/') + 1)
+        foreach ($form in @("/$armPath", $relPath, "/$relPath")) {
+            $f = Invoke-Cli @('cliext.timeline', 'director', '--director', 'CliTestScrubDirector', '--time', '0.5', '--read', $form, '--format', 'json')
+            Expect ($f.exit -eq 0) "--read $form`: exit $($f.exit): $(Short ($f.stdout + $f.stderr))"
+            $ft = (@($f.json.read[0].localRotation | ForEach-Object { [string]::Format([Globalization.CultureInfo]::InvariantCulture, '{0:0.0}', [double]$_) }) -join ',')
+            Expect ($ft -eq $readText) "--read $form gave $ft, the full path $readText"
+        }
+        $wrong = Invoke-Cli @('cliext.timeline', 'director', '--director', 'CliTestScrubDirector', '--time', '0.5', '--read', 'CliTestScrubRig/NoSuchModel/LeftForeArm', '--format', 'json')
+        Expect-TlFailure $wrong "'LeftForeArm' is at (.*; )?$([regex]::Escape($armPath)) \(under CliTestScrubRig: $([regex]::Escape($relPath))\).*relative to a bound object" '' 'a wrong --read path' 13
     }
     finally {
         $close = "var s = UnityEngine.SceneManagement.SceneManager.GetSceneByPath(`"$scenePath`"); if (s.IsValid()) UnityEditor.SceneManagement.EditorSceneManager.CloseScene(s, true); UnityEditor.AssetDatabase.DeleteAsset(`"$scenePath`"); return `"ok`";"
@@ -2124,7 +2165,51 @@ return string.Format(System.Globalization.CultureInfo.InvariantCulture, "{0:0.0}
     "Anim plays $($anim.clips[0].clip) at local 0.5; read $readText while sampled; rig back at $p0; keep-pose left the frame and dirtied the scene"
 }
 
-Add-Check 'tl.clip-refs' $tlRow 'cliext.timeline edit add_clip given a take name two clips share, or a bare model with several clips, exits 2 listing them with their lengths and saves nothing' {
+Add-Check 'tl.pose-proof' $tlRow 'the animation skill''s pose proof: pose.cs mode=bones lists the rig''s bones, director --read of them saved to a file, and pose.cs mode=compare puts the active clip under 1 degree and the other clip well away; the scene stays as saved (no --keep-pose, nothing restored)' {
+    Need-TlAssets
+    $scenePath = "$scratchRel/CliTestPose.unity"
+    $setup = @'
+var scene = UnityEditor.SceneManagement.EditorSceneManager.NewScene(UnityEditor.SceneManagement.NewSceneSetup.EmptyScene, UnityEditor.SceneManagement.NewSceneMode.Additive);
+var model = UnityEditor.AssetDatabase.LoadAssetAtPath<UnityEngine.GameObject>("Assets/TestLevel/Characters/characterMedium.fbx");
+var rig = (UnityEngine.GameObject)UnityEditor.PrefabUtility.InstantiatePrefab(model, scene); rig.name = "CliTestPoseRig";
+var dgo = new UnityEngine.GameObject("CliTestPoseDirector"); UnityEngine.SceneManagement.SceneManager.MoveGameObjectToScene(dgo, scene);
+var d = dgo.AddComponent<UnityEngine.Playables.PlayableDirector>(); d.playOnAwake = false;
+var t = UnityEditor.AssetDatabase.LoadAssetAtPath<UnityEngine.Timeline.TimelineAsset>("{{path}}"); d.playableAsset = t;
+d.SetGenericBinding(t.GetRootTracks().First(x => x.name == "Anim"), rig.GetComponent<UnityEngine.Animator>());
+UnityEditor.SceneManagement.EditorSceneManager.SaveScene(scene, "{{scene}}");
+return "ok|" + scene.isDirty;
+'@
+    $pose = Join-Path $packageRoot 'Skills~\unity-cliext-animation\ops\pose.cs'
+    $scrub = Join-Path $work 'tl-pose-scrub.json'
+    try {
+        Expect ((Invoke-Eval 'tl-pose-setup.cs' $setup.Replace('{{path}}', $script:tlPath).Replace('{{scene}}', $scenePath)) -eq 'ok|False') 'scratch scene'
+        $b = Invoke-Cli @('cliext.eval', 'run', '--file', $pose, '--vars', 'mode=bones;object=CliTestPoseRig;clip=-;time=0;read=-', '--format', 'json')
+        $bones = $b.stdout.Trim().Trim([char]34)
+        Expect ($b.exit -eq 0 -and $bones -match '^CliTestPoseRig/.+;CliTestPoseRig/') "mode=bones: exit $($b.exit): $(Short ($b.stdout + $b.stderr))"
+        $d = Invoke-Cli @('cliext.timeline', 'director', '--director', 'CliTestPoseDirector', '--time', '1.5', '--read', $bones, '--format', 'json')
+        Expect ($d.exit -eq 0 -and @($d.json.read).Count -eq @($bones -split ';').Count) "director --read: exit $($d.exit), $(@($d.json.read).Count) poses: $(Short $d.stderr)"
+        [IO.File]::WriteAllText($scrub, $d.stdout)
+        $run = @($d.json.tracks | Where-Object { $_.track -eq 'Anim' })[0].clips[0]
+        function Compare-Pose([string]$model, $clip) {
+            $vars = [string]::Format([Globalization.CultureInfo]::InvariantCulture, 'mode=compare;object=CliTestPoseRig;clip={0}@{1};time={2};read={3}', $model, $clip.animationClip, [double]$clip.localTime, $scrub)
+            $c = Invoke-Cli @('cliext.eval', 'run', '--file', $pose, '--vars', $vars, '--format', 'json')
+            Expect ($c.exit -eq 0 -and "$($c.stdout)" -match 'mean ([\d.]+) deg over (\d+) bones') "compare $($clip.clip): $(Short ($c.stdout + $c.stderr))"
+            [double]::Parse($Matches[1], [Globalization.CultureInfo]::InvariantCulture)
+        }
+        $own = Compare-Pose 'Assets/TestLevel/Animations/kenney run.fbx' $run
+        $other = Compare-Pose 'Assets/TestLevel/Animations/standing idle.fbx' ([pscustomobject]@{ clip = 'standing idle'; animationClip = 'standing idle'; localTime = 0.5 })
+        Expect ($own -lt 1 -and $other -gt $own + 2) "mean off the active clip $own, off the other $other"
+        $dirty = Invoke-Eval 'tl-pose-dirty.cs' "return UnityEngine.SceneManagement.SceneManager.GetSceneByPath(`"$scenePath`").isDirty.ToString();"
+        Expect ($dirty -eq 'False') 'the scene is dirty after the proof'
+        "$(@($bones -split ';').Count) bones read at 1.5 s; mean $own deg off $($run.animationClip), $other off standing idle; scene clean"
+    }
+    finally {
+        $close = "var s = UnityEngine.SceneManagement.SceneManager.GetSceneByPath(`"$scenePath`"); if (s.IsValid()) UnityEditor.SceneManagement.EditorSceneManager.CloseScene(s, true); UnityEditor.AssetDatabase.DeleteAsset(`"$scenePath`"); return `"ok`";"
+        [void](Invoke-Cli @('script', 'eval', '--file', (Write-WorkFile 'tl-pose-close.cs' $close), '--format', 'json'))
+    }
+}
+
+Add-Check 'tl.clip-refs' $tlRow'cliext.timeline edit add_clip given a take name two clips share, or a bare model with several clips, exits 2 listing them with their lengths and saves nothing' {
     Need-TlAssets
     $before = Get-TlHash
     $idle = 'Assets/TestLevel/Animations/kenney idle.fbx'
@@ -2663,6 +2748,40 @@ Add-Check 'uitk.inspect' $uiRow 'cliext.uitk inspect reads a UXML as its tree an
     }
     Expect (-not (Test-Path (Join-Path $scratch 'NoSuch.uxml')) -and -not (Test-Path (Join-Path $scratch 'NoSuch.uss'))) 'a failed call created a file'
     "menu with 6 controls, 1 style sheet; 3 rules; $($seen -join ', ')"
+}
+
+Add-Check 'uitk.style-link' $uiRow 'a UXML imported right after the USS it names was reimported loads with a null style sheet: cliext.uitk inspect reports linked false with the fix, inspect --reimport true relinks it (the loaded asset agrees); inspect of a linked one has no warning' {
+    New-ScratchFolder
+    $stale = @'
+string d = "{{dir}}";
+System.IO.File.WriteAllText(d + "/CliTestLink.uss", "/* empty */\n");
+System.IO.File.WriteAllText(d + "/CliTestLink.uxml", "<ui:UXML xmlns:ui=\"UnityEngine.UIElements\"></ui:UXML>\n");
+UnityEditor.AssetDatabase.ImportAsset(d + "/CliTestLink.uss", UnityEditor.ImportAssetOptions.ForceUpdate);
+UnityEditor.AssetDatabase.ImportAsset(d + "/CliTestLink.uxml", UnityEditor.ImportAssetOptions.ForceUpdate);
+System.IO.File.WriteAllText(d + "/CliTestLink.uss", ".panel { width: 260px; }\n");
+UnityEditor.AssetDatabase.ImportAsset(d + "/CliTestLink.uss", UnityEditor.ImportAssetOptions.ForceUpdate);
+System.IO.File.WriteAllText(d + "/CliTestLink.uxml", "<ui:UXML xmlns:ui=\"UnityEngine.UIElements\">\n    <ui:Style src=\"CliTestLink.uss\" />\n    <ui:VisualElement class=\"panel\" />\n</ui:UXML>\n");
+UnityEditor.AssetDatabase.ImportAsset(d + "/CliTestLink.uxml", UnityEditor.ImportAssetOptions.ForceUpdate);
+return "ok";
+'@
+    $loaded = "var v = UnityEditor.AssetDatabase.LoadAssetAtPath<UnityEngine.UIElements.VisualTreeAsset>(`"$scratchRel/CliTestLink.uxml`"); return string.Join(`",`", v.stylesheets.Select(s => s == null ? `"null`" : s.name));"
+    $uxml = "$scratchRel/CliTestLink.uxml"
+    try {
+        Expect ((Invoke-Eval 'ui-stale.cs' $stale.Replace('{{dir}}', $scratchRel)) -eq 'ok') 'scratch UXML and USS'
+        $before = Invoke-Eval 'ui-loaded.cs' $loaded
+        Expect ($before -eq 'null') "the stale link didn't happen (loaded: $before): the check needs it"
+        $i = Invoke-Cli @('cliext.uitk', 'inspect', '--path', $uxml, '--format', 'json')
+        Expect ($i.exit -eq 0) "inspect: exit $($i.exit): $(Short $i.stderr)"
+        $l = @($i.json.styleSheets)
+        Expect ($l.Count -eq 1 -and $l[0].sheet -eq "$scratchRel/CliTestLink.uss" -and $l[0].exists -and -not $l[0].linked) "styleSheets: $(Short ($i.json.styleSheets | ConvertTo-Json -Compress))"
+        Expect ((@($i.json.warnings) -join ' ') -match 'holds null.*--reimport true') "warnings: $(@($i.json.warnings) -join ' ')"
+        $r = Invoke-Cli @('cliext.uitk', 'inspect', '--path', $uxml, '--reimport', 'true', '--format', 'json')
+        Expect ($r.exit -eq 0 -and $r.json.reimported -and @($r.json.styleSheets)[0].linked -and @($r.json.warnings).Count -eq 0) "--reimport: $(Short $r.stdout 300)"
+        $after = Invoke-Eval 'ui-loaded.cs' $loaded
+        Expect ($after -eq 'CliTestLink') "loaded after --reimport: $after"
+        "inspect named the null link and the fix; --reimport relinked it (loaded: $after)"
+    }
+    finally { [void](Invoke-Eval 'ui-link-clean.cs' "UnityEditor.AssetDatabase.DeleteAsset(`"$uxml`"); UnityEditor.AssetDatabase.DeleteAsset(`"$scratchRel/CliTestLink.uss`"); return `"ok`";") }
 }
 
 Add-Check 'uitk.edit' $uiRow 'cliext.uitk edit runs every UXML op (add, remove, move, set_attributes, add_class, remove_class) in one batch and every USS op (set_rule merge, new and replace, remove_property, remove_rule) in another; inspect and the imported assets in memory show them all' {
@@ -4413,6 +4532,142 @@ Add-Check 'pkg.errors' $pkgRow 'cliext.package import of a missing file, a folde
     "$($seen.Count) refusals with the fix; nothing written, no dialog"
 }
 
+# The asset-packs skill's converter template and extractor, on made-up vendor assets in the scratch folder.
+Add-Check 'pack.converter' $pkgRow 'the asset-packs PackMaterialConverter template, compiled in the project, converts a vendor material whose shader is missing (alpha clip and cutoff saved on, an opaque base texture, a metallic map, HDR emission 4.6) to an opaque Lit material with only base, normal and emission maps, no stale keywords and emission 4.6; one on a texture with alpha keeps its cut-out; ConvertAll takes the folder and refuses a missing one' {
+    $dir = "$scratchRel/PackConv"
+    $conv = Join-Path $scratch 'PackConv\Editor'
+    New-Item -ItemType Directory -Force $conv | Out-Null
+    Copy-Item (Join-Path $packageRoot 'Skills~\unity-cliext-asset-packs\templates\Editor\PackMaterialConverter.cs') $conv
+    try {
+        [void](Compile-AndWait)
+        $errs = @((Get-Diagnostics) | Where-Object { "$($_.file)" -match 'PackMaterialConverter' })
+        Expect ($errs.Count -eq 0) "the template doesn't compile: $(Short (($errs | ForEach-Object { "$($_.code) $($_.message)" }) -join '; '))"
+        $setup = @'
+string dir = "{{dir}}/Mats";
+if (!UnityEditor.AssetDatabase.IsValidFolder(dir)) UnityEditor.AssetDatabase.CreateFolder("{{dir}}", "Mats");
+string Png(string name, bool alpha) {
+    var t = new UnityEngine.Texture2D(8, 8, alpha ? UnityEngine.TextureFormat.RGBA32 : UnityEngine.TextureFormat.RGB24, false);
+    var px = new UnityEngine.Color[64];
+    for (int i = 0; i < 64; i++) px[i] = new UnityEngine.Color(0.6f, 0.4f, 0.2f, alpha && i % 2 == 0 ? 0f : 1f);
+    t.SetPixels(px); t.Apply();
+    string p = dir + "/" + name + ".png";
+    System.IO.File.WriteAllBytes(p, UnityEngine.ImageConversion.EncodeToPNG(t));
+    UnityEditor.AssetDatabase.ImportAsset(p);
+    return UnityEditor.AssetDatabase.AssetPathToGUID(p);
+}
+string opaque = Png("Atlas", false), cut = Png("Leaves", true), emit = Png("Glow", false), metal = Png("Metal", false);
+string Tex(string slot, string guid) => "    - " + slot + ":\n        m_Texture: {fileID: 2800000, guid: " + guid + ", type: 3}\n        m_Scale: {x: 1, y: 1}\n        m_Offset: {x: 0, y: 0}\n";
+string Mat(string name, string baseGuid) =>
+    "%YAML 1.1\n%TAG !u! tag:unity3d.com,2011:\n--- !u!21 &2100000\nMaterial:\n  serializedVersion: 8\n  m_ObjectHideFlags: 0\n" +
+    "  m_CorrespondingSourceObject: {fileID: 0}\n  m_PrefabInstance: {fileID: 0}\n  m_PrefabAsset: {fileID: 0}\n  m_Name: " + name + "\n" +
+    "  m_Shader: {fileID: -6465566751694194690, guid: 0c11e570000000000000000000000c1e, type: 3}\n  m_Parent: {fileID: 0}\n" +
+    "  m_ModifiedSerializedProperties: 0\n  m_ValidKeywords:\n  - _ALPHATEST_ON\n  - _METALLICGLOSSMAP\n  m_InvalidKeywords: []\n" +
+    "  m_LightmapFlags: 4\n  m_EnableInstancingVariants: 0\n  m_DoubleSidedGI: 0\n  m_CustomRenderQueue: 2450\n  stringTagMap: {}\n" +
+    "  disabledShaderPasses: []\n  m_LockedProperties: \n  m_SavedProperties:\n    serializedVersion: 3\n    m_TexEnvs:\n" +
+    Tex("_Albedo_Map", baseGuid) + Tex("_Emission_Map", emit) + Tex("_MetallicGlossMap", metal) + Tex("_OcclusionMap", metal) +
+    "    m_Ints: []\n    m_Floats:\n    - _AlphaClip: 1\n    - _AlphaToMask: 1\n    - _Alpha_Clip_Threshold: 0.4\n    - _BUILTIN_AlphaClip: 1\n" +
+    "    - _Cutoff: 0.5\n    - _Enable_Emission: 1\n    - _Metallic: 0\n    m_Colors:\n    - _EmissionColor: {r: 1, g: 1, b: 1, a: 1}\n" +
+    "    - _Emission_Color: {r: 4.6, g: 4.6, b: 4.6, a: 1}\n  m_BuildTextureStacks: []\n  m_AllowLocking: 1\n";
+System.IO.File.WriteAllText(dir + "/Vendor_Opaque.mat", Mat("Vendor_Opaque", opaque));
+System.IO.File.WriteAllText(dir + "/Vendor_Cutout.mat", Mat("Vendor_Cutout", cut));
+UnityEditor.AssetDatabase.ImportAsset(dir + "/Vendor_Opaque.mat");
+UnityEditor.AssetDatabase.ImportAsset(dir + "/Vendor_Cutout.mat");
+var m = UnityEditor.AssetDatabase.LoadAssetAtPath<UnityEngine.Material>(dir + "/Vendor_Opaque.mat");
+return m == null ? "no material" : "ok";
+'@
+        $s = Invoke-Eval 'pack-conv-setup.cs' $setup.Replace('{{dir}}', $dir)
+        Expect ($s -eq 'ok') "vendor assets: $s"
+        $read = @'
+var bad = AssetPackTools.Editor.PackMaterialConverter.ConvertAll("{{dir}}/NoSuchFolder");
+var summary = AssetPackTools.Editor.PackMaterialConverter.ConvertAll("{{dir}}/Mats");
+string Read(string name) {
+    var m = UnityEditor.AssetDatabase.LoadAssetAtPath<UnityEngine.Material>("{{dir}}/Mats/" + name + ".mat");
+    var maps = new System.Collections.Generic.List<string>();
+    foreach (var p in m.GetTexturePropertyNames()) if (m.HasProperty(p) && m.GetTexture(p) != null) maps.Add(p);
+    var e = m.GetColor("_EmissionColor");
+    return string.Format(System.Globalization.CultureInfo.InvariantCulture, "{0}|kw={1}|clip={2}|queue={3}|tag={4}|cutoff={5:0.00}|maps={6}|emission={7:0.00}",
+        m.shader.name, string.Join(",", m.shaderKeywords.OrderBy(k => k)), m.GetFloat("_AlphaClip"), m.renderQueue, m.GetTag("RenderType", false),
+        m.GetFloat("_Cutoff"), string.Join(",", maps.OrderBy(k => k)), e.r);
+}
+return bad + "\n" + summary + "\n" + Read("Vendor_Opaque") + "\n" + Read("Vendor_Cutout");
+'@
+        $out = (Invoke-Eval 'pack-conv-run.cs' $read.Replace('{{dir}}', $dir)) -replace '\\n', "`n" -replace '\\"', '"'
+        $lines = @($out -split "`n")
+        Expect ($lines.Count -ge 4) "convert: $(Short $out 400)"
+        Expect ($lines[0] -match "No folder '.*NoSuchFolder'") "a missing folder: $($lines[0])"
+        Expect ($lines[1] -match 'converted under .*/Mats: 2 \(1 alpha-clipped, 2 emissive') "summary: $($lines[1])"
+        $want = 'Universal Render Pipeline/Lit|kw=_EMISSION|clip=0|queue=2000|tag=Opaque|cutoff=0.40|maps=_BaseMap,_EmissionMap,_MainTex|emission=4.60'
+        Expect ($lines[2] -eq $want) "opaque base texture: $($lines[2]), expected $want"
+        $wantCut = 'Universal Render Pipeline/Lit|kw=_ALPHATEST_ON,_EMISSION|clip=1|queue=2450|tag=TransparentCutout|cutoff=0.40|maps=_BaseMap,_EmissionMap,_MainTex|emission=4.60'
+        Expect ($lines[3] -eq $wantCut) "base texture with alpha: $($lines[3]), expected $wantCut"
+        "opaque: $($lines[2]); cut-out: $($lines[3])"
+    }
+    finally {
+        [void](Invoke-Cli @('script', 'eval', '--file', (Write-WorkFile 'pack-conv-clean.cs' "UnityEditor.AssetDatabase.DeleteAsset(`"$dir`"); return `"ok`";"), '--format', 'json'))
+        [void](Compile-AndWait)
+    }
+}
+
+Add-Check 'pack.extract-remove' $pkgRow 'the asset-packs extractor: --dry-run on two matching prefabs lists each with its own dependencies; extracting both writes them with the package''s GUIDs; --remove of one (dry run, then for real) deletes it and the material and texture only it uses, keeps the material and texture the other prefab shares, and removes nothing else' {
+    $src = "$scratchRel/PackSrc"
+    $pkg = Join-Path $work 'trial.unitypackage'
+    $script = Join-Path $packageRoot 'Skills~\unity-cliext-asset-packs\scripts\extract_unitypackage.py'
+    $make = @'
+string dir = "{{dir}}";
+if (!UnityEditor.AssetDatabase.IsValidFolder(dir)) UnityEditor.AssetDatabase.CreateFolder("{{scratch}}", "PackSrc");
+UnityEngine.Material Mat(string name) {
+    var t = new UnityEngine.Texture2D(4, 4); string p = dir + "/" + name + ".png";
+    System.IO.File.WriteAllBytes(p, UnityEngine.ImageConversion.EncodeToPNG(t)); UnityEditor.AssetDatabase.ImportAsset(p);
+    var m = new UnityEngine.Material(UnityEngine.Shader.Find("Universal Render Pipeline/Lit"));
+    m.SetTexture("_BaseMap", UnityEditor.AssetDatabase.LoadAssetAtPath<UnityEngine.Texture2D>(p));
+    UnityEditor.AssetDatabase.CreateAsset(m, dir + "/" + name + ".mat"); return m;
+}
+var shared = Mat("Shared"); var onlyB = Mat("OnlyB");
+var a = UnityEngine.GameObject.CreatePrimitive(UnityEngine.PrimitiveType.Cube); a.GetComponent<UnityEngine.MeshRenderer>().sharedMaterial = shared;
+UnityEditor.PrefabUtility.SaveAsPrefabAsset(a, dir + "/Prop_01.prefab"); UnityEngine.Object.DestroyImmediate(a);
+var b = UnityEngine.GameObject.CreatePrimitive(UnityEngine.PrimitiveType.Cube); b.GetComponent<UnityEngine.MeshRenderer>().sharedMaterials = new[] { onlyB, shared };
+UnityEditor.PrefabUtility.SaveAsPrefabAsset(b, dir + "/Prop_02.prefab"); UnityEngine.Object.DestroyImmediate(b);
+UnityEditor.AssetDatabase.SaveAssets();
+UnityEditor.AssetDatabase.ExportPackage(dir, @"{{out}}", UnityEditor.ExportPackageOptions.Recurse);
+var guids = string.Join(",", new[] { "Prop_01.prefab", "Prop_02.prefab", "Shared.mat", "Shared.png", "OnlyB.mat", "OnlyB.png" }.Select(f => UnityEditor.AssetDatabase.AssetPathToGUID(dir + "/" + f)));
+UnityEditor.AssetDatabase.DeleteAsset(dir);
+return guids;
+'@
+    $present = "string d = `"$src`"; return string.Join(`",`", new[] { `"Prop_01.prefab`", `"Prop_02.prefab`", `"Shared.mat`", `"Shared.png`", `"OnlyB.mat`", `"OnlyB.png`" }.Select(f => UnityEditor.AssetDatabase.AssetPathToGUID(d + `"/`" + f, UnityEditor.AssetPathToGUIDOptions.OnlyExistingAssets)));"
+    function Py([string[]]$a) {
+        $ErrorActionPreference = 'Continue'
+        $o = & python -I $script $projectPath $pkg @a 2>&1 | Out-String
+        $ErrorActionPreference = 'Stop'
+        [pscustomobject]@{ exit = $LASTEXITCODE; out = $o }
+    }
+    try {
+        New-ScratchFolder
+        $guids = Invoke-Eval 'pack-src.cs' $make.Replace('{{dir}}', $src).Replace('{{scratch}}', $scratchRel).Replace('{{out}}', $pkg)
+        Expect ((Test-Path $pkg) -and $guids -match '^([0-9a-f]{32},){5}[0-9a-f]{32}$') "test package: $guids"
+        $g = $guids -split ','
+        $d = Py @('Prop_0[12]\.prefab', '--dry-run')
+        Expect ($d.exit -eq 0 -and $d.out -match '2 matched, 6 with dependencies' -and $d.out -match 'Prop_01\.prefab: 3 assets' -and $d.out -match 'Prop_02\.prefab: 5 assets') "dry run: $(Short $d.out 400)"
+        $x = Py @('Prop_0[12]\.prefab')
+        Expect ($x.exit -eq 0 -and $x.out -match '6 written') "extract: $(Short $x.out 300)"
+        [void](Invoke-Cli @('cliext.wait', 'idle', '--refresh', 'true', '--format', 'json'))
+        Expect ((Invoke-Eval 'pack-present.cs' $present) -eq $guids) "after extracting, the GUIDs differ from the package's: $(Invoke-Eval 'pack-present.cs' $present)"
+        $rd = Py @('Prop_02\.prefab', '--remove', '--dry-run')
+        Expect ($rd.exit -eq 0 -and $rd.out -match 'would remove 3' -and $rd.out -match '- .*/OnlyB\.png' -and $rd.out -match '= .*/Shared\.mat\s+\(used by .*Prop_01\.prefab\)') "remove dry run: $(Short $rd.out 500)"
+        Expect ((Invoke-Eval 'pack-present.cs' $present) -eq $guids) 'the remove dry run deleted something'
+        $r = Py @('Prop_02\.prefab', '--remove')
+        Expect ($r.exit -eq 0 -and $r.out -match 'removed 3 assets') "remove: $(Short $r.out 400)"
+        [void](Invoke-Cli @('cliext.wait', 'idle', '--refresh', 'true', '--format', 'json'))
+        $after = Invoke-Eval 'pack-present.cs' $present
+        $wantAfter = "$($g[0]),,$($g[2]),$($g[3]),,"
+        Expect ($after -eq $wantAfter) "after --remove: $after, expected Prop_01 and Shared kept, Prop_02 and OnlyB gone"
+        "dry run listed 2 matches with their own dependencies; extracted 6 with the package's GUIDs; --remove took out Prop_02, OnlyB.mat and OnlyB.png and kept Shared.mat and Shared.png (used by Prop_01)"
+    }
+    finally {
+        [void](Invoke-Cli @('script', 'eval', '--file', (Write-WorkFile 'pack-src-clean.cs' "UnityEditor.AssetDatabase.DeleteAsset(`"$src`"); return `"ok`";"), '--format', 'json'))
+        Remove-Item $pkg -Force -ErrorAction SilentlyContinue
+    }
+}
+
 # --- cliext.asset, cliext.diff ----------------------------------------------------------------------------------------
 
 # Dependencies are checked on the committed TestLevel: its Player wears PlayerSkin.mat, which uses skaterMaleA.png. Each
@@ -5108,7 +5363,23 @@ Add-Check 'env.ps51-quoted-code' 'Environment' 'the core skill says to pass C# s
     "inline --code broken: $broken; skill says to use files: $warned"
 }
 
-Add-Check 'env.play-capture-run' 'Environment' 'cliext-play-capture.ps1 -Run "a","b" through powershell -File (which joins them into "a,b") and through & (a real array), and "a;;b", each give two steps; commas inside an argument stay; a bad quote exits 2' {
+Add-Check 'env.skill-pipeline-names' 'Environment' 'the core skill names the Pipeline commands agents guess wrong (scene list_open, scene get_hierarchy, editor.playmode start), each of which the Editor has and the guess scene list it doesn''t; and it says to write ops files with the Write tool, that capture --camera needs a Camera, and to check the scene diff after a save' {
+    $skill = Get-Content (Join-Path $packageRoot 'Skills~\unity-cliext\SKILL.md') -Raw
+    $missing = @()
+    foreach ($w in @('scene list_open', 'scene get_hierarchy', 'editor.playmode start', 'Write tool', 'capture game_view --camera', 'Camera component', 'Cinemachine brain')) {
+        if ($skill -notmatch [regex]::Escape($w)) { $missing += $w }
+    }
+    Expect ($missing.Count -eq 0) "the core skill doesn't say: $($missing -join ', ')"
+    $scene = Invoke-Cli @('scene')
+    $play = Invoke-Cli @('editor.playmode')
+    $all = "$($scene.stdout)$($scene.stderr)$($play.stdout)$($play.stderr)"
+    foreach ($c in @('scene list_open', 'scene get_hierarchy', 'editor.playmode start')) { Expect ($all -match [regex]::Escape($c)) "the Editor has no '$c'" }
+    $guess = Invoke-Cli @('scene', 'list', '--format', 'json')
+    Expect ($guess.exit -ne 0) "'scene list' exists now (exit 0): update the skill"
+    'skill names list_open, get_hierarchy, editor.playmode start; the Editor has them and not scene list'
+}
+
+Add-Check 'env.play-capture-run''Environment' 'cliext-play-capture.ps1 -Run "a","b" through powershell -File (which joins them into "a,b") and through & (a real array), and "a;;b", each give two steps; commas inside an argument stay; a bad quote exits 2' {
     # What an agent gets typing the same thing; -DryRun prints the parsed steps without touching the Editor.
     $ErrorActionPreference = 'Continue'
     $capture = Join-Path $tools 'cliext-play-capture.ps1'

@@ -48,6 +48,9 @@ scripts named below are in `{{cliext-tools}}` (`cliext-wait.ps1`, `cliext-run.ps
 - Save or discard scene changes before tests, scene switches or builds: an unsaved scene stops them at a save prompt.
   To keep them, save the one scene by name (`cliext.scene save_open --scene <path>`; `--dry-run` lists what would be
   saved).
+- After saving a scene, read its diff (`git diff -- <scene>`, or `cliext.diff snapshot` before and `compare` after)
+  and report every object it changes that your task didn't touch. A Cinemachine brain writes its live camera's
+  values (position, rotation, lens) into the Main Camera, so a save can carry them; say so, or put them back.
 - Exit 6 means two things. A real failure prints its reason on stderr, usually as an `error:` line (stdout is empty, or
   holds the command's partial result). A reply dropped by a domain reload prints
   `{"success":false,"errors":[{"code":"EDITOR_CONNECTION_LOST",...}]}` on stdout with `--format json`: after a compile
@@ -59,6 +62,8 @@ scripts named below are in `{{cliext-tools}}` (`cliext-wait.ps1`, `cliext-run.ps
   quotes, `script eval --code 'return "a b";'` arrives as two arguments, and so does a quoted `git commit -m`
   message. Put anything with quotes in a file: `--ops-file`, `script eval --file` or `cliext.eval run --file`,
   `git commit -F`.
+- Write ops files, snippets and scripts with the Write tool (or your editor), then pass their path. Don't build them
+  with shell heredocs or multi-line `-c` strings: a hook or the shell's quoting can block or mangle them.
 - Prefer PowerShell for `unity command`. Git Bash rewrites an argument that starts with `/` into a Windows path
   (`--target /Player` arrives as `C:/Program Files/Git/Player`): there, set `MSYS_NO_PATHCONV=1` first.
 - Give `script eval` and `cliext.eval run` a `--timeout` when the work may take over 30 seconds. On Unity 6.6 and later,
@@ -109,6 +114,12 @@ scripts named below are in `{{cliext-tools}}` (`cliext-wait.ps1`, `cliext-run.ps
 | `cliext.import`, `cliext.presets` | import settings across folders; default presets per folder and an `audit` |
 | `cliext.package` | `import` a .unitypackage with no dialogs: `--dry-run true` lists what it would write; then all or nothing |
 | `cliext.physics`, `cliext.navmesh`, `cliext.quality` | `layers` (names, `--set`), collision matrix (`set_matrix --only` sets a whole row), materials (`--assign` to colliders), raycasts; NavMesh areas, agents, paths, `obstacle`, bakes; quality levels, graphics APIs |
+
+Pipeline names agents often guess wrong: open scenes are `scene list_open` (not `scene list`), the hierarchy is
+`scene get_hierarchy` (not `scene hierarchy`), and Play mode is `editor.playmode start` / `stop` (there is no
+`cliext.playmode start`; `cliext.playmode` only waits, sets time scale and fast Play mode).
+`capture game_view --camera <name>` needs an object with a Camera component: a Cinemachine camera has none, so give
+the Camera the brain drives (usually `Main Camera`) after making the Cinemachine camera live.
 
 Scripts: `cliext-play-capture.ps1` compiles, enters Play mode, optionally slows time (`-TimeScale`), waits for a state,
 runs the project's own commands (`-Run`), and screenshots it at timed moments (`NAME@SECONDS`) or after snippets into a
