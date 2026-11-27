@@ -12,3 +12,5 @@ using System.Runtime.CompilerServices;
 [assembly: InternalsVisibleTo("UnityCLIExtensions.AINavigation")]
 // So do the Addressables commands.
 [assembly: InternalsVisibleTo("UnityCLIExtensions.Addressables")]
+// The Timeline tests check the shared clip-reference errors.
+[assembly: InternalsVisibleTo("UnityCLIExtensions.Timeline.Tests")]

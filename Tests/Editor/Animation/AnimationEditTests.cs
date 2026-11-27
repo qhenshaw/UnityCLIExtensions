@@ -186,5 +186,67 @@ namespace UnityCLIExtensions.Tests
             StringAssert.Contains("Parameters: Speed, Jump", none);
             StringAssert.Contains("cliext.animator inspect", none);
         }
+
+        /// <summary>
+        /// A copy of a model from the project, importing the clips named in <paramref name="clips"/> ("name:first-last"
+        /// frames); ignored when the project has no model with a take.
+        /// </summary>
+        internal static string ModelWithClips(string folder, params string[] clips)
+        {
+            string source = AssetDatabase.FindAssets("t:Model").Select(AssetDatabase.GUIDToAssetPath)
+                .FirstOrDefault(p => p.StartsWith("Assets/") && !p.StartsWith(folder) && AssetImporter.GetAtPath(p) is ModelImporter mi && mi.importedTakeInfos.Length > 0);
+            if (source == null) Assert.Ignore("The project has no model with an animation take to copy.");
+            string path = $"{folder}/Model_{Guid.NewGuid():N}{Path.GetExtension(source)}";
+            Assert.IsTrue(AssetDatabase.CopyAsset(source, path));
+            var importer = (ModelImporter)AssetImporter.GetAtPath(path);
+            string take = importer.importedTakeInfos[0].name;
+            importer.clipAnimations = clips.Select(spec =>
+            {
+                var parts = spec.Split(':', '-');
+                return new ModelImporterClipAnimation { name = parts[0], takeName = take, firstFrame = float.Parse(parts[1]), lastFrame = float.Parse(parts[2]) };
+            }).ToArray();
+            importer.SaveAndReimport();
+            return path;
+        }
+
+        [Test]
+        public void MotionReferences_ABareModelNeedsOneClip_AndASharedNameNamesNone()
+        {
+            string model = ModelWithClips(Folder, "Dup:0-1", "Dup:0-10", "Solo:0-5");
+            var bare = Assert.Throws<ClipReferenceException>(() => AnimationErrors.ModelClip(model, null));
+            StringAssert.Contains("3 clips", bare.Message);
+            StringAssert.Contains($"{model}@<clip>", bare.Message);
+            StringAssert.Contains("Solo (", bare.Message);
+            var dup = Assert.Throws<ClipReferenceException>(() => AnimationErrors.ModelClip(model, "Dup"));
+            StringAssert.Contains("2 clips named 'Dup'", dup.Message);
+            StringAssert.Contains("1 frame", dup.Message);
+            StringAssert.Contains("cliext.anim edit_clips", dup.Message);
+            Assert.AreEqual("Solo", AnimationErrors.ModelClip(model, "Solo").name);
+
+            var c = MakeController();
+            byte[] before = File.ReadAllBytes(AssetDatabase.GetAssetPath(c));
+            foreach (var op in new[]
+            {
+                new AnimatorOp { op = "set_state", state = "Idle", motion = model },
+                new AnimatorOp { op = "set_state", state = "Idle", motion = model + "@Dup" },
+                new AnimatorOp { op = "add_blendtree", state = "Move", parameter = "Speed", children = $"{model}@0;{model}@Solo@1" }
+            })
+            {
+                Assert.IsFalse(AnimatorEditing.TryApplyAll(c, new[] { op }, new List<object>(), out _, out string error, out Exception failure), op.motion ?? op.children);
+                Assert.AreEqual(Unity.Pipeline.Commands.ExitCode.InvalidUsage, AnimationErrors.BatchExit(failure), error);
+                CollectionAssert.AreEqual(before, File.ReadAllBytes(AssetDatabase.GetAssetPath(c)), "A refused motion saved the controller.");
+            }
+            Assert.IsTrue(AnimatorEditing.TryApplyAll(c, new[] { new AnimatorOp { op = "set_state", state = "Idle", motion = model + "@Solo" } }, new List<object>(), out _, out string ok), ok);
+            Assert.AreEqual("Solo", c.layers[0].stateMachine.states.First(s => s.state.name == "Idle").state.motion.name);
+        }
+
+        [Test]
+        public void MotionReferences_ABareModelWithOneClip_IsThatClip()
+        {
+            string model = ModelWithClips(Folder, "Only:0-5");
+            var c = MakeController();
+            Assert.IsTrue(AnimatorEditing.TryApplyAll(c, new[] { new AnimatorOp { op = "set_state", state = "Idle", motion = model } }, new List<object>(), out _, out string error), error);
+            Assert.AreEqual("Only", c.layers[0].stateMachine.states.First(s => s.state.name == "Idle").state.motion.name);
+        }
     }
 }

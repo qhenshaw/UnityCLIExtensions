@@ -19,11 +19,56 @@ namespace UnityCLIExtensions.Animation
         public AnimUsageException(string message) : base(message) { }
     }
 
+    /// <summary>
+    /// A clip reference that can't name one clip: a bare model path when the model has several clips, or a name that
+    /// two of its clips share. Exit 2 (invalid usage), also from inside an edit batch.
+    /// </summary>
+    internal sealed class ClipReferenceException : ArgumentException
+    {
+        public ClipReferenceException(string message) : base(message) { }
+    }
+
     internal static class AnimationErrors
     {
         /// <summary>The exit code for an error thrown while resolving a command's arguments.</summary>
         public static ExitCode Exit(Exception e) =>
-            e is AnimNotFoundException ? ExitCode.NotFound : e is AnimUsageException ? ExitCode.InvalidUsage : ExitCode.Failed;
+            e is AnimNotFoundException ? ExitCode.NotFound : e is AnimUsageException || e is ClipReferenceException ? ExitCode.InvalidUsage : ExitCode.Failed;
+
+        /// <summary>The exit code for an op that failed in an edit batch: 6, but 2 for a clip reference that names no single clip.</summary>
+        public static ExitCode BatchExit(Exception e) => e is ClipReferenceException ? ExitCode.InvalidUsage : ExitCode.Failed;
+
+        /// <summary>The clips a model file imports (not Unity's __preview__ copies).</summary>
+        public static List<UnityEngine.AnimationClip> ModelClips(string model) =>
+            AssetDatabase.LoadAllAssetsAtPath(model).OfType<UnityEngine.AnimationClip>().Where(c => !c.name.StartsWith("__preview__")).ToList();
+
+        /// <summary>
+        /// The clip a model reference names: <c>&lt;model&gt;@&lt;clip&gt;</c> (<paramref name="name"/>), or the bare model
+        /// (<paramref name="name"/> null) when it holds exactly one clip. Null when the model has no clip of that name
+        /// (the caller says so). Throws <see cref="ClipReferenceException"/> when the bare model has several clips or two
+        /// clips share the name, listing them with their lengths.
+        /// </summary>
+        public static UnityEngine.AnimationClip ModelClip(string model, string name)
+        {
+            var clips = ModelClips(model);
+            if (name == null)
+            {
+                if (clips.Count <= 1) return clips.FirstOrDefault();
+                throw new ClipReferenceException($"'{model}' is a model with {clips.Count} clips, so it names none of them: give one as {model}@<clip>. Its clips: {Describe(clips)}. cliext.anim takes lists them.");
+            }
+            var named = clips.Where(c => c.name == name).ToList();
+            if (named.Count == 0) named = clips.Where(c => string.Equals(c.name, name, StringComparison.OrdinalIgnoreCase)).ToList();
+            if (named.Count <= 1) return named.FirstOrDefault();
+            throw new ClipReferenceException($"'{model}' has {named.Count} clips named '{name}' ({Describe(named)}), so {model}@{name} could be either. " +
+                                             $"Cut a uniquely named one with cliext.anim edit_clips --path {model} (op add_clip with name, take, first and last frames), then use {model}@<that name>.");
+        }
+
+        private static string Describe(IEnumerable<UnityEngine.AnimationClip> clips) =>
+            string.Join(", ", clips.Select(c =>
+            {
+                float frame = c.frameRate > 0 ? 1f / c.frameRate : 0;
+                bool single = frame > 0 && c.length <= frame * 1.5f;
+                return $"{c.name} ({Math.Round(c.length, 3).ToString(System.Globalization.CultureInfo.InvariantCulture)} s{(single ? ", 1 frame: a pose" : "")})";
+            }));
 
         /// <summary>A one-line message for any error an op can throw (no stack trace for a bad number).</summary>
         public static string Message(Exception e) =>

@@ -172,5 +172,41 @@ namespace UnityCLIExtensions.Timeline.Tests
             Resources.UnloadAsset(t);
             Assert.AreEqual("Anim[AB],Group[],Group/Sub[]", Shape(AssetDatabase.LoadAssetAtPath<TimelineAsset>(path)), "Reloaded from disk, the timeline has them.");
         }
+
+        [Test]
+        public void AddClip_ByANameTwoTakesShare_OrABareModelWithSeveralClips_FailsListingThem()
+        {
+            if (!AssetDatabase.IsValidFolder(Folder)) AssetDatabase.CreateFolder("Assets", "CliExtTimelineTests");
+            string source = AssetDatabase.FindAssets("t:Model").Select(AssetDatabase.GUIDToAssetPath)
+                .FirstOrDefault(p => p.StartsWith("Assets/") && !p.StartsWith(Folder) && AssetImporter.GetAtPath(p) is ModelImporter mi && mi.importedTakeInfos.Length > 0);
+            if (source == null) Assert.Ignore("The project has no model with an animation take to copy.");
+            string model = $"{Folder}/Model_{Guid.NewGuid():N}{System.IO.Path.GetExtension(source)}";
+            Assert.IsTrue(AssetDatabase.CopyAsset(source, model));
+            var importer = (ModelImporter)AssetImporter.GetAtPath(model);
+            string take = importer.importedTakeInfos[0].name;
+            importer.clipAnimations = new[]
+            {
+                new ModelImporterClipAnimation { name = "Dup", takeName = take, firstFrame = 0, lastFrame = 1 },
+                new ModelImporterClipAnimation { name = "Dup", takeName = take, firstFrame = 0, lastFrame = 10 },
+                new ModelImporterClipAnimation { name = "Solo", takeName = take, firstFrame = 0, lastFrame = 5 }
+            };
+            importer.SaveAndReimport();
+
+            string path = $"{Folder}/T_{Guid.NewGuid():N}.playable";
+            var t = ScriptableObject.CreateInstance<TimelineAsset>();
+            AssetDatabase.CreateAsset(t, path);
+            t.CreateTrack<AnimationTrack>(null, "Anim");
+            AssetDatabase.SaveAssets();
+            byte[] before = System.IO.File.ReadAllBytes(path);
+            foreach (string clip in new[] { model + "@Dup", model })
+            {
+                Assert.IsFalse(TimelineCommands.TryApplyAll(t, new[] { new TimelineOp { op = "add_clip", track = "Anim", clip = clip } }, new List<object>(), out _, out string error, out Exception failure), clip);
+                Assert.IsInstanceOf<UnityCLIExtensions.Animation.ClipReferenceException>(failure, error);
+                if (clip.EndsWith("@Dup")) { StringAssert.Contains("2 clips named 'Dup'", error); StringAssert.Contains("cliext.anim edit_clips", error); }
+                else { StringAssert.Contains("3 clips", error); StringAssert.Contains("Solo (", error); }
+                CollectionAssert.AreEqual(before, System.IO.File.ReadAllBytes(path));
+            }
+            Assert.IsTrue(TimelineCommands.TryApplyAll(t, new[] { new TimelineOp { op = "add_clip", track = "Anim", clip = model + "@Solo" } }, new List<object>(), out _, out string ok), ok);
+        }
     }
 }

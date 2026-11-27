@@ -195,11 +195,11 @@ namespace UnityCLIExtensions.Timeline
             TimelineAsset t;
             try { t = Load(path); } catch (ArgumentException e) { cmd.Fail(e.Message); return AnimationErrors.Exit(e); }
             var results = new List<object>();
-            if (!TryApplyAll(t, list.ops, results, out int failedAt, out string error))
+            if (!TryApplyAll(t, list.ops, results, out int failedAt, out string error, out Exception failure))
             {
                 cmd.Result.Write(new { path, applied = 0, failedAt, error, saved = false });
                 cmd.Fail($"Op {failedAt} ({list.ops[failedAt].op}) failed: {error} Nothing was saved.");
-                return ExitCode.Failed;
+                return AnimationErrors.BatchExit(failure);
             }
             cmd.Result.Write(new { path, applied = results.Count, results, duration = t.duration });
             return ExitCode.Success;
@@ -209,10 +209,14 @@ namespace UnityCLIExtensions.Timeline
         /// Applies every op and saves once; on the first failure puts the timeline back as it was, on disk and in memory
         /// (removed tracks, clips and their assets included, through the batch's Undo group), and saves nothing.
         /// </summary>
-        internal static bool TryApplyAll(TimelineAsset t, IList<TimelineOp> ops, List<object> results, out int failedAt, out string error)
+        internal static bool TryApplyAll(TimelineAsset t, IList<TimelineOp> ops, List<object> results, out int failedAt, out string error) =>
+            TryApplyAll(t, ops, results, out failedAt, out error, out _);
+
+        internal static bool TryApplyAll(TimelineAsset t, IList<TimelineOp> ops, List<object> results, out int failedAt, out string error, out Exception failure)
         {
             string assetPath = AssetDatabase.GetAssetPath(t);
             using var rollback = AssetRollback.Begin(new[] { assetPath }, revertUndo: true);
+            failure = null;
             for (int i = 0; i < ops.Count; i++)
             {
                 try { results.Add(Apply(t, ops[i])); }
@@ -220,6 +224,7 @@ namespace UnityCLIExtensions.Timeline
                 {
                     results.Clear();
                     rollback.Rollback();
+                    failure = e;
                     failedAt = i;
                     error = AnimationErrors.Message(e);
                     return false;
@@ -407,7 +412,12 @@ namespace UnityCLIExtensions.Timeline
             int at = path.LastIndexOf('@');
             if (at > 0 && !File.Exists(path)) { sub = path.Substring(at + 1); path = path.Substring(0, at); }
             var all = AssetDatabase.LoadAllAssetsAtPath(path).OfType<T>().Where(c => !c.name.StartsWith("__preview__")).ToList();
-            var found = sub == null ? AssetDatabase.LoadAssetAtPath<T>(path) ?? all.FirstOrDefault() : all.FirstOrDefault(c => string.Equals(c.name, sub, StringComparison.OrdinalIgnoreCase));
+            T found;
+            if (typeof(T) == typeof(AnimationClip) && AssetImporter.GetAtPath(path) is ModelImporter)
+                // A model: a bare path names its clip only when it has one; a name two clips share names neither.
+                found = AnimationErrors.ModelClip(path, sub) as T;
+            else
+                found = sub == null ? AssetDatabase.LoadAssetAtPath<T>(path) ?? all.FirstOrDefault() : all.FirstOrDefault(c => string.Equals(c.name, sub, StringComparison.OrdinalIgnoreCase));
             if (found != null) return found;
             var main = AssetDatabase.LoadMainAssetAtPath(path);
             if (main == null)

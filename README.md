@@ -636,7 +636,10 @@ Pipeline's `animation.animator` commands create controllers and add layers, para
   `index` among several, `conditions` as `Param Mode [Threshold]` separated by `;`, checked against the parameter's
   type), `remove_transition`, `remove_parameter` (also removes the conditions that use it), `set_parameter` (default
   value), `set_layer`, `remove_layer`, `add_blendtree` (on a new or existing state). A motion is a clip path, or a
-  model's clip as `Assets/Char.fbx@Run`.
+  model's clip as `Assets/Char.fbx@Run`. A bare model path is its clip only when it has one; with several it fails
+  (exit 2) listing them, and so does a name two of its clips share (a model can import a 1-frame pose under the same
+  name): cut a uniquely named clip with `cliext.anim edit_clips` (`add_clip`). The same holds for `cliext.anim` and
+  `cliext.timeline add_clip`.
 - `live --object <GameObject>` (Play mode): each layer's current state by name, normalized time, clips and their
   weights, the transition in progress, and every parameter's value.
 - `drive --object <GameObject> --parameter Speed --value 1` sets a parameter (a Trigger with `true`/`false` sets or

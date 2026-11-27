@@ -1438,6 +1438,37 @@ Add-Check 'anim.animator-edit-errors' $animRow 'cliext.animator edit fails (exit
     )
 }
 
+Add-Check 'anim.motion-refs' $animRow 'a bare model path with several clips, or a clip name two clips share, as a set_state motion, a blend tree child or an anim clip path exits 2 listing the clips with their lengths (and edit_clips for a shared name), saving nothing; a model with one clip may be given bare' {
+    Need-AnimAssets
+    $before = Get-AnimHash $script:animCtl
+    $run = 'Assets/TestLevel/Animations/kenney run.fbx'
+    $idle = 'Assets/TestLevel/Animations/kenney idle.fbx'
+    $cases = @(
+        @("[{`"op`":`"set_state`",`"state`":`"Run`",`"motion`":`"$run`"}]", "is a model with 2 clips.*$([regex]::Escape($run))@<clip>.*kenney run 1 \(", 'bare model with 2 clips'),
+        @("[{`"op`":`"set_state`",`"state`":`"Run`",`"motion`":`"$idle@kenney idle`"}]", "2 clips named 'kenney idle'.*1 frame.*cliext\.anim edit_clips", 'a name two clips share'),
+        @("[{`"op`":`"add_blendtree`",`"state`":`"Strafe`",`"parameter`":`"Speed`",`"children`":`"$run@0;$($script:animClip)@1`"}]", 'is a model with 2 clips', 'bare model as a blend tree child')
+    )
+    $seen = @()
+    $i = 0
+    foreach ($c in $cases) {
+        $i++
+        $r = Invoke-Cli @('cliext.animator', 'edit', '--path', $script:animCtl, '--ops-file', (Write-AnimOps "anim-ref-$i.json" $c[0]), '--format', 'json')
+        Expect-AnimFailure $r $c[1] $script:animCtl $before $c[2] 2
+        $seen += "$($c[2]) $($r.exit)"
+    }
+    $clip = Invoke-Cli @('cliext.anim', 'clip', '--path', "$idle@kenney idle", '--format', 'json')
+    Expect-AnimFailure $clip "2 clips named 'kenney idle'" '' '' 'anim clip by a shared name' 2
+    $seen += "anim clip $($clip.exit)"
+    $speed0 = (@((Get-AnimController).layers[0].states) | Where-Object { $_.path -eq 'Run' }).speed
+    $one = Invoke-Cli @('cliext.animator', 'edit', '--path', $script:animCtl, '--ops-file', (Write-AnimOps 'anim-ref-one.json' "[{`"op`":`"set_state`",`"state`":`"Run`",`"motion`":`"$($script:animIdle)`",`"set`":`"speed=1.25`"}]"), '--format', 'json')
+    Expect ($one.exit -eq 0) "a bare model with one clip: exit $($one.exit): $(Short ($one.stdout + $one.stderr))"
+    $runState = @((Get-AnimController).layers[0].states) | Where-Object { $_.path -eq 'Run' }
+    Expect ("$($runState.motion)" -match 'standing idle') "Run's motion: $($runState.motion)"
+    $back = Invoke-Cli @('cliext.animator', 'edit', '--path', $script:animCtl, '--ops-file', (Write-AnimOps 'anim-ref-back.json' "[{`"op`":`"set_state`",`"state`":`"Run`",`"set`":`"speed=$([string]::Format([Globalization.CultureInfo]::InvariantCulture, '{0}', $speed0))`"}]"), '--format', 'json')
+    Expect ($back.exit -eq 0) "putting Run's speed back: exit $($back.exit): $(Short ($back.stdout + $back.stderr))"
+    "$($seen -join ', '); the one-clip model given bare sets standing idle"
+}
+
 Add-Check 'anim.animator-rollback' $animRow 'an animator edit batch with one bad op saves nothing, on disk or in memory (removed states and transitions come back), and the next good edit saves only its own change' {
     Need-AnimAssets
     $before = Get-AnimHash $script:animCtl
@@ -1773,7 +1804,7 @@ Add-Check 'tl.edit-rollback' $tlRow 'a timeline edit batch with removed tracks a
     Need-TlAssets
     $before = Get-TlHash
     $m0 = Get-TlMemory
-    $ops = '[{"op":"remove_track","track":"Group"},{"op":"remove_clip","track":"Audio","clip":"Book"},{"op":"add_clip","track":"Anim","clip":"Assets/TestLevel/Animations/kenney run.fbx","time":2,"name":"Extra"},{"op":"add_marker","time":1.25},{"op":"rename_track","track":"Anim","name":"Renamed"},{"op":"set_clip","track":"Active","clip":"0","set":"duration=5"},{"op":"remove_track","track":"NoSuchTrack"}]'
+    $ops = '[{"op":"remove_track","track":"Group"},{"op":"remove_clip","track":"Audio","clip":"Book"},{"op":"add_clip","track":"Anim","clip":"Assets/TestLevel/Animations/kenney run.fbx@kenney run 2","time":2,"name":"Extra"},{"op":"add_marker","time":1.25},{"op":"rename_track","track":"Anim","name":"Renamed"},{"op":"set_clip","track":"Active","clip":"0","set":"duration=5"},{"op":"remove_track","track":"NoSuchTrack"}]'
     $r = Invoke-Cli @('cliext.timeline', 'edit', '--path', $script:tlPath, '--ops-file', (Write-WorkFile 'tl-bad-batch.json' $ops), '--format', 'json')
     Expect-TlFailure $r 'Op 6 \(remove_track\) failed.*Nothing was saved' $before 'bad batch'
     Expect ($r.json.saved -eq $false -and $r.json.failedAt -eq 6 -and $r.json.applied -eq 0) "reply: $(Short $r.stdout)"
@@ -1945,6 +1976,17 @@ return string.Format(System.Globalization.CultureInfo.InvariantCulture, "{0:0.0}
         [void](Invoke-Cli @('script', 'eval', '--file', (Write-WorkFile 'tl-scrub-close.cs' $close), '--format', 'json'))
     }
     "Anim plays Idle at local 0.5; read $readText while sampled; rig back at $p0; keep-pose left the frame and dirtied the scene"
+}
+
+Add-Check 'tl.clip-refs' $tlRow 'cliext.timeline edit add_clip given a take name two clips share, or a bare model with several clips, exits 2 listing them with their lengths and saves nothing' {
+    Need-TlAssets
+    $before = Get-TlHash
+    $idle = 'Assets/TestLevel/Animations/kenney idle.fbx'
+    $shared = Invoke-Cli @('cliext.timeline', 'edit', '--path', $script:tlPath, '--ops-file', (Write-WorkFile 'tl-ref-shared.json' "[{`"op`":`"add_clip`",`"track`":`"Anim`",`"clip`":`"$idle@kenney idle`",`"time`":3}]"), '--format', 'json')
+    Expect-TlFailure $shared "2 clips named 'kenney idle'.*1 frame.*cliext\.anim edit_clips" $before 'a take name two clips share' 2
+    $bare = Invoke-Cli @('cliext.timeline', 'edit', '--path', $script:tlPath, '--ops-file', (Write-WorkFile 'tl-ref-bare.json' "[{`"op`":`"add_clip`",`"track`":`"Anim`",`"clip`":`"$idle`",`"time`":3}]"), '--format', 'json')
+    Expect-TlFailure $bare 'is a model with 2 clips.*@<clip>' $before 'a bare model with 2 clips' 2
+    "shared name $($shared.exit), bare model $($bare.exit); .playable unchanged"
 }
 
 # --- cliext.input -----------------------------------------------------------------------------------------------------
