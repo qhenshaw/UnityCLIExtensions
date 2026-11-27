@@ -280,6 +280,11 @@ namespace UnityCLIExtensions.ShaderGraph
             return node;
         }
 
+        /// <summary>For tests, which can't see Shader Graph's internals: the blocks add_block offers, the fragment blocks, the first target's settings.</summary>
+        internal string[] AvailableBlockNames() => ShaderGraphOps.AvailableBlocks(graph).Select(d => d.displayName).ToArray();
+        internal string[] FragmentBlockNames() => graph.fragmentContext.blocks.Select(b => b.value.descriptor?.displayName).ToArray();
+        internal Dictionary<string, string> FirstTargetSettings() => ShaderGraphOps.DescribeTargetSettings(graph.activeTargets.First());
+
         public bool HasNode(string id) => !string.IsNullOrWhiteSpace(id) && graph.GetNodeFromId(id.Trim()) != null;
 
         public bool TryFindProperty(string idOrName, out AbstractShaderProperty property)

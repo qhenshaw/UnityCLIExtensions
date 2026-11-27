@@ -546,7 +546,18 @@ Function's `functionBody`, a texture type, ... as `inspect --id` lists them), or
 Ops: `add_node`, `add_property` (type: float, vector2-4, color, texture2d, texture2darray, texture3d, cubemap,
 boolean, matrix2-4, gradient, samplerstate), `add_block`, `add_port`/`remove_port` (Custom Function ports),
 `remove`, `set`, `link`, `unlink` (every link into `to`, or only the one from `from`), `move`, `rename` (a property's
-name and reference), `expose`. Links are type-checked as the window checks them.
+name and reference), `expose`, `set_target`, `set_mode`. Links are type-checked as the window checks them.
+
+**Graph Settings and property modes.** `set_target` changes a target setting from the Graph Settings tab
+(`{"op":"set_target","setting":"alphaClip","value":"true"}`; also `surfaceType` Opaque/Transparent,
+`allowMaterialOverride`, `castShadows`, `renderFace`, ... and the material's own, such as Lit's `workflowMode`; `inspect`
+lists them under `targets[].settings`, and `target` picks one when the graph has several). As in the window, the blocks
+the new setting uses are added (`blocksAdded`: Alpha Clip Threshold when alpha clipping goes on) and the ones it no
+longer uses are marked inactive. Blocks such as Alpha and Alpha Clip Threshold aren't offered to `add_block` until
+then. `set_mode` sets a property's mode: a float's `default`, `slider` (with `min` and `max`; a default outside the
+range is clamped) or `integer`, and a colour's `default` or `hdr`
+(`{"op":"set_mode","id":"Dissolve Amount","mode":"slider","min":0,"max":1}`); `inspect` shows it as `mode`. Either op
+fails when it would change nothing.
 
 Every edit runs on a copy loaded from the file: an op that fails saves nothing. After saving, each pass of the shader
 is compiled for the current platform, so HLSL errors (a Custom Function's body) come back at once, each reported once
@@ -902,10 +913,10 @@ All under `unity command --project-path <project>`:
 | `cliext.vfx edit --path <vfx> --ops <json> \| --ops-file <path>` | Many edits, one save and compile. |
 | `cliext.vfx check --path <vfx> [--strict true]` | Mistakes that compile but show nothing, VFX Graph's own warnings, and the attributes each event reads from script. |
 | `cliext.shadergraph types [--filter text] [--targets true]` | The nodes by menu path, or the targets and materials. |
-| `cliext.shadergraph inspect --path <graph> [--id node]` | Blocks, nodes, slots, properties and compile errors. |
+| `cliext.shadergraph inspect --path <graph> [--id node]` | Target settings, blocks, nodes, slots, properties (with their modes) and compile errors. |
 | `cliext.shadergraph create --path <graph> --target T [--material M] \| --from <graph>` | Creates a graph. |
 | `cliext.shadergraph add` / `add_property` / `remove` / `set` / `link` / `unlink` | One edit, then save and compile. |
-| `cliext.shadergraph edit --path <graph> --ops-file <path>` | Many edits, one save and compile. |
+| `cliext.shadergraph edit --path <graph> --ops-file <path>` | Many edits, one save and compile; `set_target` (alpha clipping, surface type, ...) and `set_mode` (slider, integer, HDR) included. |
 | `cliext.input inspect --path <inputactions>` / `edit --ops-file <path>` | Read and edit maps, actions, bindings and schemes. |
 | `cliext.input add_device` / `remove_device` / `devices` | Virtual input devices. |
 | `cliext.input set` / `press` / `actions` | Drive controls and read the game's actions (Play mode). |

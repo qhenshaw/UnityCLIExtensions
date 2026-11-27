@@ -979,6 +979,34 @@ Add-Check 'sg.remove' 'cliext.shadergraph' 'cliext.shadergraph remove takes out 
     "removed Add and Speed; again: exit $($bad.exit)"
 }
 
+Add-Check 'sg.target-mode' 'cliext.shadergraph' 'cliext.shadergraph edit set_target turns alpha clipping on (adding Alpha Clip Threshold, which add_block refused before) and set_mode makes a float a 0-1 slider and a colour HDR; inspect shows both; an unknown mode or setting fails with the valid values and saves nothing' {
+    Need-SgIds
+    $before = Get-SgHash
+    $refused = Invoke-Cli @('cliext.shadergraph', 'edit', '--path', $script:sgPath, '--ops-file', (Write-WorkFile 'sg-clip-early.json' '[{"op":"add_block","block":"Alpha Clip Threshold"}]'), '--format', 'json')
+    Expect-SgFailure $refused 'set_target.*alphaClip' $before 'add_block before alpha clipping'
+    $badMode = Invoke-Cli @('cliext.shadergraph', 'edit', '--path', $script:sgPath, '--ops-file', (Write-WorkFile 'sg-bad-mode.json' '[{"op":"set_mode","id":"Tint","mode":"slider"}]'), '--format', 'json')
+    Expect-SgFailure $badMode 'Use one of: default, hdr' $before 'unknown colour mode'
+    $badSetting = Invoke-Cli @('cliext.shadergraph', 'edit', '--path', $script:sgPath, '--ops-file', (Write-WorkFile 'sg-bad-setting.json' '[{"op":"set_target","setting":"alphaClipping","value":"true"}]'), '--format', 'json')
+    Expect-SgFailure $badSetting 'Did you mean alphaClip' $before 'unknown target setting'
+    $ops = '[{"op":"set_target","setting":"alphaClip","value":"true"},' +
+           '{"op":"add_property","type":"float","name":"Cutoff","reference":"_Cutoff","value":"0.3","as":"cut"},' +
+           '{"op":"set_mode","id":"$cut","mode":"slider","min":0,"max":1},' +
+           '{"op":"set_mode","id":"Tint","mode":"hdr"}]'
+    $r = Invoke-Cli @('cliext.shadergraph', 'edit', '--path', $script:sgPath, '--ops-file', (Write-WorkFile 'sg-target-mode.json' $ops), '--format', 'json') 180
+    Expect ($r.exit -eq 0) "exit $($r.exit): $(Short ($r.stdout + $r.stderr))"
+    Expect (@($r.json.results[0].blocksAdded) -contains 'Alpha Clip Threshold') "set_target didn't add Alpha Clip Threshold: $(Short ($r.json.results[0] | ConvertTo-Json -Compress))"
+    $g = Get-SgGraph
+    Expect ("$($g.targets[0].settings.alphaClip)" -match '^(?i)true$') "inspect targets settings alphaClip: $(Short ($g.targets[0].settings | ConvertTo-Json -Compress))"
+    Expect (@($g.fragment | Where-Object { $_.name -eq 'Alpha Clip Threshold' }).Count -eq 1) "no Alpha Clip Threshold block: $(@($g.fragment | ForEach-Object { $_.name }) -join ', ')"
+    $cut = @($g.properties | Where-Object { $_.name -eq 'Cutoff' })[0]
+    $tint = @($g.properties | Where-Object { $_.name -eq 'Tint' })[0]
+    Expect ($cut.mode -eq 'Slider(0, 1)') "Cutoff mode '$($cut.mode)'"
+    Expect ($tint.mode -eq 'HDR') "Tint mode '$($tint.mode)'"
+    $range = Invoke-Cli @('script', 'eval', '--file', (Write-WorkFile 'sg-range.cs' "var s = UnityEditor.AssetDatabase.LoadAssetAtPath<UnityEngine.Shader>(`"$($script:sgPath)`"); int i = s.FindPropertyIndex(`"_Cutoff`"); return s.GetPropertyType(i) + `" `" + s.GetPropertyRangeLimits(i).y;"), '--format', 'json')
+    Expect ("$($range.stdout)" -match 'Range 1') "the compiled shader's _Cutoff: $(Short $range.stdout)"
+    'add_block refused until set_target alphaClip; Alpha Clip Threshold added; Cutoff Slider(0, 1) compiles to Range; Tint HDR; bad mode and setting save nothing'
+}
+
 Add-Check 'sg.batch-rollback' 'cliext.shadergraph' 'an edit batch with one bad op saves nothing, on disk or in memory, and the next good edit saves only its own change' {
     Need-SgIds
     $before = Get-SgHash
