@@ -1,0 +1,7 @@
+[
+  {"op":"set_state","state":"Idle","motion":"Assets/REPLACE/Model.fbx@IdleClip"},
+  {"op":"set_layer","layer":"Overlay","set":"defaultWeight=1;blendingMode=Override;avatarMask=Assets/REPLACE/Overlay.mask"},
+  {"op":"add_blendtree","layer":"Overlay","state":"Action","type":"Simple1D","parameter":"Blend","children":"Assets/REPLACE/A.fbx@ClipA@0;Assets/REPLACE/B.fbx@ClipB@1"},
+  {"op":"set_transition","layer":"Overlay","from":"Empty","to":"Action","conditions":"Act If","set":"hasExitTime=false;duration=0.1"},
+  {"op":"set_transition","layer":"Overlay","from":"Action","to":"Empty","conditions":"","set":"hasExitTime=true;exitTime=0.9;duration=0.2"}
+]

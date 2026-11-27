@@ -1,0 +1,5 @@
+[
+  {"op":"add_clip","track":"Character","clip":"Assets/REPLACE/Model.fbx@FirstClip","time":0,"set":"duration=4"},
+  {"op":"add_clip","track":"Character","clip":"Assets/REPLACE/Model.fbx@SecondClip","time":4,"set":"duration=3"},
+  {"op":"add_clip","track":"Sound","clip":"Assets/REPLACE/Sound.wav","time":4}
+]

@@ -1,0 +1,5 @@
+[
+  {"op":"set_rule","selector":".panel","properties":"position: absolute; left: 16px; top: 16px; padding: 8px; background-color: rgba(0, 0, 0, 0.5)"},
+  {"op":"set_rule","selector":".panel-label","properties":"font-size: 18px; color: #ffffff"},
+  {"op":"set_rule","selector":".panel-button","properties":"width: 120px; margin-top: 4px"}
+]

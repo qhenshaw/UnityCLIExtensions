@@ -1,0 +1,7 @@
+[
+  {"op":"add","type":"Style","attributes":"src=REPLACE.uss","index":0},
+  {"op":"add","type":"VisualElement","name":"panel","class":"panel"},
+  {"op":"add","selector":"#panel","type":"Label","name":"status","class":"panel-label","text":"Score: 0"},
+  {"op":"add","selector":"#panel","type":"Button","name":"action-button","class":"panel-button","text":"Add"},
+  {"op":"add","selector":"#panel","type":"Slider","name":"amount-slider","attributes":"label=Amount;low-value=0;high-value=1;value=1"}
+]
