@@ -2230,6 +2230,374 @@ return r == null || r.finished ? "ready" : "at " + r.position;
     "Move [0,1] from the stick; Jump x$jumps3 (button, <Keyboard>/space, replay of $($stop.json.events) events); $($seen.Count) failures with the fix; back in Edit mode, scene clean, no virtual devices"
 }
 
+# --- cliext.uitk ------------------------------------------------------------------------------------------------------
+
+# Edit checks work on a scratch UXML and USS written fresh by Reset-UiFiles. "In memory" is the imported
+# VisualTreeAsset (CloneTree: each named element's type, name, classes and text) and StyleSheet (its rules' selectors
+# and property names), read by a snippet and compared with what inspect reads from the file. Play mode checks add a
+# UIDocument with that UXML to the running scene from a snippet (gone when Play mode ends), with a Button that changes
+# a Label and a Toggle whose change event does too.
+$script:uiUxml = "$scratchRel/CliTestPanel.uxml"
+$script:uiUss = "$scratchRel/CliTestPanel.uss"
+$uiRow = 'cliext.uitk'
+$uiUxmlText = @'
+<ui:UXML xmlns:ui="UnityEngine.UIElements" xmlns:uie="UnityEditor.UIElements">
+    <Style src="CliTestPanel.uss" />
+    <ui:VisualElement name="menu" class="panel">
+        <ui:Label name="status" text="idle" class="caption" />
+        <ui:Button name="start" text="Start" class="primary" />
+        <ui:TextField name="player" value="Ann" />
+        <ui:Toggle name="sound" value="true" />
+        <ui:Slider name="volume" low-value="0" high-value="10" value="5" />
+        <ui:DropdownField name="mode" choices="Easy,Hard" index="0" />
+    </ui:VisualElement>
+    <ui:VisualElement name="footer" />
+</ui:UXML>
+'@
+$uiUssText = @'
+.panel {
+    width: 300px;
+    padding: 4px;
+}
+
+.primary {
+    color: #ffffff;
+    background-color: #2050c0;
+}
+
+#status {
+    font-size: 14px;
+}
+'@
+
+function Reset-UiFiles {
+    [void](Write-ScratchFile 'CliTestPanel.uxml' $uiUxmlText)
+    [void](Write-ScratchFile 'CliTestPanel.uss' $uiUssText)
+    $code = 'UnityEditor.AssetDatabase.Refresh(); UnityEditor.AssetDatabase.ImportAsset("{{uss}}", UnityEditor.ImportAssetOptions.ForceUpdate); UnityEditor.AssetDatabase.ImportAsset("{{uxml}}", UnityEditor.ImportAssetOptions.ForceUpdate); return UnityEditor.AssetDatabase.LoadAssetAtPath<UnityEngine.UIElements.VisualTreeAsset>("{{uxml}}") != null && UnityEditor.AssetDatabase.LoadAssetAtPath<UnityEngine.UIElements.StyleSheet>("{{uss}}") != null ? "ok" : "not imported";'
+    $r = Invoke-Cli @('script', 'eval', '--file', (Write-WorkFile 'ui-setup.cs' $code.Replace('{{uxml}}', $script:uiUxml).Replace('{{uss}}', $script:uiUss)), '--format', 'json')
+    Expect ($r.exit -eq 0 -and "$($r.stdout)" -match 'ok') "scratch UXML/USS: exit $($r.exit): $(Short ($r.stdout + $r.stderr))"
+}
+function Get-UiHash { (Get-FileHash (Join-Path $projectPath ($script:uiUxml -replace '/', '\'))).Hash + '|' + (Get-FileHash (Join-Path $projectPath ($script:uiUss -replace '/', '\'))).Hash }
+function Get-UiInspect([string]$path) {
+    $r = Invoke-Cli @('cliext.uitk', 'inspect', '--path', $path, '--format', 'json')
+    Expect ($r.exit -eq 0) "inspect ${path}: exit $($r.exit): $(Short ($r.stdout + $r.stderr))"
+    $r.json
+}
+function Get-UiSig {
+    # The same text Get-UiMemory builds from the imported assets, from inspect's reading of the files.
+    $els = New-Object Collections.Generic.List[string]
+    function Walk($nodes) { foreach ($n in @($nodes)) { if ($n -eq $null) { continue }; if ($n.name) { $els.Add("$($n.type)#$($n.name)" + (@(("$($n.class)" -split ' ') | Where-Object { $_ } | ForEach-Object { ".$_" }) -join '') + $(if ($n.text -ne $null) { "=$($n.text)" } else { '' })) }; Walk $n.children } }
+    Walk (Get-UiInspect $script:uiUxml).tree
+    $rules = @((Get-UiInspect $script:uiUss).rules | ForEach-Object { "$($_.selector){" + (@($_.properties | ForEach-Object { ($_ -split ':')[0] }) -join ',') + '}' })
+    ($els -join ',') + '|' + ($rules -join ';')
+}
+function Get-UiMemory {
+    $code = @'
+var vta = UnityEditor.AssetDatabase.LoadAssetAtPath<UnityEngine.UIElements.VisualTreeAsset>("{{uxml}}");
+var ss = UnityEditor.AssetDatabase.LoadAssetAtPath<UnityEngine.UIElements.StyleSheet>("{{uss}}");
+if (vta == null || ss == null) return "no asset";
+var els = new System.Collections.Generic.List<string>();
+UnityEngine.UIElements.UQueryExtensions.Query<UnityEngine.UIElements.VisualElement>(vta.CloneTree()).ForEach(e =>
+{
+    if (string.IsNullOrEmpty(e.name) || e.name.StartsWith("unity-")) return;
+    els.Add(e.GetType().Name + "#" + e.name + string.Concat(e.GetClasses().Where(c => !c.StartsWith("unity-")).Select(c => "." + c)) + (e is UnityEngine.UIElements.TextElement t ? "=" + t.text : ""));
+});
+var F = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Public;
+var rules = new System.Collections.Generic.List<string>();
+foreach (var rule in (System.Array)ss.GetType().GetProperty("rules", F).GetValue(ss))
+{
+    var sels = new System.Collections.Generic.List<string>();
+    foreach (var s in (System.Array)rule.GetType().GetProperty("complexSelectors", F).GetValue(rule))
+        sels.Add(string.Concat(System.Text.RegularExpressions.Regex.Matches(s.ToString(), @"value=([\w\-]+), type=(\w+)").Cast<System.Text.RegularExpressions.Match>()
+            .Select(m => (m.Groups[2].Value == "Class" ? "." : m.Groups[2].Value == "ID" ? "#" : "") + m.Groups[1].Value)));
+    var names = new System.Collections.Generic.List<string>();
+    foreach (var p in (System.Array)rule.GetType().GetProperty("properties", F).GetValue(rule)) names.Add((string)p.GetType().GetProperty("name", F).GetValue(p));
+    rules.Add(string.Join(",", sels) + "{" + string.Join(",", names) + "}");
+}
+return string.Join(",", els) + "|" + string.Join(";", rules);
+'@
+    $r = Invoke-Cli @('script', 'eval', '--file', (Write-WorkFile 'ui-mem.cs' $code.Replace('{{uxml}}', $script:uiUxml).Replace('{{uss}}', $script:uiUss)), '--format', 'json')
+    Expect ($r.exit -eq 0) "script eval: exit $($r.exit): $(Short ($r.stdout + $r.stderr))"
+    ($r.stdout.Trim() | ConvertFrom-Json)
+}
+function Invoke-UiEdit([string]$path, [string]$ops, [string]$name) {
+    Invoke-Cli @('cliext.uitk', 'edit', '--path', $path, '--ops-file', (Write-WorkFile $name $ops), '--format', 'json')
+}
+function Expect-UiFailure($r, [string]$hint, [string]$before, [string]$what, [int]$exit = 6) {
+    Expect ($r.exit -ne 124) "${what}: timed out"
+    Expect ($r.exit -eq $exit) "${what}: exit $($r.exit), expected ${exit}: $(Short ($r.stdout + $r.stderr))"
+    Expect ("$($r.stderr)" -match $hint) "${what}: the error doesn't say '$hint': $(Short $r.stderr)"
+    Expect ("$($r.stderr)" -notmatch '   at |Exception:|\[0x') "${what}: a stack trace instead of a message: $(Short $r.stderr)"
+    Expect (@("$($r.stderr)".Trim() -split "`r?`n").Count -eq 1) "${what}: the error isn't one line: $(Short $r.stderr)"
+    if ($before) { Expect ((Get-UiHash) -eq $before) "${what}: the UXML or USS changed on disk" }
+}
+
+Add-Check 'uitk.inspect' $uiRow 'cliext.uitk inspect reads a UXML as its tree and style sheets and a USS as its rules; a missing .uxml or .uss exits 13 naming how to make one, another file type and a path outside Assets/ exit 2, for inspect and edit' {
+    Reset-UiFiles
+    $u = Get-UiInspect $script:uiUxml
+    Expect ((@($u.styles) -join ',') -eq 'CliTestPanel.uss') "styles: $(@($u.styles) -join ',')"
+    $menu = @($u.tree)[0]
+    Expect ($menu.name -eq 'menu' -and $menu.class -eq 'panel' -and (@($menu.children | ForEach-Object { "$($_.type)#$($_.name)" }) -join ',') -eq 'Label#status,Button#start,TextField#player,Toggle#sound,Slider#volume,DropdownField#mode') "tree: $(Short ($u.tree | ConvertTo-Json -Compress -Depth 6) 300)"
+    $slider = @($menu.children) | Where-Object { $_.name -eq 'volume' }
+    Expect ((@($slider.attributes) -join ',') -eq 'low-value=0,high-value=10,value=5') "Slider attributes: $(@($slider.attributes) -join ',')"
+    $s = Get-UiInspect $script:uiUss
+    Expect ((@($s.rules | ForEach-Object { "$($_.selector)=$(@($_.properties) -join '/')" }) -join ';') -eq '.panel=width: 300px/padding: 4px;.primary=color: #ffffff/background-color: #2050c0;#status=font-size: 14px') "rules: $(Short ($s.rules | ConvertTo-Json -Compress) 300)"
+    $f = Write-WorkFile 'ui-one.json' '[{"op":"remove","selector":"#start"}]'
+    $cases = @(
+        @("$scratchRel/NoSuch.uxml", 'No \.uxml file at.*Create > UI Toolkit > UI Document', 13, 'missing .uxml'),
+        @("$scratchRel/NoSuch.uss", 'No \.uss file at.*Create > UI Toolkit > Style Sheet', 13, 'missing .uss'),
+        @('Assets/Scenes/TestLevel.unity', 'is a SceneAsset, not a \.uxml or \.uss file', 2, 'a scene as the file'),
+        @('ProjectSettings/ProjectVersion.txt', "isn't under Assets/ or Packages/", 2, 'path outside Assets')
+    )
+    $seen = @()
+    foreach ($c in $cases) {
+        $x = Invoke-Cli @('cliext.uitk', 'inspect', '--path', $c[0], '--format', 'json')
+        Expect-UiFailure $x $c[1] '' "inspect $($c[3])" $c[2]
+        $y = Invoke-Cli @('cliext.uitk', 'edit', '--path', $c[0], '--ops-file', $f, '--format', 'json') 60
+        Expect-UiFailure $y $c[1] '' "edit $($c[3])" $c[2]
+        Expect ($y.ms -lt 30000) "edit $($c[3]) took $($y.ms) ms"
+        $seen += "$($c[3]) $($x.exit)"
+    }
+    Expect (-not (Test-Path (Join-Path $scratch 'NoSuch.uxml')) -and -not (Test-Path (Join-Path $scratch 'NoSuch.uss'))) 'a failed call created a file'
+    "menu with 6 controls, 1 style sheet; 3 rules; $($seen -join ', ')"
+}
+
+Add-Check 'uitk.edit' $uiRow 'cliext.uitk edit runs every UXML op (add, remove, move, set_attributes, add_class, remove_class) in one batch and every USS op (set_rule merge, new and replace, remove_property, remove_rule) in another; inspect and the imported assets in memory show them all' {
+    Reset-UiFiles
+    $uops = @'
+[{"op":"add","selector":"#menu","type":"Label","name":"hint","text":"Press start","class":"caption small","index":1},
+ {"op":"remove","selector":"#volume"},
+ {"op":"move","selector":"#mode","to":"#footer"},
+ {"op":"set_attributes","selector":"#start","text":"Go","attributes":"tooltip=Start the game"},
+ {"op":"add_class","selector":"Toggle","class":"wide"},
+ {"op":"remove_class","selector":"#status","class":"caption"}]
+'@
+    $r = Invoke-UiEdit $script:uiUxml $uops 'ui-edit.json'
+    Expect ($r.exit -eq 0 -and $r.json.applied -eq 6 -and $r.json.saved -eq $true) "UXML edit: exit $($r.exit): $(Short ($r.stdout + $r.stderr))"
+    $u = Get-UiInspect $script:uiUxml
+    $menu = @($u.tree) | Where-Object { $_.name -eq 'menu' }
+    $footer = @($u.tree) | Where-Object { $_.name -eq 'footer' }
+    Expect ((@($menu.children | ForEach-Object { "$($_.type)#$($_.name)" }) -join ',') -eq 'Label#status,Label#hint,Button#start,TextField#player,Toggle#sound') "menu: $(Short ($menu.children | ConvertTo-Json -Compress -Depth 3) 300)"
+    Expect ((@($footer.children | ForEach-Object { "$($_.type)#$($_.name)" }) -join ',') -eq 'DropdownField#mode') "footer: $(Short ($footer | ConvertTo-Json -Compress -Depth 3))"
+    $start = @($menu.children) | Where-Object { $_.name -eq 'start' }
+    Expect ($start.text -eq 'Go' -and "$($start.attributes)" -match 'tooltip=Start the game') "start: $(Short ($start | ConvertTo-Json -Compress))"
+    Expect ((@($menu.children) | Where-Object { $_.name -eq 'sound' }).class -eq 'wide' -and -not (@($menu.children) | Where-Object { $_.name -eq 'status' }).class) 'classes were not changed'
+    $sops = @'
+[{"op":"set_rule","selector":".panel","properties":"width: 320px; margin: 2px"},
+ {"op":"set_rule","selector":".wide","properties":"flex-grow: 1"},
+ {"op":"set_rule","selector":".primary","properties":"color: #000000","replace":true},
+ {"op":"remove_property","selector":".panel","properties":"padding"},
+ {"op":"remove_rule","selector":"#status"}]
+'@
+    $s = Invoke-UiEdit $script:uiUss $sops 'ui-edit-uss.json'
+    Expect ($s.exit -eq 0 -and $s.json.applied -eq 5 -and @($s.json.import).Count -eq 0) "USS edit: exit $($s.exit): $(Short ($s.stdout + $s.stderr))"
+    $rules = (@((Get-UiInspect $script:uiUss).rules | ForEach-Object { "$($_.selector)=$(@($_.properties) -join '/')" }) -join ';')
+    Expect ($rules -eq '.panel=width: 320px/margin: 2px;.primary=color: #000000;.wide=flex-grow: 1') "rules: $rules"
+    $sig = Get-UiSig
+    $mem = Get-UiMemory
+    Expect ($mem -eq $sig) "in memory differs from the files: '$(Short $mem 200)' vs '$(Short $sig 200)'"
+    "6 UXML ops and 5 USS ops; inspect and memory agree: $(Short $sig 120)"
+}
+
+Add-Check 'uitk.edit-errors' $uiRow 'cliext.uitk edit fails (exit 6, one line, with the fix) on selectors that match nothing or can''t be read, unknown element types, ops and rules, missing fields, removing the root, ops that would change nothing, and USS the importer warns about; saving nothing' {
+    Reset-UiFiles
+    $before = Get-UiHash
+    $U = $script:uiUxml; $S = $script:uiUss
+    $cases = @(
+        @($U, '[{"op":"remove","selector":"#strat"}]', "no element named 'strat'. Did you mean: #start\?.*cliext\.uitk inspect", 'unknown name, close match'),
+        @($U, '[{"op":"remove","selector":".primry"}]', 'Did you mean: \.primary', 'unknown class'),
+        @($U, '[{"op":"remove","selector":"Buton"}]', "no element of type 'Buton'. Did you mean: Button", 'unknown type in a selector'),
+        @($U, '[{"op":"remove","selector":"Button > Label"}]', 'its parts are there, but not nested that way', 'a selector matching nothing'),
+        @($U, '[{"op":"remove","selector":"Button:hover"}]', "Pseudo-classes such as ':hover' aren't supported", 'a pseudo-class'),
+        @($U, '[{"op":"remove","selector":"Button[x]"}]', "Can't read 'Button\[x\]'", 'an unreadable selector'),
+        @($U, '[{"op":"add","selector":"#menu","type":"Buton"}]', "No element type 'Buton'.*Did you mean: Button", 'unknown element type'),
+        @($U, '[{"op":"add","selector":"#menu","type":"x:Label"}]', "The UXML has no 'x' prefix", 'unknown prefix'),
+        @($U, '[{"op":"add","selector":"#menu"}]', 'add needs a type', 'add without a type'),
+        @($U, '[{"op":"remove","selector":"UXML"}]', "Can't remove the UXML root", 'removing the root'),
+        @($U, '[{"op":"move","selector":"#start"}]', 'move needs to', 'move without to'),
+        @($U, '[{"op":"move","selector":"#menu","to":"#status"}]', "Can't move an element into itself", 'move into itself'),
+        @($U, '[{"op":"set_attributes","selector":"#start"}]', 'set_attributes needs attributes', 'set_attributes with nothing'),
+        @($U, '[{"op":"set_attributes","selector":"#start","attributes":"tooltip"}]', "'tooltip' isn't name=value", 'an attribute without a value'),
+        @($U, '[{"op":"set_attributes","selector":"#start","text":"Start"}]', 'would change nothing', 'set_attributes that changes nothing'),
+        @($U, '[{"op":"add_class","selector":"#start","class":"primary"}]', 'would change nothing', 'add_class already there'),
+        @($U, '[{"op":"remove_class","selector":"#start","class":"nope"}]', 'would change nothing', 'remove_class not there'),
+        @($U, '[{"op":"add_class","selector":"#start"}]', 'add_class needs class', 'add_class without a class'),
+        @($U, '[{"op":"remov","selector":"#start"}]', "Unknown UXML op 'remov'. Did you mean: remove", 'misspelled op'),
+        @($U, '[{"op":"set_rule","selector":".panel","properties":"width: 1px"}]', "'set_rule' is a USS op: pass the \.uss file", 'a USS op on a UXML'),
+        @($S, '[{"op":"remove_rule","selector":".primry"}]', "No rule '\.primry'.*Did you mean: \.primary", 'unknown rule'),
+        @($S, '[{"op":"remove_property","selector":".panel","properties":"widht"}]', "Rule '\.panel' has no property 'widht'. Did you mean: width", 'unknown property to remove'),
+        @($S, '[{"op":"remove_property","selector":".panel"}]', 'remove_property needs properties', 'remove_property with nothing'),
+        @($S, '[{"op":"set_rule","selector":".panel"}]', 'set_rule needs properties', 'set_rule with nothing'),
+        @($S, '[{"op":"set_rule","selector":".panel","properties":"width"}]', "'width' isn't property: value", 'a property without a value'),
+        @($S, '[{"op":"set_rule","selector":".panel","properties":"width: 300px"}]', 'would change nothing', 'set_rule that changes nothing'),
+        @($S, '[{"op":"set_rule","selector":".panel","properties":"colr: red"}]', "importer rejected the result.*Unknown property 'colr' \(did you mean 'color'\?\)", 'unknown USS property'),
+        @($S, '[{"op":"set_rule","selector":".panel","properties":"width: abc"}]', "importer rejected the result.*found 'abc'", 'a bad USS value'),
+        @($S, '[{"op":"set_rule","selector":".pa{nel","properties":"width: 1px"}]', "isn't a USS selector", 'a selector with a brace'),
+        @($S, '[{"op":"add","type":"Label"}]', "'add' is a UXML op: pass the \.uxml file", 'a UXML op on a USS')
+    )
+    $seen = @()
+    $i = 0
+    foreach ($c in $cases) {
+        $i++
+        $r = Invoke-UiEdit $c[0] $c[1] "ui-fail-$i.json"
+        Expect-UiFailure $r $c[2] $before $c[3]
+        Expect ($r.json.saved -eq $false -and $r.json.applied -eq 0) "$($c[3]): reply $(Short $r.stdout)"
+        $seen += $c[3]
+    }
+    $json = Invoke-UiEdit $U '[{"op":' 'ui-badjson.json'
+    Expect-UiFailure $json "aren't valid JSON" $before 'broken JSON' 2
+    $none = Invoke-UiEdit $U '[]' 'ui-noops.json'
+    Expect-UiFailure $none 'No ops given' $before 'no ops' 2
+    "$($seen.Count) failures exit 6 with the fix, broken JSON and no ops 2, files unchanged"
+}
+
+Add-Check 'uitk.edit-rollback' $uiRow 'a UXML batch that removes, moves and adds elements, then has one bad op, and a USS batch that removes a rule and a property, then sets a property the importer warns about, save nothing, on disk or in memory; the next good edit saves only its own change' {
+    Reset-UiFiles
+    $before = Get-UiHash
+    $sig0 = Get-UiSig
+    $m0 = Get-UiMemory
+    Expect ($m0 -eq $sig0) "before: memory and files differ: '$(Short $m0 200)' vs '$(Short $sig0 200)'"
+    $bad = '[{"op":"remove","selector":"#status"},{"op":"move","selector":"#start","to":"#footer"},{"op":"add","selector":"#menu","type":"Label","name":"extra"},{"op":"remove_class","selector":"#menu","class":"panel"},{"op":"remove","selector":"#nosuch"}]'
+    $r = Invoke-UiEdit $script:uiUxml $bad 'ui-bad-batch.json'
+    Expect-UiFailure $r 'Op 4 \(remove\) failed.*Nothing was saved' $before 'bad UXML batch'
+    Expect ($r.json.saved -eq $false -and $r.json.failedAt -eq 4) "reply: $(Short $r.stdout)"
+    $bss = '[{"op":"remove_rule","selector":"#status"},{"op":"remove_property","selector":".panel","properties":"padding"},{"op":"set_rule","selector":".primary","properties":"colr: red"}]'
+    $q = Invoke-UiEdit $script:uiUss $bss 'ui-bad-uss.json'
+    Expect-UiFailure $q "importer rejected the result.*colr.*Nothing was saved" $before 'USS batch the importer warns about'
+    $m1 = Get-UiMemory
+    Expect ($m1 -eq $m0) "in memory after the failed batches: '$(Short $m0 150)' -> '$(Short $m1 150)'"
+    Expect ((Get-UiSig) -eq $sig0) 'inspect after the failed batches differs'
+    $g = Invoke-UiEdit $script:uiUxml '[{"op":"remove","selector":"#player"}]' 'ui-good.json'
+    Expect ($g.exit -eq 0 -and $g.json.applied -eq 1) "good UXML edit: exit $($g.exit): $(Short ($g.stdout + $g.stderr))"
+    $h = Invoke-UiEdit $script:uiUss '[{"op":"remove_property","selector":".primary","properties":"color"}]' 'ui-good-uss.json'
+    Expect ($h.exit -eq 0 -and $h.json.applied -eq 1) "good USS edit: exit $($h.exit): $(Short ($h.stdout + $h.stderr))"
+    $want = $sig0.Replace('TextField#player,', '').Replace('.primary{color,background-color}', '.primary{background-color}')
+    Expect ($want -ne $sig0 -and $want -notmatch 'player') "the expected change isn't in the signature: $(Short $sig0 300)"
+    $disk = Get-UiSig
+    Expect ($disk -eq $want) "the files after the good edits: $(Short $disk 300)"
+    $m2 = Get-UiMemory
+    Expect ($m2 -eq $want) "in memory after the good edits: $(Short $m2 300)"
+    Expect (-not ((Get-Content (Join-Path $projectPath ($script:uiUxml -replace '/', '\'))) | Where-Object { $_ -match '^\s+$' })) 'remove left a blank line in the UXML'
+    "UXML failed at op 4, USS rejected by the importer; files and memory unchanged; next edits removed only #player and .primary's color"
+}
+
+Add-Check 'uitk.edit-mode' $uiRow 'in Edit mode, click and set_value exit 6 naming editor.playmode start; tree and query read the documents with a live panel; a query that matches nothing and an unknown document exit 13 with the fix, a bad selector and depth exit 2' {
+    $mode = Invoke-Cli @('script', 'eval', '--file', (Write-WorkFile 'ui-mode.cs' 'return UnityEditor.EditorApplication.isPlaying ? "playing" : "edit";'), '--format', 'json')
+    Expect ("$($mode.stdout)" -match 'edit') "not in Edit mode: $(Short $mode.stdout)"
+    foreach ($c in @(@(@('click', '--selector', 'Button'), 'click'), @(@('set_value', '--selector', 'Toggle', '--value', 'true'), 'set_value'))) {
+        $r = Invoke-Cli (@('cliext.uitk') + $c[0] + @('--format', 'json'))
+        Expect-UiFailure $r "cliext\.uitk $($c[1]) acts on the running game's UI: enter Play mode first \(editor\.playmode start\)" '' "$($c[1]) in Edit mode"
+    }
+    $t = Invoke-Cli @('cliext.uitk', 'tree', '--document', 'HUD', '--format', 'json')
+    Expect ($t.exit -eq 0 -and @($t.json).Count -eq 1 -and $t.json.document -eq 'HUD' -and $t.json.tree.type -eq 'UIDocumentRootElement') "tree --document HUD: exit $($t.exit): $(Short ($t.stdout + $t.stderr))"
+    $q = Invoke-Cli @('cliext.uitk', 'query', '--selector', 'UIDocumentRootElement', '--document', 'HUD', '--format', 'json')
+    Expect ($q.exit -eq 0 -and $q.json.document -eq 'HUD' -and $q.json.element.name -eq 'HUD-container') "query: exit $($q.exit): $(Short ($q.stdout + $q.stderr))"
+    $cases = @(
+        @(@('query', '--selector', 'Button', '--document', 'HUD'), "Nothing matches 'Button': no element of type 'Button'.*cliext\.uitk tree --document HUD", 13, 'a query matching nothing'),
+        @(@('tree', '--document', 'HDU'), "No active UIDocument on a GameObject named 'HDU'. Did you mean: HUD", 13, 'misspelled document'),
+        @(@('query', '--selector', 'Button', '--document', 'Nope'), "No active UIDocument on a GameObject named 'Nope'", 13, 'unknown document'),
+        @(@('query', '--selector', '#a >'), 'has a > without an element', 2, 'a selector ending in >'),
+        @(@('tree', '--depth', '-1'), '--depth must be 0 or more', 2, 'negative depth')
+    )
+    $seen = @()
+    foreach ($c in $cases) {
+        $x = Invoke-Cli (@('cliext.uitk') + $c[0] + @('--format', 'json'))
+        Expect-UiFailure $x $c[1] '' $c[3] $c[2]
+        $seen += "$($c[3]) $($x.exit)"
+    }
+    "click, set_value exit 6 naming editor.playmode start; tree and query read HUD; $($seen -join ', ')"
+}
+
+Add-Check 'uitk.play-mode' $uiRow 'in Play mode, on a UIDocument made from the scratch UXML: tree and query show it, click on the Button runs its handler (the Label changes), set_value changes a Toggle (its change event fires), a Slider, a DropdownField, a TextField and a Label; clicks and values that would do nothing or can''t be taken fail with the fix; leaving Play mode leaves a clean scene' {
+    Reset-UiFiles
+    $scenes = Invoke-Cli @('scene', 'list_open', '--format', 'json')
+    Expect (-not (@($scenes.json) | Where-Object { $_.isDirty })) "an open scene has unsaved changes: $(Short $scenes.stdout)"
+    $setup = @'
+var go = new UnityEngine.GameObject("CliTestUI");
+var doc = go.AddComponent<UnityEngine.UIElements.UIDocument>();
+doc.panelSettings = UnityEditor.AssetDatabase.LoadAssetAtPath<UnityEngine.UIElements.PanelSettings>("Assets/TestLevel/UI/TestPanelSettings.asset");
+doc.visualTreeAsset = UnityEditor.AssetDatabase.LoadAssetAtPath<UnityEngine.UIElements.VisualTreeAsset>("{{uxml}}");
+var root = doc.rootVisualElement;
+var label = UnityEngine.UIElements.UQueryExtensions.Q<UnityEngine.UIElements.Label>(root, "status");
+int n = 0;
+UnityEngine.UIElements.UQueryExtensions.Q<UnityEngine.UIElements.Button>(root, "start").clicked += () => { n++; label.text = "clicked " + n; };
+UnityEngine.UIElements.INotifyValueChangedExtensions.RegisterValueChangedCallback(UnityEngine.UIElements.UQueryExtensions.Q<UnityEngine.UIElements.Toggle>(root, "sound"), e => label.text = "sound " + e.newValue);
+return root.panel != null && UnityEditor.EditorApplication.isPlaying ? "ok" : "no panel";
+'@
+    $readValues = @'
+var root = UnityEngine.GameObject.Find("CliTestUI").GetComponent<UnityEngine.UIElements.UIDocument>().rootVisualElement;
+return UnityEngine.UIElements.UQueryExtensions.Q<UnityEngine.UIElements.Toggle>(root, "sound").value + "|" + UnityEngine.UIElements.UQueryExtensions.Q<UnityEngine.UIElements.Slider>(root, "volume").value.ToString(System.Globalization.CultureInfo.InvariantCulture)
+    + "|" + UnityEngine.UIElements.UQueryExtensions.Q<UnityEngine.UIElements.DropdownField>(root, "mode").value + "|" + UnityEngine.UIElements.UQueryExtensions.Q<UnityEngine.UIElements.TextField>(root, "player").value;
+'@
+    $disable = 'var root = UnityEngine.GameObject.Find("CliTestUI").GetComponent<UnityEngine.UIElements.UIDocument>().rootVisualElement; UnityEngine.UIElements.UQueryExtensions.Q<UnityEngine.UIElements.Slider>(root, "volume").SetEnabled(false); UnityEngine.UIElements.UQueryExtensions.Q<UnityEngine.UIElements.Button>(root, "start").SetEnabled(false); return "ok";'
+    $D = @('--document', 'CliTestUI')
+    function Get-UiStatus { $x = Invoke-Cli (@('cliext.uitk', 'query', '--selector', '#status') + $D + @('--format', 'json')); Expect ($x.exit -eq 0) "query #status: exit $($x.exit): $(Short ($x.stdout + $x.stderr))"; $x.json.element.text }
+    $start = Invoke-Cli @('editor.playmode', 'start', '--format', 'json')
+    try {
+        Expect ((Wait-Editor 120) -eq 0) "Play mode didn't start: $(Short ($start.stdout + $start.stderr))"
+        $s = Invoke-Cli @('script', 'eval', '--file', (Write-WorkFile 'ui-play-setup.cs' $setup.Replace('{{uxml}}', $script:uiUxml)), '--format', 'json')
+        Expect ($s.exit -eq 0 -and "$($s.stdout)" -match 'ok') "making the UIDocument: $(Short ($s.stdout + $s.stderr))"
+        $t = Invoke-Cli (@('cliext.uitk', 'tree', '--depth', '2') + $D + @('--format', 'json'))
+        Expect ($t.exit -eq 0 -and (@($t.json.tree.children[0].children | ForEach-Object { "$($_.type)#$($_.name)=$($_.text)" }) -join ',') -eq 'Label#status=idle,Button#start=Start,TextField#player=Ann,Toggle#sound=true,Slider#volume=5,DropdownField#mode=Easy') "tree: exit $($t.exit): $(Short ($t.stdout + $t.stderr) 300)"
+        $q = Invoke-Cli (@('cliext.uitk', 'query', '--selector', '#menu > Button.primary') + $D + @('--format', 'json'))
+        Expect ($q.exit -eq 0 -and @($q.json).Count -eq 1 -and $q.json.path -match 'VisualElement#menu > Button#start$' -and $q.json.element.rect[2] -gt 0) "query: exit $($q.exit): $(Short ($q.stdout + $q.stderr))"
+
+        $c = Invoke-Cli (@('cliext.uitk', 'click', '--selector', '#start') + $D + @('--format', 'json'))
+        Expect ($c.exit -eq 0 -and $c.json.clicked -match 'Button#start$') "click: exit $($c.exit): $(Short ($c.stdout + $c.stderr))"
+        Expect ((Get-UiStatus) -eq 'clicked 1') "after one click the label reads '$(Get-UiStatus)', not 'clicked 1'"
+        $v = Invoke-Cli (@('cliext.uitk', 'set_value', '--selector', '#sound', '--value', 'false') + $D + @('--format', 'json'))
+        Expect ($v.exit -eq 0 -and $v.json.before -eq 'true' -and $v.json.value -eq 'false') "set_value Toggle: exit $($v.exit): $(Short ($v.stdout + $v.stderr))"
+        Expect ((Get-UiStatus) -eq 'sound False') "the Toggle's change event didn't run: the label reads '$(Get-UiStatus)'"
+        foreach ($sv in @(@('Slider', '7.5'), @('#mode', 'Hard'), @('TextField#player', 'Bob'))) {
+            $x = Invoke-Cli (@('cliext.uitk', 'set_value', '--selector', $sv[0], '--value', $sv[1]) + $D + @('--format', 'json'))
+            Expect ($x.exit -eq 0 -and $x.json.value -eq $sv[1]) "set_value $($sv[0]): exit $($x.exit): $(Short ($x.stdout + $x.stderr))"
+        }
+        $l = Invoke-Cli (@('cliext.uitk', 'set_value', '--selector', '#status', '--value', 'ready') + $D + @('--format', 'json'))
+        Expect ($l.exit -eq 0 -and (Get-UiStatus) -eq 'ready') "set_value Label: exit $($l.exit): $(Short ($l.stdout + $l.stderr))"
+        $vals = Invoke-Cli @('script', 'eval', '--file', (Write-WorkFile 'ui-read.cs' $readValues), '--format', 'json')
+        Expect ("$($vals.stdout)" -match '"False\|7\.5\|Hard\|Bob"') "the fields hold: $(Short ($vals.stdout + $vals.stderr))"
+
+        $cases = @(
+            @(@('click', '--selector', '#status'), "isn't a Button and has no ClickEvent callback, so a click would do nothing", 6, 'click on a Label with no handler'),
+            @(@('click', '--selector', '#strat'), "no element named 'strat'. Did you mean: #start\?.*cliext\.uitk tree --document CliTestUI", 13, 'click on an unknown name'),
+            @(@('set_value', '--selector', '#menu', '--value', 'x'), 'has no value to set\. set_value takes a field', 2, 'set_value on a VisualElement'),
+            @(@('set_value', '--selector', '#start', '--value', 'x'), 'has no value to set\. Use cliext\.uitk click for a Button', 2, 'set_value on a Button'),
+            @(@('set_value', '--selector', 'Slider', '--value', 'abc'), "'abc' isn't a Single value: give a number", 2, 'a bad number'),
+            @(@('set_value', '--selector', 'Toggle', '--value', 'maybe'), "'maybe' isn't a Boolean value: give true or false", 2, 'a bad bool'),
+            @(@('set_value', '--selector', 'Slider', '--value', '99'), "99 is outside Slider#volume's range 0 to 10", 2, 'out of a slider''s range'),
+            @(@('set_value', '--selector', '#mode', '--value', 'Hrd'), "'Hrd' isn't one of DropdownField#mode's choices. Did you mean: Hard", 2, 'not a dropdown choice'),
+            @(@('set_value', '--selector', 'Toggle', '--value', 'false'), 'is already false: nothing changed', 6, 'the value it already has'),
+            @(@('set_value', '--selector', 'Toggle', '--value', 'true', '--document', 'CliTestU'), 'Did you mean: CliTestUI', 13, 'misspelled document'),
+            @(@('query', '--selector', 'Slider.big'), "no element with the class 'big'", 13, 'a query matching nothing'),
+            @(@('query', '--selector', 'Button:hover'), "Pseudo-classes such as ':hover' aren't supported", 2, 'a pseudo-class')
+        )
+        $seen = @()
+        foreach ($k in $cases) {
+            $args1 = @('cliext.uitk') + $k[0]
+            if (($k[0] -join ' ') -notmatch '--document') { $args1 += $D }
+            $x = Invoke-Cli ($args1 + @('--format', 'json'))
+            Expect-UiFailure $x $k[1] '' $k[3] $k[2]
+            $seen += "$($k[3]) $($x.exit)"
+        }
+        Expect ((Get-UiStatus) -eq 'ready') "a failed call changed the label: '$(Get-UiStatus)'"
+        $vals2 = Invoke-Cli @('script', 'eval', '--file', (Write-WorkFile 'ui-read2.cs' $readValues), '--format', 'json')
+        Expect ($vals2.stdout -eq $vals.stdout) "a failed call changed a field: $(Short $vals2.stdout)"
+        [void](Invoke-Cli @('script', 'eval', '--file', (Write-WorkFile 'ui-disable.cs' $disable), '--format', 'json'))
+        $dc = Invoke-Cli (@('cliext.uitk', 'click', '--selector', '#start') + $D + @('--format', 'json'))
+        Expect-UiFailure $dc "is disabled: a player can't click it" '' 'click on a disabled Button'
+        $dv = Invoke-Cli (@('cliext.uitk', 'set_value', '--selector', 'Slider', '--value', '2') + $D + @('--format', 'json'))
+        Expect-UiFailure $dv "is disabled: a player can't change it" '' 'set_value on a disabled Slider'
+        Expect ((Get-UiStatus) -eq 'ready') "a disabled Button's click ran: '$(Get-UiStatus)'"
+    }
+    finally {
+        [void](Invoke-Cli @('editor.playmode', 'stop', '--format', 'json'))
+        [void](Wait-Editor 120)
+    }
+    $mode = Invoke-Cli @('script', 'eval', '--file', (Write-WorkFile 'ui-mode2.cs' 'var a = UnityEngine.SceneManagement.SceneManager.GetActiveScene(); return (UnityEditor.EditorApplication.isPlaying ? "playing" : "edit") + "|" + a.isDirty + "|" + (UnityEngine.GameObject.Find("CliTestUI") == null);'), '--format', 'json')
+    Expect ("$($mode.stdout)" -match 'edit\|False\|True') "after Play mode: $(Short $mode.stdout)"
+    "tree and query; click ran the handler; Toggle, Slider, DropdownField, TextField and Label set and read back; $($seen.Count + 2) failures with the fix; back in Edit mode, scene clean"
+}
+
 # --- Cross-cutting ----------------------------------------------------------------------------------------------------
 
 $batchEdits = @(

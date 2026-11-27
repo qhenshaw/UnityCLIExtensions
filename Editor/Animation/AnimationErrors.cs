@@ -85,7 +85,11 @@ namespace UnityCLIExtensions.Animation
             for (int j = 0; j <= b.Length; j++) d[0, j] = j;
             for (int i = 1; i <= a.Length; i++)
                 for (int j = 1; j <= b.Length; j++)
+                {
                     d[i, j] = Math.Min(Math.Min(d[i - 1, j] + 1, d[i, j - 1] + 1), d[i - 1, j - 1] + (a[i - 1] == b[j - 1] ? 0 : 1));
+                    // Two letters swapped ("widht") is one typo, not two.
+                    if (i > 1 && j > 1 && a[i - 1] == b[j - 2] && a[i - 2] == b[j - 1]) d[i, j] = Math.Min(d[i, j], d[i - 2, j - 2] + 1);
+                }
             return d[a.Length, b.Length];
         }
 
