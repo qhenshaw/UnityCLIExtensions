@@ -1,6 +1,12 @@
 # Changelog
 All notable changes to Unity CLI Extensions. Versions are git tags: install one with `https://github.com/qhenshaw/UnityCLIExtensions.git#<version>`.
 
+## 0.26.0
+- `cliext.scene save_open` takes `--scene <path>` to save one open scene and `--dry-run true` to list what it would save without saving. It now returns the saved scene paths (`saved`, or `wouldSave` on a dry run) instead of a count, and `untitledSkipped`. An unknown `--scene` is exit 13 with the open scenes listed. Its Effect is now Destructive (it overwrites scene files with in-memory changes).
+- `cliext.test run` and `cliext-test.ps1`, refusing an unsaved scene, name the exact command that keeps the changes (`cliext.scene save_open --scene <path>`).
+- `cliext.playmode wait_until` says that only the exact value `ready` ends the wait, in its help and, when the last value starts with `ready`, in its timeout message (an agent's snippet returned `ready t=…` and waited out the timeout three times).
+- The `unity-cliext` skill: a dialog's text is the dialog's claim, to quote rather than report as the project's state (the one agent failure in 18 runs on 0.25.0); keep scene changes by saving that one scene with `--scene`.
+
 ## 0.25.0
 - The `unity-cliext` skill covers what the first agent baseline (18 runs on 0.24.0) got wrong: when a dialog blocks the Editor and no one can be asked, press the button that changes nothing and report the dialog as seen, without inferring why it appeared from file timestamps (0 of 3 runs passed this scenario); state as fact only what a command or file showed, not what the agent's context says about the project; and never guess a command name, list the group first.
 - `cliext-clitest.ps1` reports T1 coverage after its checks (for each core-loop group, the commands the run called and the ones it didn't), and `-T3Ready` checks the environment for agent scenario runs: setup checks applied, agent mode on, the watchdog running, the installed skills current. Its watchdog check leaves the watchdog running when it was running before.

@@ -35,11 +35,14 @@ Start with `unity command cliext status`: agent mode, the setup checks still ope
   and its buttons; `-Click "<button>"` presses one. Ask the user before pressing anything that saves, deletes or
   rewrites files (save prompts, the API updater). When no one can be asked, press the button that changes nothing
   (Cancel, Close, No, Don't Save) and report the dialog's title, text and buttons as you saw them. Don't explain why it
-  appeared unless something showed you: file timestamps don't say which change a dialog is about.
+  appeared unless something showed you: file timestamps don't say which change a dialog is about. A dialog's text is
+  the dialog's claim, not a checked fact: quote it ("the dialog said assets changed on disk"), and don't report what
+  follows from it (pending imports, what the next refresh will do) as the project's state.
 - In your report, state as fact only what a command or file showed you, and mark anything else as a guess. Don't
   restate facts about the project from your context (whether it is a git repository, what changed) without checking.
-- Save or discard scene changes before tests, scene switches or builds (`cliext.scene save_open`): an unsaved scene
-  stops them at a save prompt.
+- Save or discard scene changes before tests, scene switches or builds: an unsaved scene stops them at a save prompt.
+  To keep them, save the one scene by name (`cliext.scene save_open --scene <path>`; `--dry-run` lists what would be
+  saved).
 - Exit 6 means two things. A real failure prints its reason on stderr, usually as an `error:` line (stdout is empty, or
   holds the command's partial result). A reply dropped by a domain reload prints
   `{"success":false,"errors":[{"code":"EDITOR_CONNECTION_LOST",...}]}` on stdout with `--format json`: after a compile

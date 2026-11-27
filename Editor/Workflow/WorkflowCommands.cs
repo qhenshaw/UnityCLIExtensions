@@ -307,7 +307,7 @@ namespace UnityCLIExtensions
             return ExitCode.Success;
         }
 
-        [CliGroupCommand(PlayModeGroup, "Run a C# snippet (--file, with {{key}} placeholders filled from --vars) every --interval seconds until it returns \"ready\", " +
+        [CliGroupCommand(PlayModeGroup, "Run a C# snippet (--file, with {{key}} placeholders filled from --vars) every --interval seconds until it returns exactly \"ready\" (\"ready t=2\" doesn't count), " +
                                         "for waiting on a game state in Play mode. The snippet may also push the game forward each time (start the run, skip a wave) and return what it is waiting for otherwise. " +
                                         "Pass the CLI's --timeout a little above this command's --timeout.",
             Tags = new[] { "editor", "cliext", "editor/playmode", "scripts/eval" }, MainThreadRequired = true, Effect = CommandEffect.Destructive)]
@@ -346,7 +346,10 @@ namespace UnityCLIExtensions
                 if (clock.Elapsed.TotalSeconds + interval >= timeoutInSeconds)
                 {
                     cmd.Result.Write(new { ready = false, runs, waitedMs = clock.ElapsedMilliseconds, last });
-                    cmd.Log.Error($"Not ready after {clock.Elapsed.TotalSeconds:0} s; the snippet last returned '{last}'.");
+                    string hint = last.Trim().StartsWith("ready", StringComparison.OrdinalIgnoreCase)
+                        ? " Only the exact value \"ready\" ends the wait: return just \"ready\", and read any details with cliext.eval run afterwards."
+                        : "";
+                    cmd.Log.Error($"Not ready after {clock.Elapsed.TotalSeconds:0} s; the snippet last returned '{last}'.{hint}");
                     return ExitCode.TimedOut;
                 }
                 var pause = Stopwatch.StartNew();

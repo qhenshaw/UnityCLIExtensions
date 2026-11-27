@@ -66,7 +66,7 @@ if (@($plan.testAssemblies).Count -gt 0) {
     if ($dirty.Count -gt 0) {
         [ordered]@{
             result = 'error'
-            detail = "Open scene(s) have unsaved changes: $(@($dirty | ForEach-Object { if ($_.path) { $_.path } else { 'Untitled' } }) -join ', '). The Test Runner would stop at a save prompt. Save them (unity command cliext.scene save_open) or discard them, then run again."
+            detail = "Open scene(s) have unsaved changes: $(@($dirty | ForEach-Object { if ($_.path) { $_.path } else { 'Untitled' } }) -join ', '). The Test Runner would stop at a save prompt. To keep the changes, run: $(@($dirty | Where-Object { $_.path } | ForEach-Object { "unity command cliext.scene save_open --scene $($_.path)" }) -join '; '). Or discard them. Then run again."
             changedFiles = $plan.changedFiles
         } | ConvertTo-Json -Depth 4
         exit 1

@@ -46,17 +46,42 @@ namespace UnityCLIExtensions
         }
 
         /// <summary>Saves every open, dirty scene that has a file. Untitled scenes are left alone (saving them would ask for a path).</summary>
-        public static int SaveOpenScenesWithPaths()
+        public static int SaveOpenScenesWithPaths() => SaveOpenScenes(null, false, out _).Count;
+
+        /// <summary>
+        /// Saves the open, dirty scenes that have a file (only <paramref name="onlyPath"/> when given) and returns their
+        /// paths. With <paramref name="dryRun"/> it saves nothing and returns what it would save.
+        /// <paramref name="untitled"/> counts dirty scenes skipped for having no file.
+        /// </summary>
+        public static System.Collections.Generic.List<string> SaveOpenScenes(string onlyPath, bool dryRun, out int untitled)
         {
-            int saved = 0;
+            var paths = new System.Collections.Generic.List<string>();
+            untitled = 0;
             for (int i = 0; i < SceneManager.sceneCount; i++)
             {
                 Scene scene = SceneManager.GetSceneAt(i);
-                if (!scene.isLoaded || !scene.isDirty || string.IsNullOrEmpty(scene.path)) continue;
-                if (EditorSceneManager.SaveScene(scene)) saved++;
+                if (!scene.isLoaded || !scene.isDirty) continue;
+                if (string.IsNullOrEmpty(scene.path)) { if (onlyPath == null) untitled++; continue; }
+                if (onlyPath != null && !SamePath(scene.path, onlyPath)) continue;
+                if (dryRun || EditorSceneManager.SaveScene(scene)) paths.Add(scene.path);
             }
-            return saved;
+            return paths;
         }
+
+        /// <summary>The open scenes' paths (Untitled for one without a file).</summary>
+        public static System.Collections.Generic.List<string> OpenScenePaths()
+        {
+            var paths = new System.Collections.Generic.List<string>();
+            for (int i = 0; i < SceneManager.sceneCount; i++)
+            {
+                Scene scene = SceneManager.GetSceneAt(i);
+                if (scene.isLoaded) paths.Add(string.IsNullOrEmpty(scene.path) ? "Untitled" : scene.path);
+            }
+            return paths;
+        }
+
+        internal static bool SamePath(string a, string b) =>
+            string.Equals((a ?? "").Replace('\\', '/').Trim(), (b ?? "").Replace('\\', '/').Trim(), System.StringComparison.OrdinalIgnoreCase);
 
         private static void OnAgentModeChanged(bool active)
         {

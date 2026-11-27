@@ -180,10 +180,25 @@ namespace UnityCLIExtensions
             return ExitCode.Success;
         }
 
-        [CliGroupCommand(SceneGroup, "Save every open scene that has unsaved changes and a file, so switching scenes, building or quitting has nothing to prompt about. Untitled scenes are skipped.", Tags = new[] { "editor", "cliext", "scenes" }, Effect = CommandEffect.Idempotent)]
-        internal static ExitCode SaveOpen(CommandContext cmd)
+        [CliGroupCommand(SceneGroup, "Save open scenes that have unsaved changes and a file (every one, or only --scene), so tests, switching scenes, building or quitting have nothing to prompt about. " +
+                                     "Overwrites each scene's file with its in-memory changes; --dry-run lists what would be saved and changes nothing. Untitled scenes are skipped. Returns the saved paths.",
+            Tags = new[] { "editor", "cliext", "scenes" }, Effect = CommandEffect.Destructive)]
+        internal static ExitCode SaveOpen(
+            CommandContext cmd,
+            [CliArg("scene", "Save only this open scene, by asset path (e.g. Assets/Scenes/Main.unity); default: every open scene with unsaved changes")] string scene = "",
+            [CliArg("dry-run", "List the scenes that would be saved, and save nothing")] bool dryRun = false)
         {
-            cmd.Result.Write(new { saved = DialogPrevention.SaveOpenScenesWithPaths() });
+            string only = string.IsNullOrWhiteSpace(scene) ? null : scene.Trim();
+            var open = DialogPrevention.OpenScenePaths();
+            if (only != null && !open.Any(p => DialogPrevention.SamePath(p, only)))
+            {
+                cmd.Result.Write(new { saved = new string[0], dryRun, open });
+                cmd.Log.Error($"'{only}' is not an open scene. Open scenes: {string.Join(", ", open)}.");
+                return ExitCode.NotFound;
+            }
+            var paths = DialogPrevention.SaveOpenScenes(only, dryRun, out int untitled);
+            if (dryRun) cmd.Result.Write(new { dryRun, wouldSave = paths, untitledSkipped = untitled });
+            else cmd.Result.Write(new { dryRun, saved = paths, untitledSkipped = untitled });
             return ExitCode.Success;
         }
 

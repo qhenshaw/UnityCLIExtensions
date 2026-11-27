@@ -298,6 +298,15 @@ Add-Check 'scene.save-open' 'cliext.scene' 'cliext.scene save_open succeeds with
     Short $r.stdout 100
 }
 
+Add-Check 'scene.save-open-dry' 'cliext.scene' 'save_open --dry-run lists, and an unknown --scene is NotFound' {
+    $r = Invoke-Cli @('cliext.scene', 'save_open', '--dry-run', 'true', '--format', 'json')
+    Expect ($r.exit -eq 0) "dry run: exit $($r.exit): $(Short $r.stderr)"
+    Expect ($r.json.dryRun -eq $true -and $null -ne $r.json.wouldSave) "dry run reply has no wouldSave: $(Short $r.stdout)"
+    $n = Invoke-Cli @('cliext.scene', 'save_open', '--scene', 'Assets/NoSuchScene.unity', '--format', 'json')
+    Expect ($n.exit -eq 13) "unknown scene: exit $($n.exit), expected 13"
+    "dry run lists $(@($r.json.wouldSave).Count); unknown scene exit 13"
+}
+
 # --- Cross-cutting ----------------------------------------------------------------------------------------------------
 
 $batchEdits = @(

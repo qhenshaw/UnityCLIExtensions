@@ -42,7 +42,10 @@ namespace UnityCLIExtensions.TestRunner
             var dirty = TestRuns.DirtyScenes();
             if (dirty.Count > 0)
             {
-                cmd.Log.Error($"Open scene(s) have unsaved changes: {string.Join(", ", dirty)}. The Test Runner would stop at a save prompt. Save them (cliext.scene save_open) or discard them first.");
+                var saves = dirty.Where(d => d != "Untitled").Select(d => $"unity command cliext.scene save_open --scene {d}").ToList();
+                string keep = saves.Count > 0 ? $"To keep the changes, run: {string.Join("; ", saves)}." : "";
+                if (dirty.Contains("Untitled")) keep += " An Untitled scene must be saved under a path first.";
+                cmd.Log.Error($"Open scene(s) have unsaved changes: {string.Join(", ", dirty)}. The Test Runner would stop at a save prompt. {keep.Trim()} Or discard the changes. Then run again.");
                 return ExitCode.Failed;
             }
 
