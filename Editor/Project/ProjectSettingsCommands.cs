@@ -349,7 +349,8 @@ namespace UnityCLIExtensions.Project
 
         [CliGroupCommand("cliext.physics", "Create or change a physics material (--path .physicMaterial, or .physicsMaterial2D with --2d true): --set \"dynamicFriction=0.2;staticFriction=0.3;bounciness=0.5;frictionCombine=Minimum;bounceCombine=Maximum\" (2D: friction, bounciness). " +
                                            "Frictions are 0 or more, bounciness 0 to 1, combines Average, Minimum, Multiply or Maximum. Everything is checked before the asset is made or changed: " +
-                                           "a path outside Assets/ or Packages/, the wrong extension or an asset of another type exits 2, as do an unknown setting or a bad value; a missing folder exits 13; " +
+                                           "a path outside Assets/ or Packages/, the wrong extension or an asset of another type exits 2, as do an unknown setting or a bad value; " +
+                                           "a missing folder for a new material is made (one already on disk but not imported is imported; foldersMade lists them); " +
                                            "an existing material with no --set and no --assign exits 2, and values it already has exit 6. " +
                                            "--assign <object> (a name or hierarchy path in the open scenes) also puts it on that object's colliders (Collider, or Collider2D with --2d true), not its children's; " +
                                            "an unknown object or one with no collider exits 13 (add one with component add), and colliders that already have it, with no --set change, exit 6.",
@@ -377,12 +378,9 @@ namespace UnityCLIExtensions.Project
                 var main = AssetDatabase.LoadMainAssetAtPath(path);
                 if (main != null && !type.IsInstanceOfType(main))
                     throw new AnimUsageException($"'{path}' is {AnimationErrors.A(main.GetType().Name)}, not {AnimationErrors.A(type.Name)}.");
-                if (main == null)
-                {
-                    string folder = Path.GetDirectoryName(path)?.Replace('\\', '/');
-                    if (string.IsNullOrEmpty(folder) || !AssetDatabase.IsValidFolder(folder))
-                        throw new AnimNotFoundException($"No folder '{folder}' for --path: create it first (asset create_folder, or AssetDatabase.CreateFolder).");
-                }
+                string folder = Path.GetDirectoryName(path)?.Replace('\\', '/');
+                if (main == null && !ProjectFolders.IsProjectFolder(folder))
+                    throw new AnimUsageException($"--path '{path}': give a path in a folder under Assets/ (or inside a package), such as Assets/Physics/{Path.GetFileName(path)}.");
                 var values = ParseMaterialSet(set, twoD);
                 if (main != null && values.Count == 0 && !hasAssign)
                     throw new AnimUsageException($"Nothing to change on '{path}': pass --set \"{(twoD ? "friction=0.4;bounciness=0" : "dynamicFriction=0.6;bounciness=0")}\", or --assign <object> to put it on a collider.");
@@ -404,6 +402,7 @@ namespace UnityCLIExtensions.Project
                     mat.GetType().GetProperty(kv.Key).SetValue(mat, kv.Value);
                     done.Add(kv.Key);
                 }
+                string[] foldersMade = created ? ProjectFolders.Ensure(folder) : Array.Empty<string>();
                 if (created) AssetDatabase.CreateAsset(mat, path);
                 EditorUtility.SetDirty(mat);
                 AssetDatabase.SaveAssetIfDirty(mat);
@@ -419,8 +418,8 @@ namespace UnityCLIExtensions.Project
                 }
                 string[] assignedTo = hasAssign ? assigned.ToArray() : null;
                 object describe = mat is PhysicsMaterial m3
-                    ? (object)new { path, created, m3.dynamicFriction, m3.staticFriction, m3.bounciness, frictionCombine = m3.frictionCombine.ToString(), bounceCombine = m3.bounceCombine.ToString(), set = done, assigned = assignedTo }
-                    : new { path, created, ((PhysicsMaterial2D)mat).friction, ((PhysicsMaterial2D)mat).bounciness, set = done, assigned = assignedTo };
+                    ? (object)new { path, created, m3.dynamicFriction, m3.staticFriction, m3.bounciness, frictionCombine = m3.frictionCombine.ToString(), bounceCombine = m3.bounceCombine.ToString(), set = done, assigned = assignedTo, foldersMade = foldersMade.Length > 0 ? foldersMade : null }
+                    : new { path, created, ((PhysicsMaterial2D)mat).friction, ((PhysicsMaterial2D)mat).bounciness, set = done, assigned = assignedTo, foldersMade = foldersMade.Length > 0 ? foldersMade : null };
                 cmd.Result.Write(describe);
                 return ExitCode.Success;
             }

@@ -148,16 +148,45 @@ namespace UnityCLIExtensions.Tests
                 ImportCommands.Exclusions(TexturePaths, "m_EnableMipMap;m_MaxTextureSize;m_TextureSettings.m_FilterMode", ""), "A kept sub-property keeps its parent's other parts listed one by one.");
             CollectionAssert.AreEqual(new[] { "m_sRGBTexture", "m_AlphaUsage" }, ImportCommands.Exclusions(TexturePaths, "", "sRGBTexture;alphaUsage"));
             CollectionAssert.AreEqual(new[] { "m_sRGBTexture", "m_TextureSettings", "m_AlphaUsage", "m_UserData", "m_PlatformSettings" },
-                ImportCommands.Exclusions(TexturePaths, "enableMipMap;maxTextureSize", "m_PlatformSettings"), "Only a named m_PlatformSettings drops the block.");
+                ImportCommands.Exclusions(TexturePaths, "enableMipMap;m_MaxTextureSize", "m_PlatformSettings"), "Only a named m_PlatformSettings drops the block.");
 
             var unknown = Catch(() => ImportCommands.Exclusions(TexturePaths, "maxTexureSize", ""));
             IsUsage(unknown);
-            StringAssert.StartsWith("--only: the preset has no property 'maxTexureSize'. Did you mean: m_MaxTextureSize? Properties: m_EnableMipMap,", unknown.Message);
+            StringAssert.StartsWith("--only: the preset has no property 'maxTexureSize'. Did you mean: m_MaxTextureSize? Properties", unknown.Message);
+            StringAssert.Contains("API names as cliext.import batch --set takes them): m_EnableMipMap,", unknown.Message);
             var inside = Catch(() => ImportCommands.Exclusions(TexturePaths, "", "m_PlatformSettings.Array.data[0].m_TextureCompression"));
             IsUsage(inside);
             StringAssert.Contains("keeps or excludes whole: name m_PlatformSettings", inside.Message);
-            StringAssert.Contains("both name m_MaxTextureSize", Catch(() => ImportCommands.Exclusions(TexturePaths, "maxTextureSize", "maxTextureSize")).Message);
+            StringAssert.Contains("both name m_MaxTextureSize", Catch(() => ImportCommands.Exclusions(TexturePaths, "m_MaxTextureSize", "m_MaxTextureSize")).Message);
             StringAssert.Contains("no properties", Catch(() => ImportCommands.Exclusions(new[] { "m_A", "m_B" }, "", "m_A;m_B")).Message);
+        }
+
+        [Test]
+        public void PresetCreate_TakesTheImporterApiNames_AsImportBatchSetDoes()
+        {
+            // The help's own example, as written (0.30.0 refused mipmapEnabled: the property is m_EnableMipMap).
+            var resolved = new List<string>();
+            CollectionAssert.AreEqual(new[] { "m_sRGBTexture", "m_TextureSettings", "m_AlphaUsage", "m_UserData" },
+                ImportCommands.Exclusions(TexturePaths, "mipmapEnabled;maxTextureSize", "", resolved), "mipmapEnabled is m_EnableMipMap; maxTextureSize keeps the platform block (and the old top-level copy).");
+            CollectionAssert.AreEqual(new[] { "mipmapEnabled -> m_EnableMipMap", "maxTextureSize -> m_PlatformSettings + m_MaxTextureSize" }, resolved);
+            CollectionAssert.AreEqual(new[] { "m_TextureSettings.m_FilterMode", "m_AlphaUsage" }, ImportCommands.Exclusions(TexturePaths, "", "filterMode;alphaSource"));
+            CollectionAssert.AreEqual(new[] { "m_TextureSettings.m_WrapU" }, ImportCommands.Exclusions(TexturePaths, "", "wrapModeU"));
+            StringAssert.Contains("Did you mean: mipmapEnabled?", Catch(() => ImportCommands.Exclusions(TexturePaths, "mipmapEnabld", "")).Message);
+
+            // Platform settings by API name: --only keeps the block, --exclude can't drop one setting of it.
+            CollectionAssert.AreEqual(new[] { "m_EnableMipMap", "m_sRGBTexture", "m_MaxTextureSize", "m_TextureSettings", "m_AlphaUsage", "m_UserData" },
+                ImportCommands.Exclusions(TexturePaths, "textureCompression", ""), "textureCompression in --only keeps m_PlatformSettings.");
+            var exclude = Catch(() => ImportCommands.Exclusions(TexturePaths, "", "textureCompression"));
+            IsUsage(exclude);
+            StringAssert.Contains("'textureCompression' is a platform setting", exclude.Message);
+            StringAssert.Contains("--exclude m_PlatformSettings", exclude.Message);
+            var both = Catch(() => ImportCommands.Exclusions(TexturePaths, "textureCompression", "m_PlatformSettings"));
+            StringAssert.Contains("both name m_PlatformSettings (textureCompression in --only is m_PlatformSettings)", both.Message);
+
+            // A model importer's API names, and a field one level down by its own name.
+            var model = new[] { "m_AddColliders", "normalImportMode", "m_GlobalScale", "m_DefaultSettings.m_LoadType", "m_DefaultSettings.m_Quality" };
+            CollectionAssert.AreEqual(new[] { "m_GlobalScale", "m_DefaultSettings" }, ImportCommands.Exclusions(model, "addCollider;importNormals", ""));
+            CollectionAssert.AreEqual(new[] { "m_DefaultSettings.m_LoadType" }, ImportCommands.Exclusions(model, "", "loadType"));
         }
 
         [Test]

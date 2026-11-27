@@ -112,15 +112,17 @@ namespace UnityCLIExtensions
         // cliext.diff
 
         [CliGroupCommand(DiffGroup, "Snapshot a scene or prefab (every object, component and serialized property, including unsaved changes in an open scene), to compare with later. A scene that isn't open is opened additively and closed again. " +
-                                    "Saved in Library/CLIExtensions/snapshots (taking one under an existing name replaces it); cliext.diff delete removes it. A missing scene or prefab exits 13; any other asset type, or a path outside Assets/ and Packages/, exits 2.",
+                                    "Give the asset as --path, or a scene as --scene (as other scene commands name it). " +
+                                    "Saved in Library/CLIExtensions/snapshots (taking one under an existing name replaces it); cliext.diff delete removes it. A missing scene or prefab exits 13; any other asset type, a path outside Assets/ and Packages/, or neither or two different --path and --scene, exits 2.",
             Tags = new[] { "cliext", "scenes", "prefabs" }, Effect = CommandEffect.Idempotent)]
         internal static ExitCode Snapshot(
             CommandContext cmd,
-            [CliArg("path", "Scene (.unity) or prefab (.prefab) path", Required = true)] string path,
-            [CliArg("name", "Name to save it under (default: the path)")] string name = "")
+            [CliArg("path", "Scene (.unity) or prefab (.prefab) path; or pass a scene as --scene")] string path = "",
+            [CliArg("name", "Name to save it under (default: the path)")] string name = "",
+            [CliArg("scene", "Scene (.unity) path, the same as --path for a scene")] string scene = "")
         {
             HierarchySnapshot.Snapshot snapshot;
-            try { snapshot = HierarchySnapshot.Take(HierarchySnapshot.ResolvePath(path), name); }
+            try { snapshot = HierarchySnapshot.Take(HierarchySnapshot.ResolvePath(SnapshotTarget(path, scene)), name); }
             catch (ArgumentException e) { cmd.Fail(e.Message); return AnimationErrors.Exit(e); }
             cmd.Result.Write(new
             {
@@ -129,6 +131,16 @@ namespace UnityCLIExtensions
                 components = snapshot.objects.Sum(o => o.components.Count - 1)
             });
             return ExitCode.Success;
+        }
+
+        /// <summary>The asset a snapshot is of: --path, or --scene (the name other scene commands use); neither, or two different ones, is invalid usage.</summary>
+        internal static string SnapshotTarget(string path, string scene)
+        {
+            string p = (path ?? "").Trim(), s = (scene ?? "").Trim();
+            if (p.Length == 0 && s.Length == 0) throw new AnimUsageException("Pass the scene or prefab to snapshot: --scene Assets/Scenes/Main.unity or --path Assets/Prefabs/Hero.prefab.");
+            if (p.Length > 0 && s.Length > 0 && AnimationErrors.AssetPath(p) != AnimationErrors.AssetPath(s))
+                throw new AnimUsageException($"--path '{p}' and --scene '{s}' name different assets: pass one of them.");
+            return p.Length > 0 ? p : s;
         }
 
         [CliGroupCommand(DiffGroup, "Compare a snapshot with the scene or prefab now: objects added, removed or renamed (moved), components added or removed, and changed properties with their old and new values. " +

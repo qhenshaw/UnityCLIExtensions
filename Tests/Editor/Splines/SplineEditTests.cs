@@ -37,6 +37,34 @@ namespace UnityCLIExtensions.Splines.Tests
             Assert.Catch<ArgumentException>(() => SplineCommands.Apply(c, op)).Message;
 
         [Test]
+        public void Bounds_AreTheCurves_NotTheTangentHandles()
+        {
+            var c = Make("SplineTestCircle");
+            var knots = string.Join(";", Enumerable.Range(0, 6).Select(k => $"[{(5 * Math.Cos(k * Math.PI / 3)).ToString("0.0000", System.Globalization.CultureInfo.InvariantCulture)},0,{(5 * Math.Sin(k * Math.PI / 3)).ToString("0.0000", System.Globalization.CultureInfo.InvariantCulture)}]"));
+            c.Spline = SplineCommands.BuildSpline(knots, "AutoSmooth", true);
+            c.transform.position = new Vector3(1, 2, 3);
+            c.transform.localScale = new Vector3(2, 1, 1);
+            var m = c.transform.localToWorldMatrix;
+
+            var sampled = new Bounds(m.MultiplyPoint3x4((Vector3)c.Spline.EvaluatePosition(0f)), Vector3.zero);
+            for (int i = 1; i <= 6000; i++) sampled.Encapsulate(m.MultiplyPoint3x4((Vector3)c.Spline.EvaluatePosition(i / 6000f)));
+            var hull = c.Spline.GetBounds(m);
+            Assert.Greater(hull.size.z - sampled.size.z, 0.2f, "The test needs a curve whose handles reach past it.");
+
+            var b = SplineCommands.CurveBounds(c.Spline, m);
+            Assert.AreEqual(sampled.size.x, b.size.x, 1e-3f);
+            Assert.AreEqual(sampled.size.z, b.size.z, 1e-3f);
+            Assert.AreEqual(sampled.center.z, b.center.z, 1e-3f);
+
+            var described = SplineCommands.DescribeSpline(c, 0, false);
+            string size = (string)described.GetType().GetProperty("boundsSize").GetValue(described);
+            var reported = System.Text.RegularExpressions.Regex.Matches(size, @"-?\d+(\.\d+)?").Cast<System.Text.RegularExpressions.Match>()
+                .Select(x => float.Parse(x.Value, System.Globalization.CultureInfo.InvariantCulture)).ToArray();
+            Assert.AreEqual(3, reported.Length, size);
+            Assert.AreEqual(sampled.size.z, reported[2], 2e-3f, $"splines list reports the curve's bounds ({size}), not the handles' ({hull.size.z}).");
+        }
+
+        [Test]
         public void AFailedBatch_LeavesTheSplineAndTheUndoHistoryAsBefore()
         {
             var c = Make();

@@ -403,9 +403,10 @@ lists the assets under Assets/ that reference it; for a script, the prefabs and 
 `--recursive true` follows it up (a material, the prefab that uses it, the scenes with that prefab). Paths or GUIDs both
 work. The first `used_by` builds an index of the project, kept until an asset changes.
 
-**Snapshot and diff a scene or prefab.** Take a snapshot before a change and compare after:
+**Snapshot and diff a scene or prefab.** Take a snapshot before a change and compare after (`--scene` or `--path` for
+a scene, `--path` for a prefab):
 ```
-unity command cliext.diff snapshot --path Assets/Scenes/Main.unity --name before
+unity command cliext.diff snapshot --scene Assets/Scenes/Main.unity --name before
 # ... change the scene ...
 unity command cliext.diff compare --name before --format tsv
 ```
@@ -671,7 +672,8 @@ With Cinemachine 3 in the project, `cliext.cinemachine` reads and changes the ca
   [--rig follow|orbital|thirdperson|lookat|fixed]`. `--rig` replaces the position and rotation components as `create`
   makes them; targets on a camera with no body or aim component don't move it, and `warnings` says so.
 - `blend --style EaseInOut --time 1`: the brain's default blend. With `--from A --to B` (either left out for any
-  camera), a custom blend in the brain's Custom Blends asset, created at `--asset <path>` when it has none.
+  camera), a custom blend in the brain's Custom Blends asset, created at `--asset <path>` when it has none (a missing
+  folder is made).
 
 Edits in Edit mode are undoable and mark the scene dirty; in Play mode they last until Play mode ends.
 
@@ -740,7 +742,8 @@ UXML ops: `add` (no selector adds at the top level), `remove`, `move`, `set_attr
 ## Splines
 With the Splines package in the project, `cliext.splines` works with the SplineContainers in the open scenes:
 
-- `list`: each container's splines with knot count, closed flag, world length and bounds.
+- `list`: each container's splines with knot count, closed flag, world length and the world bounds of the curve itself
+  (`boundsCenter`, `boundsSize`; the tangent handles, which can reach past the curve, are not counted).
 - `inspect --object Road`: every knot's local and world position, tangents, rotation and tangent mode.
 - `create --name Path --knots "[0,0,0];[5,0,0];[5,0,5]" [--mode AutoSmooth|Linear|Mirrored|Continuous|Broken]
   [--closed true] [--position "[x,y,z]"]`.
@@ -791,10 +794,18 @@ platform override. Each changed asset comes back with `name: old -> new`.
 
 `cliext.presets` manages default presets per folder and checks them:
 - `list`: the default presets per type, with their filters (one `{defaults: 0, note}` record when there are none).
-- `create --from Assets/Art/UI/Button.png --out Assets/Presets/UITexture.preset`: a preset from an asset's importer.
-  `--only "textureType;mipmapEnabled;maxTextureSize"` keeps just those properties and `--exclude
-  "sRGBTexture;alphaUsage;swizzle"` leaves those out (the preset's excluded properties), so each asset keeps its own;
-  the platform settings block (`m_PlatformSettings`) stays whole unless `--exclude` names it.
+- `create --from Assets/Art/UI/Button.png --out Assets/Presets/UITexture.preset`: a preset from an asset's importer
+  (`--out`'s folder is made when missing). `--only "textureType;mipmapEnabled;maxTextureSize"` keeps just those
+  properties and `--exclude "sRGBTexture;alphaSource;filterMode"` leaves those out (the preset's excluded properties),
+  so each asset keeps its own. Names are the importer's API names, as `cliext.import batch --set` takes them
+  (`mipmapEnabled`, `filterMode`, `wrapMode`, `spriteImportMode`, ...), or the serialized property paths
+  (`m_EnableMipMap`, `m_TextureSettings.m_FilterMode`; any case, `m_` optional); the reply's `resolved` lists each
+  name given in another form with the paths it became.
+  The platform settings block (`m_PlatformSettings`: every platform's `maxTextureSize`, `textureCompression`,
+  `compressionQuality`, `crunchedCompression`, `format`) is kept or excluded whole. `--only` always keeps it, so
+  naming one of those settings in `--only` just keeps the block; `--exclude` refuses those names (dropping one would
+  drop them all) and drops the block only when it names `m_PlatformSettings`. To give every asset one compression,
+  set it on the template with `cliext.import batch` before `create`.
 - `set_default --preset Assets/Presets/UITexture.preset --filter Assets/Art/UI`: new and reimported assets in that
   folder get it (a folder becomes `glob:"Assets/Art/UI/**"`; any Preset Manager filter works), saved to
   `ProjectSettings/PresetManager.asset`. `--remove true` takes it out.
@@ -837,8 +848,8 @@ Pipeline's `settings.*` commands read and set the basics (gravity, tags and laye
   `set_matrix --a Player --b Pickup --collide false [--2d true]` changes a pair (both directions), saved;
   `set_matrix --a Pickup --only "Player"` makes Pickup collide with just Player and ignore the other 31 layers.
 - `cliext.physics material --path Assets/Physics/Ice.physicMaterial --set "dynamicFriction=0.02;staticFriction=0.05;frictionCombine=Minimum"`
-  creates or changes a physics material (`--2d true` for a PhysicsMaterial2D: friction, bounciness).
-  `--assign Floor` (a name or hierarchy path) also puts it on that object's colliders.
+  creates or changes a physics material (`--2d true` for a PhysicsMaterial2D: friction, bounciness). A missing folder
+  is made, and one already on disk but not imported yet is imported (`foldersMade` lists them). `--assign Floor` (a name or hierarchy path) also puts it on that object's colliders.
 - `cliext.physics raycast --from "[0,20,0]" [--direction "[0,-1,0]" | --to "[x,y,z]"] [--distance 50]
   [--layers "Default;Ground"] [--all true]`: hits in the open scenes (Edit or Play mode) with object, collider,
   point, normal, distance and layer.
@@ -1019,7 +1030,7 @@ All under `unity command --project-path <project>`:
 | `cliext.playmode wait_until --file f.cs [--vars ...] [--timeout 60]` | Runs a snippet every second until it returns `ready`. |
 | `cliext.asset uses --path <asset> [--recursive true] [--include-editor-scripts true]` | What an asset references. |
 | `cliext.asset used_by --path <asset> [--recursive true] [--include-packages true]` | What references an asset. |
-| `cliext.diff snapshot --path <scene or prefab> [--name n]` | Saves a snapshot. |
+| `cliext.diff snapshot --path <scene or prefab> \| --scene <scene> [--name n]` | Saves a snapshot. |
 | `cliext.diff compare --name n [--update true]` | The changes since the snapshot. |
 | `cliext.diff list` | The saved snapshots. |
 | `cliext.diff delete --name n` / `--all true` | Deletes a snapshot, or all of them. |

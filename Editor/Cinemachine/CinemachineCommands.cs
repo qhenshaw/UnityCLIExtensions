@@ -319,7 +319,7 @@ namespace UnityCLIExtensions.Cinemachine
         }
 
         [CliGroupCommand(Group, "Set the brain's default blend (--style Cut, EaseInOut, EaseIn, EaseOut, HardIn, HardOut, Linear --time seconds), or with --from and --to a custom blend " +
-                                "between two cameras (by name; leave one out for any camera) in the brain's Custom Blends asset (created at --asset, an Assets/.../Name.asset path, when it has none). " +
+                                "between two cameras (by name; leave one out for any camera) in the brain's Custom Blends asset (created at --asset, an Assets/.../Name.asset path, when it has none; a missing folder is made). " +
                                 "No brain or an unknown camera exits 13; an unknown --style, a negative --time, a bad --asset path, or a custom blend with no asset to keep it exits 2; " +
                                 "a blend the brain already has exits 6. In Play mode a default blend change lasts until Play mode ends.",
             Name = "blend", Tags = new[] { "cliext", "cinemachine" }, Effect = CommandEffect.Destructive)]
@@ -367,6 +367,7 @@ namespace UnityCLIExtensions.Cinemachine
                 bool assign = brain.CustomBlends == null;
                 if (settings == null)
                 {
+                    ProjectFolders.Ensure(Path.GetDirectoryName(newPath)?.Replace('\\', '/'));
                     settings = ScriptableObject.CreateInstance<CinemachineBlenderSettings>();
                     AssetDatabase.CreateAsset(settings, newPath);
                 }
@@ -406,8 +407,8 @@ namespace UnityCLIExtensions.Cinemachine
             if (!path.EndsWith(".asset", StringComparison.OrdinalIgnoreCase))
                 throw new AnimUsageException($"--asset '{asset}' must end in .asset (such as Assets/Cameras/Blends.asset).");
             string folder = Path.GetDirectoryName(path)?.Replace('\\', '/');
-            if (string.IsNullOrEmpty(folder) || !AssetDatabase.IsValidFolder(folder))
-                throw new AnimNotFoundException($"No folder '{folder}' for --asset: create it first, or give a path in a folder that exists.");
+            if (!ProjectFolders.IsProjectFolder(folder))
+                throw new AnimUsageException($"--asset '{asset}': give a path in a folder under Assets/ (or inside a package), such as Assets/Cameras/Blends.asset.");
             var main = AssetDatabase.LoadMainAssetAtPath(path);
             if (main == null) return path;
             if (main is CinemachineBlenderSettings bs) { existing = bs; return null; }

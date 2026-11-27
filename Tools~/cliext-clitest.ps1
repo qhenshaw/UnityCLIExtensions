@@ -3016,9 +3016,9 @@ Add-Check 'cm.set' $cmRow 'cliext.cinemachine set changes a camera''s priority, 
     "priority 30, follow CliTestPlain, fov 35, look-at cleared, disabled; no-body warning; --rig follow replaced HardLookAt; $s"
 }
 
-Add-Check 'cm.blend' $cmRow 'cliext.cinemachine blend sets the brain''s default blend and adds a custom blend between two cameras in a new Custom Blends asset; the brain and list show both' {
+Add-Check 'cm.blend' $cmRow 'cliext.cinemachine blend sets the brain''s default blend and adds a custom blend between two cameras in a new Custom Blends asset (in a folder that does not exist yet, which it makes); the brain and list show both' {
     $orig = Open-P3Scene
-    $asset = "$scratchRel/CliTestBlends.asset"
+    $asset = "$scratchRel/CmNewFolder/CliTestBlends.asset"
     try {
         [void](New-CmCameras)
         $mk = Invoke-Cli @('script', 'eval', '--file', (Write-WorkFile 'cm-folder.cs' 'if (!UnityEditor.AssetDatabase.IsValidFolder("Assets/_CliextTests")) UnityEditor.AssetDatabase.CreateFolder("Assets", "_CliextTests"); if (!UnityEditor.AssetDatabase.IsValidFolder("Assets/_CliextTests/CliTest")) UnityEditor.AssetDatabase.CreateFolder("Assets/_CliextTests", "CliTest"); return "ok";'), '--format', 'json')
@@ -3078,7 +3078,7 @@ Add-Check 'cm.errors' $cmRow 'cliext.cinemachine create, set and blend with unkn
             @(@('blend', '--style', 'Linear', '--from', 'CliTestCamA', '--to', 'CliTestCamB'), 'pass --asset Assets/', 2, 'custom blend with no asset'),
             @(@('blend', '--style', 'Linear', '--from', 'CliTestCamA', '--asset', 'C:/CliTestBlends.asset'), "isn't under Assets/ or Packages/", 2, 'asset outside Assets'),
             @(@('blend', '--style', 'Linear', '--from', 'CliTestCamA', '--asset', "$scratchRel/CliTestBlends.txt"), 'must end in \.asset', 2, 'asset not ending .asset'),
-            @(@('blend', '--style', 'Linear', '--from', 'CliTestCamA', '--asset', "$scratchRel/NoSuchFolder/B.asset"), "No folder '.*NoSuchFolder' for --asset: create it first", 13, 'asset in a missing folder')
+            @(@('blend', '--style', 'Smooth', '--from', 'CliTestCamA', '--asset', "$scratchRel/NoSuchFolder/B.asset"), "'Smooth' isn't a blend style", 2, 'a bad style for an asset in a missing folder (the folder is not made)')
         )
         foreach ($c in $cases) {
             $x = Invoke-Cli (@('cliext.cinemachine') + $c[0] + @('--format', 'json'))
@@ -3171,6 +3171,36 @@ Add-Check 'spl.create-inspect-list' $splRow 'in an unsaved scratch scene, cliext
     finally { $closed = Close-P3Scene $orig }
     Expect ("$closed" -match "^`"?$([regex]::Escape($orig))\|False\|1") "after closing the scratch scene: $(Short $closed)"
     "3 Linear knots, world offset [1,0,0], length 8; $k"
+}
+
+Add-Check 'spl.list-bounds' $splRow 'cliext.splines list reports the bounds of the curve, not of its tangent handles: for a closed 6-knot AutoSmooth circle of radius 5 boundsSize matches the curve sampled 6000 times (z 9.74, where Spline.GetBounds says 10.10)' {
+    $orig = Open-P3Scene
+    try {
+        $ci = [Globalization.CultureInfo]::InvariantCulture
+        $knots = (0..5 | ForEach-Object { '[{0},0,{1}]' -f (5 * [Math]::Cos($_ * [Math]::PI / 3)).ToString('0.0000', $ci), (5 * [Math]::Sin($_ * [Math]::PI / 3)).ToString('0.0000', $ci) }) -join ';'
+        $c = Invoke-Cli @('cliext.splines', 'create', '--name', 'CliTestCircle', '--knots', $knots, '--mode', 'AutoSmooth', '--closed', 'true', '--format', 'json')
+        Expect ($c.exit -eq 0) "create: exit $($c.exit): $(Short ($c.stdout + $c.stderr))"
+        $l = Invoke-Cli @('cliext.splines', 'list', '--format', 'json')
+        $rec = @($l.json) | Where-Object { $_.name -eq 'CliTestCircle' }
+        Expect ($l.exit -eq 0 -and $rec) "list: exit $($l.exit): $(Short $l.stdout)"
+        $size = "$($rec.splines[0].boundsSize)"
+        $code = @'
+var c = UnityEngine.Object.FindObjectsByType<UnityEngine.Splines.SplineContainer>(UnityEngine.FindObjectsInactive.Include).First(x => x.name == "CliTestCircle");
+var m = c.transform.localToWorldMatrix;
+var b = new UnityEngine.Bounds(m.MultiplyPoint3x4((UnityEngine.Vector3)UnityEngine.Splines.SplineUtility.EvaluatePosition(c.Spline, 0f)), UnityEngine.Vector3.zero);
+for (int i = 1; i <= 6000; i++) b.Encapsulate(m.MultiplyPoint3x4((UnityEngine.Vector3)UnityEngine.Splines.SplineUtility.EvaluatePosition(c.Spline, i / 6000f)));
+var h = UnityEngine.Splines.SplineUtility.GetBounds(c.Spline, m);
+var ci = System.Globalization.CultureInfo.InvariantCulture;
+return b.size.x.ToString("0.000", ci) + "|" + b.size.z.ToString("0.000", ci) + "|" + h.size.z.ToString("0.000", ci);
+'@
+        $s = (Invoke-Eval 'spl-bounds.cs' $code) -split '\|'
+        $n = @([regex]::Matches($size, '-?\d+(\.\d+)?') | ForEach-Object { [double]::Parse($_.Value, $ci) })
+        Expect ($n.Count -eq 3 -and [Math]::Abs($n[0] - [double]::Parse($s[0], $ci)) -lt 0.002 -and [Math]::Abs($n[2] - [double]::Parse($s[1], $ci)) -lt 0.002) "boundsSize $size, the sampled curve x $($s[0]) z $($s[1]) (handles z $($s[2]))"
+        Expect ([double]::Parse($s[2], $ci) - $n[2] -gt 0.2) "the test needs handles that reach past the curve: handles z $($s[2]), reported $size"
+    }
+    finally { $closed = Close-P3Scene $orig }
+    Expect ("$closed" -match "^`"?$([regex]::Escape($orig))\|False\|1") "after closing the scratch scene: $(Short $closed)"
+    "boundsSize $size = sampled curve (x $($s[0]), z $($s[1])); handles z $($s[2])"
 }
 
 Add-Check 'spl.edit' $splRow 'cliext.splines edit adds, moves (in world space) and removes knots, closes the loop, changes tangent modes and adds a spline in one call; inspect and the knots show it, and one Undo takes the whole batch back' {
@@ -3754,6 +3784,22 @@ Add-Check 'phys.material' $physRow 'cliext.physics material creates a 3D materia
     "3D $f1 -> $f2; 2D $f3"
 }
 
+Add-Check 'phys.material-folders' $physRow 'cliext.physics material --path in a folder made on disk but not imported, and in folders that do not exist, makes the material there: the on-disk folder is imported (no "<Folder> 1" beside it), the missing ones are made, foldersMade lists them' {
+    New-ScratchFolder
+    $disk = Join-Path $scratch 'PhysOnDisk'
+    New-Item -ItemType Directory -Force $disk | Out-Null   # as an agent's New-Item would: no .meta, not imported
+    $pa = "$scratchRel/PhysOnDisk/Inner/CliTestA.physicMaterial"; $pb = "$scratchRel/PhysMade/Deep/CliTestB.physicMaterial"
+    $a = Invoke-Cli @('cliext.physics', 'material', '--path', $pa, '--set', 'bounciness=0.9', '--format', 'json')
+    Expect ($a.exit -eq 0 -and $a.json.created -eq $true -and (@($a.json.foldersMade) -join ',') -eq "$scratchRel/PhysOnDisk,$scratchRel/PhysOnDisk/Inner") "on disk: exit $($a.exit): $(Short ($a.stdout + $a.stderr))"
+    $b = Invoke-Cli @('cliext.physics', 'material', '--path', $pb, '--format', 'json')
+    Expect ($b.exit -eq 0 -and $b.json.created -eq $true -and (@($b.json.foldersMade) -join ',') -eq "$scratchRel/PhysMade,$scratchRel/PhysMade/Deep") "missing: exit $($b.exit): $(Short ($b.stdout + $b.stderr))"
+    $read = "var a = UnityEditor.AssetDatabase.LoadAssetAtPath<UnityEngine.PhysicsMaterial>(`"$pa`"); var b = UnityEditor.AssetDatabase.LoadAssetAtPath<UnityEngine.PhysicsMaterial>(`"$pb`"); return (a == null ? `"none`" : a.bounciness.ToString(System.Globalization.CultureInfo.InvariantCulture)) + `"|`" + (b != null) + `"|`" + string.Join(`",`", UnityEditor.AssetDatabase.GetSubFolders(`"$scratchRel`").Where(f => f.Contains(`"Phys`")));"
+    $r = Invoke-Eval 'phys-folders.cs' $read
+    Expect ($r -eq "0.9|True|$scratchRel/PhysMade,$scratchRel/PhysOnDisk") "the assets and folders: $r"
+    Expect (Test-Path "$disk.meta") 'the on-disk folder has no .meta: it was not imported'
+    "on-disk folder imported, missing ones made: $r"
+}
+
 Add-Check 'phys.raycast' $physRow 'in a scratch scene with a cube (Water) over a plane, cliext.physics raycast down hits the cube first, --all hits both in order, --layers Default skips the cube, --to casts toward a point; Physics.Raycast agrees' {
     $orig = Open-P3Scene
     try {
@@ -3802,7 +3848,7 @@ Add-Check 'phys.errors' $physRow 'cliext.physics set_matrix, raycast and materia
             @(@('material', '--path', "$scratchRel/CliTest.mat"), 'a physics material ends in \.physicMaterial', 2, 'material with the wrong extension'),
             @(@('material', '--path', "$scratchRel/CliTest.physicsMaterial2D"), 'for a 2D one, pass --2d true', 2, 'a 2D path without --2d'),
             @(@('material', '--path', "$scratchRel/CliTest.physicMaterial", '--2d', 'true'), 'ends in \.physicsMaterial2D \(for a 3D one, leave out --2d\)', 2, '--2d with a 3D path'),
-            @(@('material', '--path', "$scratchRel/NoSuchFolder/CliTest.physicMaterial"), "No folder '.*NoSuchFolder' for --path: create it first", 13, 'material in a missing folder'),
+            @(@('material', '--path', "$scratchRel/NoSuchFolder/CliTest.physicMaterial", '--set', 'bounciness=2'), 'bounciness 2 is out of range: give 0 to 1', 2, 'a bad value for a material in a missing folder (the folder is not made)'),
             @(@('material', '--path', "$scratchRel/CliTestNew.physicMaterial", '--set', 'bouncyness=1'), "has no 'bouncyness'\. Did you mean: bounciness\? Settings: dynamicFriction", 2, 'a misspelled material setting'),
             @(@('material', '--path', "$scratchRel/CliTestNew.physicMaterial", '--set', 'bounciness=2'), 'bounciness 2 is out of range: give 0 to 1', 2, 'bounciness 2'),
             @(@('material', '--path', "$scratchRel/CliTestNew.physicMaterial", '--set', 'dynamicFriction=abc'), "dynamicFriction: 'abc' isn't a Single value: give a number", 2, 'a friction that is not a number'),
@@ -4133,8 +4179,13 @@ Add-Check 'imp.presets-defaults' $impRow 'cliext.presets create makes a preset f
 Add-Check 'imp.presets-only' $impRow 'cliext.presets create --only keeps the named properties and the whole platform settings block (the rest are the preset''s excludedProperties), --exclude leaves properties out, a misspelled name exits 2 with Did you mean and makes no file; list with no defaults and audit of a folder no preset covers print a summary record' {
     New-ImpTextures
     $only = "$scratchRel/ImpPresets/Only.preset"; $ex = "$scratchRel/ImpPresets/Exclude.preset"; $bad = "$scratchRel/ImpPresets/Bad.preset"
-    $o = Invoke-Cli @('cliext.presets', 'create', '--from', "$impRel/A.png", '--out', $only, '--only', 'textureType;enableMipMap;maxTextureSize', '--format', 'json')
+    # The help's own example, with the importer's API names (0.30.0 refused mipmapEnabled), into a folder that isn't there yet.
+    $only = "$scratchRel/ImpPresets/NewFolder/Only.preset"
+    $o = Invoke-Cli @('cliext.presets', 'create', '--from', "$impRel/A.png", '--out', $only, '--only', 'textureType;mipmapEnabled;maxTextureSize', '--format', 'json')
     Expect ($o.exit -eq 0 -and $o.json.platformSettings -eq 'kept' -and @($o.json.excluded) -contains 'm_sRGBTexture' -and @($o.json.excluded) -notcontains 'm_PlatformSettings' -and $o.json.kept -gt 3) "create --only: exit $($o.exit): $(Short ($o.stdout + $o.stderr))"
+    Expect ((@($o.json.resolved) -join ';') -eq 'mipmapEnabled -> m_EnableMipMap;maxTextureSize -> m_PlatformSettings + m_MaxTextureSize' -and (@($o.json.foldersMade) -join ',') -eq "$scratchRel/ImpPresets/NewFolder") "resolved names and the new folder: $(Short $o.stdout 300)"
+    $tc = Invoke-Cli @('cliext.presets', 'create', '--from', "$impRel/A.png", '--out', "$scratchRel/ImpPresets/Compression.preset", '--only', 'textureCompression', '--format', 'json')
+    Expect ($tc.exit -eq 0 -and $tc.json.platformSettings -eq 'kept' -and (@($tc.json.resolved) -join ';') -eq 'textureCompression -> m_PlatformSettings') "--only textureCompression keeps the platform block: exit $($tc.exit): $(Short ($tc.stdout + $tc.stderr) 300)"
     $code = @'
 var p = UnityEditor.AssetDatabase.LoadAssetAtPath<UnityEditor.Presets.Preset>("{{p}}");
 var ex = new System.Collections.Generic.HashSet<string>(p.excludedProperties);
@@ -4196,7 +4247,8 @@ Add-Check 'imp.presets-errors' $impRow 'cliext.presets create, set_default, appl
     $seen = Test-ImpFailures 'cliext.presets' @(
         @(@('create', '--from', "$impRel/Nope.png", '--out', "$scratchRel/ImpPresets/X.preset"), "--from: no asset at '.*Nope\.png'\. Check the path", 13, 'create from a missing asset'),
         @(@('create', '--from', "$impRel/Sub", '--out', "$scratchRel/ImpPresets/X.preset"), "--from '.*Sub' is a folder: give an asset in it", 2, 'create from a folder'),
-        @(@('create', '--from', "$impRel/A.png", '--out', 'Assets/NoSuchFolder/X.preset'), "--out: no folder 'Assets/NoSuchFolder'\. Create it first \(asset create_folder", 13, 'create into a missing folder'),
+        @(@('create', '--from', "$impRel/A.png", '--out', 'Assets/NoSuchFolder/X.preset', '--only', 'mipmapEnabld'), "--only: the preset has no property 'mipmapEnabld'", 2, 'a bad --only for a missing folder (the folder is not made)'),
+        @(@('create', '--from', "$impRel/A.png", '--out', "$scratchRel/ImpPresets/X.preset", '--exclude', 'textureCompression'), "--exclude 'textureCompression' is a platform setting: .*--exclude m_PlatformSettings drops", 2, 'exclude one platform setting by its API name'),
         @(@('create', '--from', "$impRel/A.png", '--out', 'C:/Temp/X.preset'), "--out 'C:/Temp/X\.preset' isn't under Assets/ or Packages/", 2, 'create outside the project'),
         @(@('create', '--from', "$impRel/A.png", '--out', $preset), "--out '.*Tex\.preset' already exists: pick another path, or delete it first", 6, 'create over an existing preset'),
         @(@('set_default', '--preset', "$scratchRel/ImpPresets/None.preset"), "--preset: no preset at '.*None\.preset'\. Make one with cliext\.presets create", 13, 'set_default of a missing preset'),
@@ -4214,6 +4266,7 @@ Add-Check 'imp.presets-errors' $impRow 'cliext.presets create, set_default, appl
         @(@('audit', '--folder', 'C:/Temp'), "isn't under Assets/ or Packages/", 2, 'audit outside the project'),
         @(@('audit', '--folder', $impRel, '--limit', '0'), '--limit 0: give 1 or more', 2, 'audit with --limit 0')
     )
+    Expect (-not (Test-Path (Join-Path $projectPath 'Assets\NoSuchFolder')) -and -not (Test-Path (Join-Path $scratch 'ImpPresets\X.preset'))) 'a refused create made a folder or a file'
     "$($seen.Count) refusals with the fix; nothing changed"
 }
 
@@ -4451,13 +4504,14 @@ Add-Check 'dep.asset-errors' $depRow 'cliext.asset uses and used_by with a missi
     "$($seen.Count) refusals with the fix"
 }
 
-Add-Check 'dep.diff-scene' $depRow 'cliext.diff snapshot of TestLevel opened from disk, then unsaved changes (light moved, Player renamed, a collider added, CamB deleted, an object added): compare lists exactly those 5, list shows the snapshot, --update then compare is empty, reopened from disk compare lists them reversed; deleted after' {
+Add-Check 'dep.diff-scene' $depRow 'cliext.diff snapshot --scene of TestLevel opened from disk, then unsaved changes (light moved, Player renamed, a collider added, CamB deleted, an object added): compare lists exactly those 5, list shows the snapshot, --update then compare is empty, reopened from disk compare lists them reversed; deleted after' {
     $snap0 = Get-SnapFiles
     $was = Open-DepScene
     $name = 'cliext-test-scene'
     try {
-        $s = Invoke-Cli @('cliext.diff', 'snapshot', '--path', $depScene, '--name', $name, '--format', 'json')
-        Expect ($s.exit -eq 0 -and $s.json.name -eq $name -and $s.json.kind -eq 'scene' -and $s.json.objects -gt 10) "snapshot: exit $($s.exit): $(Short ($s.stdout + $s.stderr))"
+        # --scene, as other scene commands name it (0.30.0 took only --path).
+        $s = Invoke-Cli @('cliext.diff', 'snapshot', '--scene', $depScene, '--name', $name, '--format', 'json')
+        Expect ($s.exit -eq 0 -and $s.json.name -eq $name -and $s.json.kind -eq 'scene' -and $s.json.objects -gt 10 -and $s.json.assetPath -eq $depScene) "snapshot --scene: exit $($s.exit): $(Short ($s.stdout + $s.stderr))"
         $c0 = Invoke-Cli @('cliext.diff', 'compare', '--name', $name, '--format', 'json')
         Expect ($c0.exit -eq 0 -and "$($c0.stdout)".Trim() -eq '') "compare with nothing changed: exit $($c0.exit): $(Short $c0.stdout 300)"
         $code = @'
@@ -4565,6 +4619,9 @@ Add-Check 'dep.diff-errors' $depRow 'cliext.diff snapshot of a missing scene or 
                 @(@('snapshot', '--path', $depMat), "is a Material, not a scene \(\.unity\) or prefab \(\.prefab\)", 2, 'snapshot of a material'),
                 @(@('snapshot', '--path', 'Assets/Scenes'), "is a folder, not a scene", 2, 'snapshot of a folder'),
                 @(@('snapshot', '--path', 'C:/Temp/Level.unity'), "isn't under Assets/ or Packages/", 2, 'snapshot outside the project'),
+                @(@('snapshot', '--scene', 'Assets/Scenes/NoSuch.unity'), "no scene at 'Assets/Scenes/NoSuch\.unity'", 13, 'snapshot --scene of a missing scene'),
+                @(@('snapshot', '--name', 'cliext-test-none'), 'Pass the scene or prefab to snapshot: --scene .* or --path', 2, 'snapshot with neither --path nor --scene'),
+                @(@('snapshot', '--path', 'Assets/A.unity', '--scene', 'Assets/B.unity'), "--path 'Assets/A\.unity' and --scene 'Assets/B\.unity' name different assets", 2, 'snapshot with two different assets'),
                 @(@('compare', '--name', 'cliext-test-gnoe'), "No snapshot named 'cliext-test-gnoe'\. Did you mean: cliext-test-gone\?", 13, 'compare of a misspelled snapshot'),
                 @(@('compare', '--name', $name), "is of '.*CliGone\.prefab', which is gone.*cliext\.diff delete", 13, 'compare after the prefab was deleted'),
                 @(@('compare', '--name', $name, '--update', 'true'), 'which is gone', 13, 'compare --update after the prefab was deleted'),

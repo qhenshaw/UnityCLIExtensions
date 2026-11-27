@@ -33,12 +33,14 @@ unity command cliext.import batch --folder <folder> --type Texture2D --set "maxT
    extension.
 2. Make one asset the template: `cliext.import batch --folder <folder> --filter <one file name> --set "<the requested
    settings>" --dry-run true` (check it lists exactly one asset), then the same without `--dry-run`.
-3. `cliext.presets create --from <that asset> --out <existing folder>/<Name>.preset --only "<property paths the
-   request names>"` (`;` between them; `--exclude "<paths>"` is the other way round). Without either, the preset
-   captures the whole importer and forces the template's colour space, alpha source and swizzle onto every file.
-   `--only` keeps the platform settings block (`m_PlatformSettings`: max size, compression) whole: a preset without
-   it gives new files the importer defaults, so don't exclude it. Unknown names exit 2 with "Did you mean"; the out
-   folder must exist (`asset create_folder`); an existing .preset exits 6.
+3. `cliext.presets create --from <that asset> --out <folder>/<Name>.preset --only "<the settings the request
+   names>"` (`;` between them; `--exclude "<names>"` is the other way round). The names are the same ones `import
+   batch --set` took (`textureType;mipmapEnabled;maxTextureSize`) or `m_` property paths; read `resolved` in the reply
+   to see what each became. Without either, the preset captures the whole importer and forces the template's colour
+   space, alpha source and swizzle onto every file. `--only` keeps the platform settings block (`m_PlatformSettings`:
+   max size, compression, format) whole, whether or not you name those: a preset without it gives new files the
+   importer defaults, so don't exclude it (`--exclude textureCompression` is refused for that reason). Unknown names
+   exit 2 with the property names; a missing out folder is made; an existing .preset exits 6.
 4. Check it: `cliext.presets apply --preset <p> --folder <folder> --dry-run true` lists `propertyPath: is X, preset Y`
    per asset. Only the requested settings (and platform entries) may differ. If anything else does, delete the
    preset (`asset delete`) and create it again with the right `--only` list.
