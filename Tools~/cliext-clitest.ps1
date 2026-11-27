@@ -1852,6 +1852,384 @@ Add-Check 'tl.play-mode' $tlRow 'in Play mode, cliext.timeline director plays a 
     "played (time $($later.json.time)s), paused at 0.5, stopped; back in Edit mode, scene clean"
 }
 
+# --- cliext.input -----------------------------------------------------------------------------------------------------
+
+# Edit checks work on a scratch copy of the project's InputSystem_Actions.inputactions (AssetDatabase.CopyAsset, so it
+# has its own GUID), made fresh by Reset-InAsset; the committed asset is only read, and its hash is checked each time.
+# Play mode checks use the open scene unsaved, add virtual devices and hook the project-wide actions from a snippet
+# (performed counts kept in SessionState, read by another snippet), and remove all of it before leaving Play mode.
+$script:inPath = "$scratchRel/CliTestInput.inputactions"
+$script:inSource = 'Assets/InputSystem_Actions.inputactions'
+$script:inSourceHash = $null
+$inRow = 'cliext.input'
+
+function Reset-InAsset {
+    $src = Join-Path $projectPath ($script:inSource -replace '/', '\')
+    if (-not $script:inSourceHash) { $script:inSourceHash = (Get-FileHash $src).Hash }
+    Expect ((Get-FileHash $src).Hash -eq $script:inSourceHash) "the committed $($script:inSource) changed"
+    $code = @'
+if (!UnityEditor.AssetDatabase.IsValidFolder("Assets/_CliextTests")) UnityEditor.AssetDatabase.CreateFolder("Assets", "_CliextTests");
+if (!UnityEditor.AssetDatabase.IsValidFolder("{{dir}}")) UnityEditor.AssetDatabase.CreateFolder("Assets/_CliextTests", "CliTest");
+UnityEditor.AssetDatabase.DeleteAsset("{{path}}");
+return UnityEditor.AssetDatabase.CopyAsset("{{src}}", "{{path}}") ? "ok" : "copy failed";
+'@
+    $code = $code.Replace('{{dir}}', $scratchRel).Replace('{{path}}', $script:inPath).Replace('{{src}}', $script:inSource)
+    $r = Invoke-Cli @('script', 'eval', '--file', (Write-WorkFile 'in-setup.cs' $code), '--format', 'json')
+    Expect ($r.exit -eq 0 -and "$($r.stdout)" -match 'ok') "scratch .inputactions: exit $($r.exit): $(Short ($r.stdout + $r.stderr))"
+}
+function Get-InHash { (Get-FileHash (Join-Path $projectPath ($script:inPath -replace '/', '\'))).Hash }
+function Get-InInspect([string]$path = $script:inPath) {
+    $r = Invoke-Cli @('cliext.input', 'inspect', '--path', $path, '--format', 'json')
+    Expect ($r.exit -eq 0) "inspect: exit $($r.exit): $(Short ($r.stdout + $r.stderr))"
+    $r.json
+}
+function Get-InAction($j, [string]$map, [string]$action) { @(@($j.maps) | Where-Object { $_.name -eq $map } | ForEach-Object { $_.actions } | Where-Object { $_.name -eq $action }) | Select-Object -First 1 }
+function Get-InSig($j) {
+    # The same text Get-InMemory builds from the imported asset: map/action:type:interactions:binding paths, then schemes.
+    $acts = foreach ($m in @($j.maps)) { foreach ($a in @($m.actions)) { "$($m.name)/$($a.name):$($a.type):$($a.interactions):" + (@($a.bindings | ForEach-Object { $_.path }) -join ',') } }
+    (@($acts) -join ';') + '|' + (@($j.controlSchemes | ForEach-Object { $_.name }) -join ',')
+}
+function Get-InMemory {
+    # The asset as the Editor holds it in memory (the imported InputActionAsset, not a fresh read of the file).
+    $code = @'
+var a = UnityEditor.AssetDatabase.LoadAssetAtPath<UnityEngine.InputSystem.InputActionAsset>("{{path}}");
+if (a == null) return "no asset";
+return string.Join(";", a.actionMaps.SelectMany(m => m.actions.Select(x => m.name + "/" + x.name + ":" + x.type + ":" + x.interactions + ":" + string.Join(",", x.bindings.Select(b => b.path)))))
+    + "|" + string.Join(",", a.controlSchemes.Select(s => s.name));
+'@
+    $r = Invoke-Cli @('script', 'eval', '--file', (Write-WorkFile 'in-mem.cs' $code.Replace('{{path}}', $script:inPath)), '--format', 'json')
+    Expect ($r.exit -eq 0) "script eval: exit $($r.exit): $(Short ($r.stdout + $r.stderr))"
+    ($r.stdout.Trim() | ConvertFrom-Json)
+}
+function Expect-InFailure($r, [string]$hint, [string]$before, [string]$what, [int]$exit = 6) {
+    Expect ($r.exit -ne 124) "${what}: timed out"
+    Expect ($r.exit -eq $exit) "${what}: exit $($r.exit), expected ${exit}: $(Short ($r.stdout + $r.stderr))"
+    Expect ("$($r.stderr)" -match $hint) "${what}: the error doesn't say '$hint': $(Short $r.stderr)"
+    Expect ("$($r.stderr)" -notmatch '   at |Exception:|\[0x') "${what}: a stack trace instead of a message: $(Short $r.stderr)"
+    Expect (@("$($r.stderr)".Trim() -split "`r?`n").Count -eq 1) "${what}: the error isn't one line: $(Short $r.stderr)"
+    if ($before) { Expect ((Get-InHash) -eq $before) "${what}: the .inputactions changed on disk" }
+}
+
+Add-Check 'input.inspect' $inRow 'cliext.input inspect lists maps, actions with bindings by index and control schemes, with no false invalid marks; a missing .inputactions exits 13 naming how to make one, another asset type and a path outside Assets/ exit 2' {
+    Reset-InAsset
+    $j = Get-InInspect
+    Expect ((@($j.maps | ForEach-Object { $_.name }) -join ',') -eq 'Player,UI') "maps: $(@($j.maps | ForEach-Object { $_.name }) -join ',')"
+    $jump = Get-InAction $j 'Player' 'Jump'
+    Expect ($jump.type -eq 'Button' -and (@($jump.bindings | ForEach-Object { "$($_.index)=$($_.path)" }) -join ',') -eq '0=<Keyboard>/space,1=<Gamepad>/buttonSouth,2=<XRController>/secondaryButton') "Jump: $(Short ($jump | ConvertTo-Json -Compress -Depth 4))"
+    Expect ((@($j.controlSchemes | ForEach-Object { $_.name }) -join ',') -eq 'Keyboard&Mouse,Gamepad,Touch,Joystick,XR') "schemes: $(@($j.controlSchemes | ForEach-Object { $_.name }) -join ',')"
+    # */{Submit} and the other committed bindings are fine; only unknown layouts or controls are marked.
+    $invalid = @($j.maps | ForEach-Object { $_.actions } | ForEach-Object { $_.bindings } | Where-Object { $_.valid -eq $false } | ForEach-Object { $_.path })
+    Expect ($invalid.Count -eq 0) "bindings marked invalid in the committed asset: $($invalid -join ', ')"
+    $cases = @(
+        @("$scratchRel/NoSuch.inputactions", 'No \.inputactions asset at.*Create > Input Actions', 13, 'missing .inputactions'),
+        @('Assets/Scenes/TestLevel.unity', 'is a SceneAsset, not an \.inputactions asset', 2, 'a scene as the asset'),
+        @('ProjectSettings/ProjectVersion.txt', "isn't under Assets/ or Packages/", 2, 'path outside Assets')
+    )
+    $seen = @()
+    foreach ($c in $cases) {
+        $x = Invoke-Cli @('cliext.input', 'inspect', '--path', $c[0], '--format', 'json')
+        Expect-InFailure $x $c[1] '' $c[3] $c[2]
+        $seen += "$($c[3]) $($x.exit)"
+    }
+    "Player, UI; Jump 3 bindings; 5 schemes; none invalid; $($seen -join ', ')"
+}
+
+Add-Check 'input.edit' $inRow 'cliext.input edit runs all 13 op kinds in one call (actions, a composite, a new map, set_action, renames, bindings, schemes); inspect and the asset in memory show them all, set_action keeps the action''s id, an unknown control path saves with a Did-you-mean warning' {
+    Reset-InAsset
+    $j0 = Get-InInspect
+    $jumpId = (Get-InAction $j0 'Player' 'Jump').id
+    $order0 = @((@($j0.maps) | Where-Object { $_.name -eq 'Player' }).actions | ForEach-Object { $_.name }) -join ','
+    $ops = @'
+[{"op":"add_action","map":"Player","action":"Dash","type":"Button"},
+ {"op":"add_binding","map":"Player","action":"Dash","path":"<Gamepad>/buttonEast","groups":"Gamepad"},
+ {"op":"add_binding","map":"Player","action":"Dash","path":"<Gamepad>/buttonSouht"},
+ {"op":"add_action","map":"Debug","action":"Pan","controlType":"Vector2"},
+ {"op":"add_composite","map":"Debug","action":"Pan","composite":"2DVector","parts":"up=<Keyboard>/i;down=<Keyboard>/k;left=<Keyboard>/j;right=<Keyboard>/l"},
+ {"op":"set_action","map":"Player","action":"Jump","interactions":"Hold"},
+ {"op":"rename_action","map":"Player","action":"Crouch","name":"Duck"},
+ {"op":"set_binding","map":"Player","action":"Sprint","index":0,"path":"<Keyboard>/rightShift"},
+ {"op":"remove_binding","map":"Player","action":"Attack","index":0},
+ {"op":"add_scheme","name":"CliPad","devices":"<Gamepad>;?<Keyboard>"},
+ {"op":"rename_map","map":"Debug","name":"Dbg"},
+ {"op":"add_map","map":"Empty"},
+ {"op":"remove_map","map":"Empty"},
+ {"op":"remove_scheme","name":"XR"},
+ {"op":"remove_action","map":"UI","action":"MiddleClick"}]
+'@
+    $r = Invoke-Cli @('cliext.input', 'edit', '--path', $script:inPath, '--ops-file', (Write-WorkFile 'in-edit.json' $ops), '--format', 'json')
+    Expect ($r.exit -eq 0 -and $r.json.applied -eq 15) "exit $($r.exit): $(Short ($r.stdout + $r.stderr))"
+    Expect (@($r.json.warnings).Count -eq 1 -and "$($r.json.warnings)" -match 'buttonSouht.*Did you mean: buttonSouth') "warnings: $(Short ($r.json.warnings -join ' | '))"
+    $j = Get-InInspect
+    Expect ((@($j.maps | ForEach-Object { $_.name }) -join ',') -eq 'Player,UI,Dbg') "maps: $(@($j.maps | ForEach-Object { $_.name }) -join ',')"
+    $jump = Get-InAction $j 'Player' 'Jump'
+    Expect ($jump.id -eq $jumpId -and $jump.interactions -eq 'Hold' -and @($jump.bindings).Count -eq 3) "Jump after set_action: $(Short ($jump | ConvertTo-Json -Compress -Depth 4))"
+    $order = @((@($j.maps) | Where-Object { $_.name -eq 'Player' }).actions | ForEach-Object { $_.name }) -join ','
+    Expect ($order -eq (($order0 -replace 'Crouch', 'Duck') + ',Dash')) "Player's actions: $order"
+    $dash = Get-InAction $j 'Player' 'Dash'
+    Expect ($dash.type -eq 'Button' -and (@($dash.bindings | ForEach-Object { "$($_.path)$(if ($_.valid -eq $false) { '!' })" }) -join ',') -eq '<Gamepad>/buttonEast,<Gamepad>/buttonSouht!') "Dash: $(Short ($dash.bindings | ConvertTo-Json -Compress))"
+    $pan = Get-InAction $j 'Dbg' 'Pan'
+    Expect ($pan.controlType -eq 'Vector2' -and @($pan.bindings).Count -eq 5 -and $pan.bindings[0].composite -eq $true -and (@($pan.bindings | Select-Object -Skip 1 | ForEach-Object { "$($_.name)=$($_.path)" }) -join ',') -eq 'up=<Keyboard>/i,down=<Keyboard>/k,left=<Keyboard>/j,right=<Keyboard>/l') "Pan: $(Short ($pan.bindings | ConvertTo-Json -Compress))"
+    Expect ((Get-InAction $j 'Player' 'Sprint').bindings[0].path -eq '<Keyboard>/rightShift') 'Sprint binding 0 was not set'
+    Expect (@((Get-InAction $j 'Player' 'Attack').bindings).Count -eq 5 -and (Get-InAction $j 'Player' 'Attack').bindings[0].path -eq '<Mouse>/leftButton') 'Attack binding 0 was not removed'
+    Expect (-not (Get-InAction $j 'UI' 'MiddleClick')) 'UI/MiddleClick is still there'
+    $schemes = @($j.controlSchemes)
+    $pad = $schemes | Where-Object { $_.name -eq 'CliPad' }
+    Expect ($pad -and ($pad.devices -join ',') -eq '<Gamepad>,optional <Keyboard>' -and -not ($schemes | Where-Object { $_.name -eq 'XR' })) "schemes: $(Short ($schemes | ConvertTo-Json -Compress))"
+    $mem = Get-InMemory
+    Expect ($mem -eq (Get-InSig $j)) "in memory differs from the file: $(Short $mem 300)"
+    "15 ops (13 kinds), one warning; Jump kept its id; inspect and memory agree"
+}
+
+Add-Check 'input.edit-errors' $inRow 'cliext.input edit fails (exit 6, one line, with the fix) on unknown maps, actions, bindings, schemes, ops, action types, interactions, processors, composites and parts, missing fields and ops that would change nothing, saving nothing' {
+    Reset-InAsset
+    $before = Get-InHash
+    $P = '"map":"Player"'
+    $cases = @(
+        @('[{"op":"remove_action","map":"Playr","action":"Jump"}]', 'Did you mean: Player', 'unknown map, close match'),
+        @("[{`"op`":`"remove_action`",$P,`"action`":`"Jum`"}]", 'Did you mean: Jump', 'unknown action, close match'),
+        @("[{`"op`":`"remove_action`",$P,`"action`":`"Zzqx`"}]", 'Actions: Move, .*cliext\.input inspect', 'unknown action, no match'),
+        @("[{`"op`":`"remove_binding`",$P,`"action`":`"Jump`",`"index`":9}]", 'bindings 0-2, not 9.*cliext\.input inspect', 'binding index out of range'),
+        @("[{`"op`":`"remove_binding`",$P,`"action`":`"Jump`",`"id`":`"nope`"}]", "No binding with id 'nope'.*cliext\.input inspect", 'unknown binding id'),
+        @("[{`"op`":`"add_action`",$P,`"action`":`"Dash`",`"type`":`"Buton`"}]", 'Use one of: Value, Button, PassThrough', 'unknown action type'),
+        @("[{`"op`":`"add_action`",$P,`"action`":`"Jump`"}]", "Action 'Jump' already exists in Player", 'action that exists'),
+        @("[{`"op`":`"add_action`",$P}]", 'add_action needs an action', 'add_action without a name'),
+        @('[{"op":"add_map"}]', 'add_map needs a map', 'add_map without a name'),
+        @('[{"op":"add_map","map":"Player"}]', "Map 'Player' already exists", 'map that exists'),
+        @("[{`"op`":`"rename_action`",$P,`"action`":`"Jump`"}]", 'rename_action needs name', 'rename without a name'),
+        @("[{`"op`":`"rename_action`",$P,`"action`":`"Jump`",`"name`":`"Move`"}]", "Player already has an action 'Move'", 'rename onto another action'),
+        @("[{`"op`":`"rename_action`",$P,`"action`":`"Jump`",`"name`":`"Jump`"}]", 'already has that name', 'rename to the same name'),
+        @('[{"op":"rename_map","map":"UI","name":"UI"}]', 'already has that name', 'rename a map to its name'),
+        @("[{`"op`":`"set_action`",$P,`"action`":`"Jump`"}]", 'set_action needs type, controlType, interactions or processors', 'set_action with nothing'),
+        @("[{`"op`":`"set_action`",$P,`"action`":`"Jump`",`"type`":`"Button`"}]", 'would change nothing', 'set_action that changes nothing'),
+        @("[{`"op`":`"set_action`",$P,`"action`":`"Jump`",`"interactions`":`"Hld`"}]", "No interaction 'Hld'. Did you mean: Hold", 'misspelled interaction'),
+        @("[{`"op`":`"add_binding`",$P,`"action`":`"Jump`"}]", 'add_binding needs a path', 'binding without a path'),
+        @("[{`"op`":`"add_binding`",$P,`"action`":`"Jump`",`"path`":`"<Keyboard>/j`",`"processors`":`"noSuchProcessor`"}]", "No processor 'noSuchProcessor'", 'unknown processor'),
+        @("[{`"op`":`"set_binding`",$P,`"action`":`"Jump`",`"index`":0}]", 'set_binding needs path, groups', 'set_binding with nothing'),
+        @("[{`"op`":`"set_binding`",$P,`"action`":`"Jump`",`"index`":0,`"path`":`"<Keyboard>/space`"}]", 'would change nothing', 'set_binding that changes nothing'),
+        @("[{`"op`":`"add_composite`",$P,`"action`":`"Move`",`"composite`":`"Zzqx`",`"parts`":`"up=<Keyboard>/w`"}]", 'Composites: 1DAxis, 2DVector', 'unknown composite'),
+        @("[{`"op`":`"add_composite`",$P,`"action`":`"Move`",`"composite`":`"2DVector`",`"parts`":`"upp=<Keyboard>/w`"}]", "2DVector has no part 'upp'. Did you mean: up", 'misspelled composite part'),
+        @("[{`"op`":`"add_composite`",$P,`"action`":`"Move`",`"composite`":`"2DVector`"}]", 'add_composite needs parts', 'composite without parts'),
+        @('[{"op":"add_scheme","name":"Gamepad"}]', "Control scheme 'Gamepad' already exists", 'scheme that exists'),
+        @('[{"op":"remove_scheme","name":"Gamepd"}]', 'Did you mean: Gamepad', 'unknown scheme'),
+        @("[{`"op`":`"remove_actions`",$P,`"action`":`"Jump`"}]", 'Did you mean: remove_action', 'misspelled op'),
+        @('[{"op":"frob"}]', "Unknown op 'frob'.*Ops: add_map, remove_map", 'unknown op')
+    )
+    $seen = @()
+    $i = 0
+    foreach ($c in $cases) {
+        $i++
+        $r = Invoke-Cli @('cliext.input', 'edit', '--path', $script:inPath, '--ops-file', (Write-WorkFile "in-fail-$i.json" $c[0]), '--format', 'json')
+        Expect-InFailure $r $c[1] $before $c[2]
+        Expect ($r.json.saved -eq $false -and $r.json.failedAt -eq 0) "$($c[2]): reply $(Short $r.stdout)"
+        $seen += $c[2]
+    }
+    $json = Invoke-Cli @('cliext.input', 'edit', '--path', $script:inPath, '--ops-file', (Write-WorkFile 'in-badjson.json' '[{"op":'), '--format', 'json')
+    Expect-InFailure $json "aren't valid JSON" $before 'broken JSON' 2
+    $none = Invoke-Cli @('cliext.input', 'edit', '--path', $script:inPath, '--ops-file', (Write-WorkFile 'in-noops.json' '[]'), '--format', 'json')
+    Expect-InFailure $none 'No ops given' $before 'no ops' 2
+    "$($seen.Count) failures exit 6 with the fix, broken JSON and no ops 2, file unchanged"
+}
+
+Add-Check 'input.edit-rollback' $inRow 'an .inputactions batch that removes an action, a binding and a scheme, adds a map, renames and retypes actions, then has one bad op, saves nothing, on disk or in memory, and the next good edit saves only its own change' {
+    Reset-InAsset
+    $before = Get-InHash
+    $j0 = Get-InInspect
+    $sig0 = Get-InSig $j0
+    $m0 = Get-InMemory
+    Expect ($m0 -eq $sig0) "before: memory and file differ: $(Short $m0)"
+    $ops = '[{"op":"remove_action","map":"Player","action":"Look"},{"op":"remove_binding","map":"Player","action":"Jump","index":0},{"op":"add_map","map":"Extra"},{"op":"rename_action","map":"Player","action":"Sprint","name":"Run"},{"op":"set_action","map":"Player","action":"Attack","type":"Value"},{"op":"remove_scheme","name":"Touch"},{"op":"remove_action","map":"Player","action":"NoSuchAction"}]'
+    $r = Invoke-Cli @('cliext.input', 'edit', '--path', $script:inPath, '--ops-file', (Write-WorkFile 'in-bad-batch.json' $ops), '--format', 'json')
+    Expect-InFailure $r 'Op 6 \(remove_action\) failed.*Nothing was saved' $before 'bad batch'
+    Expect ($r.json.saved -eq $false -and $r.json.failedAt -eq 6 -and $r.json.applied -eq 0) "reply: $(Short $r.stdout)"
+    $m1 = Get-InMemory
+    Expect ($m1 -eq $m0) "in memory after the failed batch: '$(Short $m0 120)' -> '$(Short $m1 120)'"
+    Expect ((Get-InSig (Get-InInspect)) -eq $sig0) 'inspect after the failed batch differs'
+    $good = Invoke-Cli @('cliext.input', 'edit', '--path', $script:inPath, '--ops-file', (Write-WorkFile 'in-good.json' '[{"op":"remove_binding","map":"Player","action":"Interact","index":0}]'), '--format', 'json')
+    Expect ($good.exit -eq 0 -and $good.json.applied -eq 1) "good edit: exit $($good.exit): $(Short ($good.stdout + $good.stderr))"
+    $want = $sig0.Replace('Player/Interact:Button:Hold:<Keyboard>/e,<Gamepad>/buttonNorth', 'Player/Interact:Button:Hold:<Gamepad>/buttonNorth')
+    Expect ($want -ne $sig0) "the expected change isn't in the signature: $(Short $sig0)"
+    $disk = Get-InSig (Get-InInspect)
+    Expect ($disk -eq $want) "the file after the good edit: $(Short $disk 300)"
+    $m2 = Get-InMemory
+    Expect ($m2 -eq $want) "in memory after the good edit: $(Short $m2 300)"
+    "failed at op 6, file and memory unchanged; next edit removed only Interact's <Keyboard>/e"
+}
+
+Add-Check 'input.missing-asset' $inRow 'cliext.input edit given an .inputactions that does not exist exits 13 at once naming how to make one; another asset type and a path outside Assets/ exit 2; nothing is created' {
+    $f = Write-WorkFile 'in-one.json' '[{"op":"add_map","map":"X"}]'
+    $cases = @(
+        @("$scratchRel/NoSuch.inputactions", 'Create > Input Actions', 13),
+        @('Assets/Scenes/TestLevel.unity', 'is a SceneAsset, not an \.inputactions asset', 2),
+        @('NotAssets/CliTest.inputactions', "isn't under Assets/ or Packages/", 2)
+    )
+    $bad = @()
+    foreach ($c in $cases) {
+        $r = Invoke-Cli @('cliext.input', 'edit', '--path', $c[0], '--ops-file', $f, '--format', 'json') 60
+        if ($r.exit -ne $c[2] -or "$($r.stderr)" -notmatch $c[1] -or $r.ms -gt 30000) { $bad += "$($c[0]): exit $($r.exit) in $($r.ms) ms ($(Short $r.stderr 80))" }
+    }
+    Expect ($bad.Count -eq 0) ($bad -join '; ')
+    Expect (-not (Test-Path (Join-Path $scratch 'NoSuch.inputactions')) -and -not (Test-Path (Join-Path $projectPath 'NotAssets'))) 'a failed call created a file'
+    'missing 13 naming Create > Input Actions; a scene 2; outside Assets 2'
+}
+
+Add-Check 'input.edit-mode' $inRow 'in Edit mode, add_device, set, press, record_start and replay exit 6 naming editor.playmode start and add no device; devices and replay_status still answer' {
+    $mode = Invoke-Cli @('script', 'eval', '--file', (Write-WorkFile 'in-mode.cs' 'return UnityEditor.EditorApplication.isPlaying ? "playing" : "edit";'), '--format', 'json')
+    Expect ("$($mode.stdout)" -match 'edit') "not in Edit mode: $(Short $mode.stdout)"
+    $d0 = Invoke-Cli @('cliext.input', 'devices', '--format', 'json')
+    Expect ($d0.exit -eq 0) "devices: exit $($d0.exit): $(Short ($d0.stdout + $d0.stderr))"
+    $trace = Write-WorkFile 'in-edit.inputtrace' 'x'
+    $cases = @(
+        @(@('add_device', '--layout', 'Gamepad'), 'add_device'),
+        @(@('set', '--control', 'buttonSouth', '--value', '1'), 'set'),
+        @(@('press', '--control', '<Keyboard>/space'), 'press'),
+        @(@('record_start'), 'record_start'),
+        @(@('replay', '--file', $trace), 'replay')
+    )
+    foreach ($c in $cases) {
+        $r = Invoke-Cli (@('cliext.input') + $c[0] + @('--format', 'json'))
+        Expect-InFailure $r 'enter Play mode first \(editor\.playmode start\)' '' "$($c[1]) in Edit mode"
+    }
+    $d1 = Invoke-Cli @('cliext.input', 'devices', '--format', 'json')
+    Expect ($d1.stdout -eq $d0.stdout -and -not (@($d1.json) | Where-Object { $_.virtual })) "the devices changed: $(Short $d1.stdout)"
+    $st = Invoke-Cli @('cliext.input', 'replay_status', '--format', 'json')
+    Expect ($st.exit -eq 0 -and $st.json.replaying -eq $false -and $st.json.recording -eq $false) "replay_status: exit $($st.exit): $(Short ($st.stdout + $st.stderr))"
+    "5 commands exit 6 naming editor.playmode start; $(@($d1.json).Count) devices, none added"
+}
+
+Add-Check 'input.play-mode' $inRow 'in Play mode, virtual devices drive the project-wide actions: set moves Player/Move, press fires Player/Jump from a gamepad button and a full <Keyboard>/space path (seen by actions and by a performed hook), a recording saves those events and replays them; bad controls, values, devices and layouts fail with the fix; leaving Play mode leaves no device and a clean scene' {
+    $scenes = Invoke-Cli @('scene', 'list_open', '--format', 'json')
+    Expect (-not (@($scenes.json) | Where-Object { $_.isDirty })) "an open scene has unsaved changes: $(Short $scenes.stdout)"
+    $hook = @'
+var a = UnityEngine.InputSystem.InputSystem.actions;
+if (a == null) return "no project-wide actions";
+var jump = a.FindAction("Player/Jump"); var move = a.FindAction("Player/Move");
+UnityEditor.SessionState.SetInt("cliext.clitest.jumps", 0); UnityEditor.SessionState.SetString("cliext.clitest.move", "");
+System.Action<UnityEngine.InputSystem.InputAction.CallbackContext> j = ctx => UnityEditor.SessionState.SetInt("cliext.clitest.jumps", UnityEditor.SessionState.GetInt("cliext.clitest.jumps", 0) + 1);
+System.Action<UnityEngine.InputSystem.InputAction.CallbackContext> m = ctx => UnityEditor.SessionState.SetString("cliext.clitest.move", ctx.ReadValue<UnityEngine.Vector2>().ToString("0.##", System.Globalization.CultureInfo.InvariantCulture) + " " + ctx.control.device.name);
+jump.performed += j; move.performed += m;
+System.AppDomain.CurrentDomain.SetData("cliext.clitest.hooks", new object[] { j, m });
+return "ok";
+'@
+    $unhook = @'
+var a = UnityEngine.InputSystem.InputSystem.actions;
+var h = System.AppDomain.CurrentDomain.GetData("cliext.clitest.hooks") as object[];
+if (a != null && h != null)
+{
+    a.FindAction("Player/Jump").performed -= (System.Action<UnityEngine.InputSystem.InputAction.CallbackContext>)h[0];
+    a.FindAction("Player/Move").performed -= (System.Action<UnityEngine.InputSystem.InputAction.CallbackContext>)h[1];
+}
+System.AppDomain.CurrentDomain.SetData("cliext.clitest.hooks", null);
+UnityEditor.SessionState.EraseInt("cliext.clitest.jumps"); UnityEditor.SessionState.EraseString("cliext.clitest.move");
+return "ok";
+'@
+    $readHook = Write-WorkFile 'in-read-hook.cs' 'return UnityEditor.SessionState.GetInt("cliext.clitest.jumps", -1) + "|" + UnityEditor.SessionState.GetString("cliext.clitest.move", "");'
+    function Read-InHook { $x = Invoke-Cli @('script', 'eval', '--file', $readHook, '--format', 'json'); Expect ($x.exit -eq 0) "reading the hook: $(Short ($x.stdout + $x.stderr))"; ($x.stdout.Trim() | ConvertFrom-Json) }
+    function Get-InActionRow([string]$name) { $x = Invoke-Cli @('cliext.input', 'actions', '--filter', $name, '--format', 'json'); Expect ($x.exit -eq 0) "actions: exit $($x.exit)"; @($x.json) | Where-Object { $_.action -eq $name } | Select-Object -First 1 }
+    $tracePath = Join-Path $work 'in-run.inputtrace'
+    $start = Invoke-Cli @('editor.playmode', 'start', '--format', 'json')
+    try {
+        Expect ((Wait-Editor 120) -eq 0) "Play mode didn't start: $(Short ($start.stdout + $start.stderr))"
+        $h = Invoke-Cli @('script', 'eval', '--file', (Write-WorkFile 'in-hook.cs' $hook), '--format', 'json')
+        Expect ($h.exit -eq 0 -and "$($h.stdout)" -match 'ok') "hooking the actions: $(Short ($h.stdout + $h.stderr))"
+        $pad = Invoke-Cli @('cliext.input', 'add_device', '--layout', 'Gamepad', '--format', 'json')
+        Expect ($pad.exit -eq 0 -and $pad.json.name -eq 'CLI Gamepad') "add_device Gamepad: exit $($pad.exit): $(Short ($pad.stdout + $pad.stderr))"
+        $devs = Invoke-Cli @('cliext.input', 'devices', '--format', 'json')
+        Expect ([bool](@($devs.json) | Where-Object { $_.id -eq $pad.json.id -and $_.virtual })) "devices doesn't list the virtual gamepad: $(Short $devs.stdout)"
+        $rec = Invoke-Cli @('cliext.input', 'record_start', '--format', 'json')
+        Expect ($rec.exit -eq 0 -and $rec.json.recording -eq $true) "record_start: exit $($rec.exit): $(Short ($rec.stdout + $rec.stderr))"
+
+        $s = Invoke-Cli @('cliext.input', 'set', '--control', 'leftStick', '--value', '[0,1]', '--format', 'json')
+        Expect ($s.exit -eq 0 -and $s.json.control -eq '/CLI Gamepad/leftStick') "set leftStick: exit $($s.exit): $(Short ($s.stdout + $s.stderr))"
+        $mv = Get-InActionRow 'Player/Move'
+        Expect ($mv.control -eq '/CLI Gamepad/leftStick' -and $mv.lastValue -eq '[0,1]') "actions Player/Move: $(Short ($mv | ConvertTo-Json -Compress))"
+        $hk = Read-InHook
+        Expect ($hk -match '\|\(0, 1\) CLI Gamepad$') "the Move hook saw: $hk"
+        [void](Invoke-Cli @('cliext.input', 'set', '--control', 'leftStick', '--value', '[0,0]', '--format', 'json'))
+
+        $p = Invoke-Cli @('cliext.input', 'press', '--control', 'buttonSouth', '--hold', '0.1', '--format', 'json')
+        Expect ($p.exit -eq 0 -and $p.json.control -eq '/CLI Gamepad/buttonSouth') "press buttonSouth: exit $($p.exit): $(Short ($p.stdout + $p.stderr))"
+        $jumps1 = [int](("$(Read-InHook)" -split '\|')[0])
+        Expect ($jumps1 -ge 1) "Player/Jump wasn't performed by buttonSouth (hook count $jumps1)"
+        $kb = Invoke-Cli @('cliext.input', 'add_device', '--layout', 'Keyboard', '--format', 'json')
+        Expect ($kb.exit -eq 0) "add_device Keyboard: exit $($kb.exit): $(Short ($kb.stdout + $kb.stderr))"
+        $k = Invoke-Cli @('cliext.input', 'press', '--control', '<Keyboard>/space', '--format', 'json')
+        Expect ($k.exit -eq 0 -and $k.json.device -eq 'CLI Keyboard') "press <Keyboard>/space: exit $($k.exit): $(Short ($k.stdout + $k.stderr))"
+        $jumps2 = [int](("$(Read-InHook)" -split '\|')[0])
+        Expect ($jumps2 -gt $jumps1) "Player/Jump wasn't performed by <Keyboard>/space (hook count $jumps1 -> $jumps2)"
+        $jr = Get-InActionRow 'Player/Jump'
+        Expect ($jr.lastChange -match 'Performed|Canceled' -and $jr.secondsAgo -lt 10) "actions Player/Jump: $(Short ($jr | ConvertTo-Json -Compress))"
+
+        $notTrace = Write-WorkFile 'in-not-a-trace.inputtrace' 'not a trace'
+        $cases = @(
+            @(@('set', '--control', 'nosuch', '--value', '1', '--device', 'CLI Gamepad'), "CLI Gamepad has no control 'nosuch'.*cliext\.input devices", 13, 'unknown control'),
+            @(@('set', '--control', 'buttonSouht', '--value', '1', '--device', 'CLI Gamepad'), 'Did you mean: buttonSouth', 13, 'misspelled control'),
+            @(@('set', '--control', '<Gamepad>/buttonSouht', '--value', '1'), 'Did you mean: buttonSouth', 13, 'misspelled full path'),
+            @(@('set', '--control', '<Joystick>/trigger', '--value', '1'), 'no Joystick device.*add_device --layout Joystick', 13, 'a path to a device that is not there'),
+            @(@('set', '--control', 'buttonSouth', '--value', 'abc', '--device', 'CLI Gamepad'), "'abc' isn't a Single value: give a number", 2, 'non-numeric value'),
+            @(@('set', '--control', 'leftStick', '--value', '1,2,3', '--device', 'CLI Gamepad'), 'Expected 2 numbers', 2, 'three numbers for a stick'),
+            @(@('set', '--control', 'buttonSouth', '--value', '1', '--device', 'NoSuchPad'), "No device 'NoSuchPad'.*cliext\.input devices", 13, 'unknown device'),
+            @(@('press', '--control', 'leftStick', '--device', 'CLI Gamepad'), 'not a button or key: use cliext\.input set', 2, 'press a stick'),
+            @(@('press', '--control', 'buttonSouth', '--hold', '0'), '--hold must be more than 0', 2, 'press for no time'),
+            @(@('add_device', '--layout', 'Gamepd'), "No device layout 'Gamepd'. Did you mean: Gamepad", 2, 'misspelled layout'),
+            @(@('add_device', '--layout', 'Button'), "'Button' is a control layout, not a device layout", 2, 'a control layout'),
+            @(@('record_start'), 'Already recording.*record_stop', 6, 'second record_start'),
+            @(@('remove_device', '--device', 'CLI Gamepd'), 'Did you mean: CLI Gamepad', 13, 'misspelled device to remove'),
+            @(@('replay', '--file', (Join-Path $work 'none.inputtrace')), 'No trace at.*record_start', 13, 'missing trace'),
+            @(@('replay', '--file', $notTrace), "isn't an input trace", 2, 'a file that is not a trace')
+        )
+        $seen = @()
+        foreach ($c in $cases) {
+            $x = Invoke-Cli (@('cliext.input') + $c[0] + @('--format', 'json'))
+            Expect-InFailure $x $c[1] '' $c[3] $c[2]
+            $seen += "$($c[3]) $($x.exit)"
+        }
+        $after = Invoke-Cli @('cliext.input', 'devices', '--format', 'json')
+        Expect (@($after.json | Where-Object { $_.virtual }).Count -eq 2) "a failed call changed the virtual devices: $(Short $after.stdout)"
+
+        $stop = Invoke-Cli @('cliext.input', 'record_stop', '--out', $tracePath, '--format', 'json')
+        Expect ($stop.exit -eq 0 -and $stop.json.events -gt 0 -and (Test-Path $tracePath)) "record_stop: exit $($stop.exit): $(Short ($stop.stdout + $stop.stderr))"
+        $readTrace = "var t = UnityEngine.InputSystem.LowLevel.InputEventTrace.LoadFrom(@`"$tracePath`"); var r = t.eventCount + `"|`" + string.Join(`",`", t.deviceInfos.Select(d => d.layout)); t.Dispose(); return r;"
+        $tr = Invoke-Cli @('script', 'eval', '--file', (Write-WorkFile 'in-trace.cs' $readTrace), '--format', 'json')
+        Expect ($tr.exit -eq 0 -and "$($tr.stdout)" -match "^`"$($stop.json.events)\|.*Gamepad") "the saved trace: $(Short ($tr.stdout + $tr.stderr))"
+        $again = Invoke-Cli @('cliext.input', 'record_stop', '--out', $tracePath, '--format', 'json')
+        Expect-InFailure $again 'Not recording: start with cliext\.input record_start' '' 'record_stop when not recording'
+        [void](Invoke-Cli @('cliext.input', 'record_start', '--device', 'CLI Gamepad', '--format', 'json'))
+        $empty = Invoke-Cli @('cliext.input', 'record_stop', '--out', (Join-Path $work 'in-empty.inputtrace'), '--format', 'json')
+        Expect-InFailure $empty 'caught no input events, so nothing was saved' '' 'a recording with no events'
+        Expect (-not (Test-Path (Join-Path $work 'in-empty.inputtrace'))) 'an empty recording was saved'
+
+        $rp = Invoke-Cli @('cliext.input', 'replay', '--file', $tracePath, '--timing', 'false', '--format', 'json')
+        Expect ($rp.exit -eq 0 -and $rp.json.events -eq $stop.json.events) "replay: exit $($rp.exit): $(Short ($rp.stdout + $rp.stderr))"
+        $doneCode = @'
+var t = System.Type.GetType("UnityCLIExtensions.InputSystem.InputCommands, UnityCLIExtensions.InputSystem");
+var r = t.GetField("s_Replay", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static).GetValue(null) as UnityEngine.InputSystem.LowLevel.InputEventTrace.ReplayController;
+return r == null || r.finished ? "ready" : "at " + r.position;
+'@
+        $w = Invoke-Cli @('cliext.playmode', 'wait_until', '--file', (Write-WorkFile 'in-replay-done.cs' $doneCode), '--timeout', '30', '--interval', '0.25', '--format', 'json') 60
+        Expect ($w.exit -eq 0) "the replay didn't finish: $(Short ($w.stdout + $w.stderr))"
+        $rs = Invoke-Cli @('cliext.input', 'replay_status', '--format', 'json')
+        Expect ($rs.exit -eq 0 -and $rs.json.replaying -eq $false -and $rs.json.position -eq $stop.json.events) "replay_status: $(Short ($rs.stdout + $rs.stderr))"
+        $jumps3 = [int](("$(Read-InHook)" -split '\|')[0])
+        Expect ($jumps3 -gt $jumps2) "the replay didn't perform Player/Jump (hook count $jumps2 -> $jumps3)"
+
+        $rm = Invoke-Cli @('cliext.input', 'remove_device', '--format', 'json')
+        Expect ($rm.exit -eq 0 -and (@($rm.json.removed) -join ',') -eq 'CLI Gamepad,CLI Keyboard') "remove_device: exit $($rm.exit): $(Short ($rm.stdout + $rm.stderr))"
+        $left = Invoke-Cli @('cliext.input', 'devices', '--format', 'json')
+        Expect (-not (@($left.json) | Where-Object { $_.virtual -or $_.name -like 'CLI *' })) "devices after remove_device: $(Short $left.stdout)"
+    }
+    finally {
+        [void](Invoke-Cli @('script', 'eval', '--file', (Write-WorkFile 'in-unhook.cs' $unhook), '--format', 'json'))
+        [void](Invoke-Cli @('cliext.input', 'remove_device', '--format', 'json'))
+        [void](Invoke-Cli @('editor.playmode', 'stop', '--format', 'json'))
+        [void](Wait-Editor 120)
+    }
+    $mode = Invoke-Cli @('script', 'eval', '--file', (Write-WorkFile 'in-mode2.cs' 'var a = UnityEngine.SceneManagement.SceneManager.GetActiveScene(); return (UnityEditor.EditorApplication.isPlaying ? "playing" : "edit") + "|" + a.isDirty;'), '--format', 'json')
+    Expect ("$($mode.stdout)" -match 'edit\|False') "after Play mode: $(Short $mode.stdout)"
+    $final = Invoke-Cli @('cliext.input', 'devices', '--format', 'json')
+    Expect (-not (@($final.json) | Where-Object { $_.virtual -or $_.name -like 'CLI *' })) "devices after Play mode: $(Short $final.stdout)"
+    "Move [0,1] from the stick; Jump x$jumps3 (button, <Keyboard>/space, replay of $($stop.json.events) events); $($seen.Count) failures with the fix; back in Edit mode, scene clean, no virtual devices"
+}
+
 # --- Cross-cutting ----------------------------------------------------------------------------------------------------
 
 $batchEdits = @(
