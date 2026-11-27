@@ -61,11 +61,9 @@ namespace UnityCLIExtensions.VFX
 
         private static void CreateFolders(string folder)
         {
-            string parent = System.IO.Path.GetDirectoryName(folder)?.Replace('\\', '/');
-            if (string.IsNullOrEmpty(parent) || !(parent == "Assets" || parent.StartsWith("Assets/")) && !parent.StartsWith("Packages/"))
-                throw new ArgumentException($"'{folder}' isn't under Assets/.");
-            if (!AssetDatabase.IsValidFolder(parent)) CreateFolders(parent);
-            AssetDatabase.CreateFolder(parent, System.IO.Path.GetFileName(folder));
+            if (!ProjectFolders.IsProjectFolder(folder)) throw new ArgumentException($"'{folder}' isn't under Assets/.");
+            // A folder already on disk is imported, not made again as "<Folder> 1".
+            ProjectFolders.Ensure(folder);
         }
 
         /// <summary>Writes the graph and reimports it, which compiles it. Returns the errors and warnings logged meanwhile.</summary>

@@ -575,9 +575,9 @@ namespace UnityCLIExtensions.Animation
                 bool created = false;
                 if (existing == null)
                 {
+                    // Missing folders are made (one already on disk is imported, not made again as "<Folder> 1").
                     string dir = System.IO.Path.GetDirectoryName(p)?.Replace('\\', '/');
-                    if (!string.IsNullOrEmpty(dir) && !AssetDatabase.IsValidFolder(dir))
-                        throw new AnimNotFoundException($"No folder '{dir}' for the new mask. Make it first, or pass a path in an existing folder.");
+                    if (!string.IsNullOrEmpty(dir) && !AssetDatabase.IsValidFolder(dir)) ProjectFolders.Ensure(dir);
                     AssetDatabase.CreateAsset(work, p);
                     mask = work;
                     work = null;

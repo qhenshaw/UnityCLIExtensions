@@ -1338,6 +1338,25 @@ Add-Check 'anim.mask' $animRow 'cliext.anim mask creates a mask, lists a model''
     "created with Head and LeftArm off; $($f.json.transforms) transforms, $($off.Count) off; $($seen -join ', ')"
 }
 
+Add-Check 'anim.mask-folders' $animRow 'cliext.anim mask (and cliext.shadergraph create) into folders that do not exist make them; into a folder made on disk but not imported yet, they use it and make no "<Folder> 1" beside it' {
+    $paths = "$scratchRel/MaskNew/Deep/Upper.mask", "$scratchRel/MaskDisk/Upper.mask"
+    $diskDir = Join-Path $scratch 'MaskDisk'
+    $sgDir = Join-Path $scratch 'SgDisk'
+    New-Item -ItemType Directory -Force $diskDir | Out-Null
+    New-Item -ItemType Directory -Force $sgDir | Out-Null
+    $results = @()
+    foreach ($p in $paths) {
+        $r = Invoke-Cli @('cliext.anim', 'mask', '--path', $p, '--humanoid', 'Head=false', '--format', 'json')
+        Expect ($r.exit -eq 0 -and $r.json.created -eq $true -and $r.json.path -eq $p) "mask at ${p}: exit $($r.exit): $(Short ($r.stdout + $r.stderr))"
+        $results += $p
+    }
+    $sg = Invoke-Cli @('cliext.shadergraph', 'create', '--path', "$scratchRel/SgDisk/OnDisk.shadergraph", '--target', 'Universal', '--material', 'Unlit', '--format', 'json') 180
+    Expect ($sg.exit -eq 0 -and $sg.json.path -eq "$scratchRel/SgDisk/OnDisk.shadergraph") "shadergraph create into an on-disk folder: exit $($sg.exit): $(Short ($sg.stdout + $sg.stderr))"
+    foreach ($stray in 'MaskDisk 1', 'SgDisk 1', 'MaskNew 1') { Expect (-not (Test-Path (Join-Path $scratch $stray))) "a stray '$stray' folder was made" }
+    Expect ((Test-Path "$diskDir.meta") -and (Test-Path "$sgDir.meta")) 'the on-disk folders were not imported (no .meta)'
+    "masks at $($results -join ', '); shader graph in the on-disk folder; no '<Folder> 1'"
+}
+
 Add-Check 'anim.check' $animRow 'cliext.anim check passes humanoid clips on the humanoid model, fails (exit 6, saying why) on a generic clip, and a missing model or --clips entry exits 13' {
     Need-AnimAssets
     $ok = Invoke-Cli @('cliext.anim', 'check', '--model', $script:animChar, '--clips', $script:animCtl, '--format', 'json')

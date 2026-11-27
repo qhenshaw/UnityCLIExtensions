@@ -799,7 +799,8 @@ platform override. Each changed asset comes back with `name: old -> new`.
   `auto|linear|constant|free`; replaces a key at that time), `remove_key`, `add_event` (seconds, function, parameter),
   `remove_event`, `set_settings` (`loopTime`, `loopBlend`, `cycleOffset`, `mirror`, ...).
 - `mask --path Upper.mask [--humanoid "LeftLeg=false;RightLeg=false"] [--from Hero.fbx] [--transforms
-  "Hips/LeftUpLeg/*=false"]`: creates or changes an AvatarMask; `--from` lists a model's transforms in it.
+  "Hips/LeftUpLeg/*=false"]`: creates or changes an AvatarMask, making missing folders; `--from` lists a model's
+  transforms in it.
 - `check --model Hero.prefab --clips "Hero.controller;Assets/Anims/Extra.fbx"`: whether the clips fit the model:
   humanoid clips on a model without a humanoid avatar, generic clips on a humanoid, an invalid avatar, animated paths
   the model doesn't have, curves for components it doesn't have (a SpriteRenderer clip on a 3D model), legacy clips.
