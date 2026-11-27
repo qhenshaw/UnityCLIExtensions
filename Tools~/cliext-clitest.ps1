@@ -12,6 +12,10 @@ Commands are started with System.Diagnostics.Process and an argument string this
 5.1's native argument passing (which drops the quotes inside JSON) does not affect them. The `env.*` checks use
 PowerShell's own `&` on purpose, to show what an agent typing the same thing gets.
 
+After the checks it prints T1 coverage: for each core-loop row, how many of its commands this run called, and which
+it didn't. -T3Ready runs only the T3 environment check instead (setup applied, agent mode on, watchdog running, skills
+current), for use right before agent scenario runs.
+
 Exit codes: 0 when every check passed, 1 when one failed, 2 when no Editor answered.
 
 .EXAMPLE
@@ -22,7 +26,8 @@ param(
     [Parameter(Mandatory = $true)][string]$Project,
     [string]$Filter = '.',
     [string]$Out = '',
-    [switch]$Keep
+    [switch]$Keep,
+    [switch]$T3Ready
 )
 
 $ErrorActionPreference = 'Stop'
@@ -55,7 +60,13 @@ function Format-Arg([string]$a) {
     return $sb.ToString()
 }
 
+$invoked = New-Object 'Collections.Generic.HashSet[string]'
+
 function Invoke-Cli([string[]]$CliArgs, [double]$Timeout = 120) {
+    if ($CliArgs.Count -gt 0 -and $CliArgs[0] -like 'cliext*') {
+        if ($CliArgs.Count -gt 1 -and -not $CliArgs[1].StartsWith('-')) { [void]$invoked.Add("$($CliArgs[0]) $($CliArgs[1])") }
+        else { [void]$invoked.Add($CliArgs[0]) }
+    }
     $all = @('command', '--project-path', $projectPath) + $CliArgs
     $info = New-Object Diagnostics.ProcessStartInfo
     $info.FileName = $unity
@@ -236,7 +247,8 @@ Add-Check 'dialogs.log-and-scan' 'cliext.dialogs, cliext.watchdog' 'the dialog j
     "journal entries: $(@($a.json).Count); blocking calls found: $(@($b.json).Count)"
 }
 
-Add-Check 'dialogs.watchdog-roundtrip' 'cliext.dialogs, cliext.watchdog' 'the watchdog starts, reports the Editor ready, and stops' {
+Add-Check 'dialogs.watchdog-roundtrip' 'cliext.dialogs, cliext.watchdog' 'the watchdog starts, reports the Editor ready, and stops (and is left as it was)' {
+    $before = (Invoke-Cli @('cliext', 'status', '--format', 'json')).json.watchdog.running -eq $true
     $s = Invoke-Cli @('cliext.watchdog', 'start', '--format', 'json')
     Expect ($s.exit -eq 0) "start: exit $($s.exit): $(Short ($s.stdout + $s.stderr))"
     $state = ''
@@ -245,9 +257,10 @@ Add-Check 'dialogs.watchdog-roundtrip' 'cliext.dialogs, cliext.watchdog' 'the wa
         if ("$($rep.stdout)" -match '"state"\s*:\s*"([^"]+)"') { $state = $Matches[1] } else { Start-Sleep -Milliseconds 500 }
     }
     $t = Invoke-Cli @('cliext.watchdog', 'stop', '--format', 'json')
+    if ($before) { [void](Invoke-Cli @('cliext.watchdog', 'start', '--format', 'json')) }
     Expect ($state -eq 'ready') "report state '$state'"
     Expect ($t.exit -eq 0) "stop: exit $($t.exit): $(Short ($t.stdout + $t.stderr))"
-    "state $state"
+    "state $state$(if ($before) { '; restarted, as it was running' })"
 }
 
 # --- cliext.eval, cliext.playmode -------------------------------------------------------------------------------------
@@ -407,6 +420,22 @@ Add-Check 'env.ps51-quoted-code' 'Environment' 'the core skill says to pass C# s
     "inline --code broken: $broken; skill says to use files: $warned"
 }
 
+# --- T3 environment (run with -T3Ready, before agent scenario runs) -------------------------------------------------
+
+Add-Check 't3.environment' 'T3 environment' 'the Editor is set up the way agents get it: setup applied, agent mode on, watchdog running, skills current' {
+    $st = (Invoke-Cli @('cliext', 'status', '--format', 'json')).json
+    $problems = @()
+    $open = @($st.setupToFix | Where-Object { -not $_.optional -and $_.status -eq 'fix-available' } | ForEach-Object { $_.id })
+    if ($open.Count) { $problems += "setup checks with a fix available: $($open -join ', ') (cliext.setup apply)" }
+    $manual = @($st.setupToFix | Where-Object { -not $_.optional -and $_.status -eq 'manual' } | ForEach-Object { $_.id })
+    if (-not $st.agentMode) { $problems += 'agent mode off (cliext set_agent_mode --enabled true)' }
+    if (-not $st.watchdog.running) { $problems += 'watchdog not running (cliext.watchdog start)' }
+    $agent = (Invoke-Cli @('cliext.setup', 'agent', '--format', 'json')).json
+    if (-not $agent.current) { $problems += "skills were not current for $($agent.version): $(@($agent.changes) -join ', ')" }
+    Expect ($problems.Count -eq 0) ($problems -join '; ')
+    "ready for T3 on $($st.version)$(if ($manual.Count) { "; manual checks left: $($manual -join ', ')" }); shell PowerShell $($PSVersionTable.PSVersion.Major).$($PSVersionTable.PSVersion.Minor)"
+}
+
 # ---------------------------------------------------------------------------------------------------------------------
 # Run
 
@@ -414,7 +443,8 @@ $probe = Invoke-Cli @('cliext', 'status', '--format', 'json') 30
 if ($probe.exit -ne 0) { Write-Output "No Editor answered for $projectPath (exit $($probe.exit)): $(Short ($probe.stdout + $probe.stderr))"; exit 2 }
 
 $results = New-Object Collections.Generic.List[object]
-foreach ($c in $checks | Where-Object { $_.id -match $Filter }) {
+$selected = $checks | Where-Object { $_.id -match $Filter -and (($_.id -like 't3.*') -eq [bool]$T3Ready) }
+foreach ($c in $selected) {
     $sw = [Diagnostics.Stopwatch]::StartNew()
     try { $detail = & $c.body; $ok = $true }
     catch { $detail = $_.Exception.Message; $ok = $false }
@@ -432,5 +462,26 @@ if (-not $Keep) {
 
 $failed = @($results | Where-Object { -not $_.pass }).Count
 Write-Output ("{0} of {1} checks passed" -f ($results.Count - $failed), $results.Count)
-if ($Out) { $results | ConvertTo-Json -Depth 4 | Set-Content -Path $Out -Encoding UTF8 }
+
+# T1 coverage: which commands of each tracker row this run called at least once.
+$coverage = @()
+if (-not $T3Ready) {
+    $rows = [ordered]@{
+        'cliext, cliext.setup' = '^cliext( |$)|^cliext\.setup '; 'cliext.compile, cliext.edits, cliext.wait' = '^cliext\.(compile|edits|wait) '
+        'cliext.test' = '^cliext\.test '; 'cliext.dialogs, cliext.watchdog' = '^cliext\.(dialogs|watchdog) '
+        'cliext.eval, cliext.playmode' = '^cliext\.(eval|playmode) '; 'cliext.scene' = '^cliext\.scene '
+    }
+    $q = Invoke-Cli @('--query', 'cliext', '--format', 'json') 60
+    $all = @()
+    if ($q.json -ne $null) { $all = @($q.json.data.commands | ForEach-Object { $_.command }) }
+    Write-Output 'T1 coverage (P1 rows; commands called at least once):'
+    foreach ($row in $rows.Keys) {
+        $cmds = @($all | Where-Object { $_ -match $rows[$row] } | Sort-Object)
+        $hit = @($cmds | Where-Object { $invoked.Contains($_) })
+        $miss = @($cmds | Where-Object { -not $invoked.Contains($_) })
+        $coverage += [pscustomobject]@{ row = $row; covered = $hit.Count; total = $cmds.Count; missing = $miss }
+        Write-Output ("  {0,-44} {1,2} of {2,-2} {3}" -f $row, $hit.Count, $cmds.Count, $(if ($miss.Count) { 'missing: ' + ($miss -join ', ') } else { '' }))
+    }
+}
+if ($Out) { [pscustomobject]@{ checks = $results; coverage = $coverage } | ConvertTo-Json -Depth 5 | Set-Content -Path $Out -Encoding UTF8 }
 if ($failed -gt 0) { exit 1 } else { exit 0 }
