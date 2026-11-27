@@ -63,14 +63,19 @@ namespace UnityCLIExtensions.Animation
         private static ModelImporter ModelAt(string path) =>
             AssetImporter.GetAtPath(FromGuid(path)) as ModelImporter ?? throw new ArgumentException($"'{path}' isn't a model.");
 
-        private static ClipOpList ReadOps(string ops, string opsFile)
+        // --ops / --ops-file first (invalid usage when neither, both, or not a list of ops), before the target is looked up.
+        private static bool TryReadOps(CommandContext cmd, string ops, string opsFile, out ClipOpList list, out ExitCode failure)
         {
-            string json = !string.IsNullOrWhiteSpace(opsFile) ? File.ReadAllText(opsFile) : ops;
-            if (string.IsNullOrWhiteSpace(json)) throw new ArgumentException("Pass --ops or --ops-file.");
-            string s = json.Trim();
-            var list = JsonUtility.FromJson<ClipOpList>(s.StartsWith("[") ? "{\"ops\":" + s + "}" : s);
-            if (list?.ops == null || list.ops.Length == 0) throw new ArgumentException("No ops given.");
-            return list;
+            list = null;
+            if (!OpsInput.TryRead(cmd, ops, opsFile, out string json, out failure)) return false;
+            try
+            {
+                string s = json.Trim();
+                list = JsonUtility.FromJson<ClipOpList>(s.StartsWith("[") ? "{\"ops\":" + s + "}" : s);
+            }
+            catch (Exception e) { cmd.Log.Error($"The ops aren't valid JSON: {e.Message}"); failure = ExitCode.InvalidUsage; return false; }
+            if (list?.ops == null || list.ops.Length == 0) { cmd.Log.Error("No ops given."); failure = ExitCode.InvalidUsage; return false; }
+            return true;
         }
 
         private static object DescribeModelClip(ModelImporterClipAnimation c) => new
@@ -131,10 +136,10 @@ namespace UnityCLIExtensions.Animation
             [CliArg("ops", "JSON array of ops")] string ops = "",
             [CliArg("ops-file", "A file holding the JSON array")] string opsFile = "")
         {
+            if (!TryReadOps(cmd, ops, opsFile, out var list, out ExitCode usage)) return usage;
             try
             {
                 var m = ModelAt(path);
-                var list = ReadOps(ops, opsFile);
                 var clips = (m.clipAnimations.Length > 0 ? m.clipAnimations : m.defaultClipAnimations).ToList();
                 ModelImporterClipAnimation Find(string name) => clips.FirstOrDefault(c => string.Equals(c.name, name, StringComparison.OrdinalIgnoreCase))
                     ?? throw new ArgumentException($"No clip '{name}'. Clips: {string.Join(", ", clips.Select(c => c.name))}");
@@ -285,12 +290,12 @@ namespace UnityCLIExtensions.Animation
             [CliArg("ops", "JSON array of ops")] string ops = "",
             [CliArg("ops-file", "A file holding the JSON array")] string opsFile = "")
         {
+            if (!TryReadOps(cmd, ops, opsFile, out var list, out ExitCode usage)) return usage;
             AssetRollback rollback = null;
             try
             {
                 var clip = ClipAt(path);
                 if (AssetDatabase.IsSubAsset(clip)) throw new ArgumentException("That clip is imported from a model; change it with cliext.anim edit_clips on the model.");
-                var list = ReadOps(ops, opsFile);
                 rollback = AssetRollback.Begin(new[] { AssetDatabase.GetAssetPath(clip) });
                 var results = new List<object>();
                 foreach (var op in list.ops)

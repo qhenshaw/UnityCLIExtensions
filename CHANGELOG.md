@@ -1,7 +1,10 @@
 # Changelog
 All notable changes to Unity CLI Extensions. Versions are git tags: install one with `https://github.com/qhenshaw/UnityCLIExtensions.git#<version>`.
 
-## Unreleased
+## 0.24.0
+- Every batch edit reads its ops the same way, before it looks at its target: exactly one of `--ops` and `--ops-file`, else exit 2 (invalid usage), and invalid JSON or an empty list is exit 2 too. Before, giving neither exited 6 or 13 depending on the command, and giving both silently used the file.
+- Added `Tools~/cliext-clitest.ps1`, out-of-process tests that drive a running Editor through `unity command`: setup, compile errors and edit batches, test runs, the dialog journal and the watchdog, snippets with placeholders, exit codes (a dropped reply versus a failure), reply shapes, misspelled and either/or parameters, skill freshness, and Windows PowerShell 5.1 quoting. 23 checks; all pass on Unity 6000.6.6f1.
+- The `unity-cliext` skill tells exit 6 from a failure and from a reply dropped by a domain reload (`EDITOR_CONNECTION_LOST` on stdout), says batch edits are all or nothing and take exactly one of `--ops` and `--ops-file`, says to put anything with double quotes in a file under Windows PowerShell 5.1 (`--ops-file`, `script eval --file`, `git commit -F`), and names the Unity 6.6 replacements for `GetInstanceID` and `InstanceIDToObject` in snippets.
 - Every batch edit is all-or-nothing: an op that fails saves nothing, and the result says `saved: false` with `failedAt` and `error`. `cliext.vfx edit` (and the single `cliext.vfx` edit commands), `cliext.animator edit`, `cliext.timeline edit`, `cliext.anim edit_clip` and `cliext.addressables edit` used to keep and save the ops before the failure; they now put the assets back as they were, in memory and on disk, through the new `AssetRollback` (which unloads the edited objects so they reload from disk: a reimport alone keeps a native asset's unsaved in-memory state). `cliext.splines edit` reverts through one Undo group and is undone as one step. Each batch edit's description says so.
 - Renamed `cliext.anim clips` to `cliext.anim edit_clips`: it edits a model's clips, and its name read like a listing beside `takes` and `clip`.
 - `cliext.diff compare` is no longer marked read-only (`--update` rewrites the snapshot), and `cliext.diff delete` is marked destructive.

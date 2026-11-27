@@ -134,10 +134,7 @@ namespace UnityCLIExtensions.Addressables
             [CliArg("ops", "JSON array of ops")] string ops = "",
             [CliArg("ops-file", "A file holding the JSON array")] string opsFile = "")
         {
-            string json;
-            try { json = !string.IsNullOrWhiteSpace(opsFile) ? File.ReadAllText(opsFile) : ops; }
-            catch (IOException e) { cmd.Log.Error(e.Message); return ExitCode.NotFound; }
-            if (string.IsNullOrWhiteSpace(json)) { cmd.Log.Error("Pass --ops or --ops-file."); return ExitCode.InvalidUsage; }
+            if (!OpsInput.TryRead(cmd, ops, opsFile, out string json, out ExitCode usage)) return usage;
             AddressablesOpList list;
             try { string t = json.Trim(); list = JsonUtility.FromJson<AddressablesOpList>(t.StartsWith("[") ? "{\"ops\":" + t + "}" : t); }
             catch (Exception e) { cmd.Log.Error($"The ops aren't valid JSON: {e.Message}"); return ExitCode.InvalidUsage; }

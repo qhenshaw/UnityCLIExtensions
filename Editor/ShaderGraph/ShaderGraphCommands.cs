@@ -171,18 +171,15 @@ namespace UnityCLIExtensions.ShaderGraph
             [CliArg("ops-file", "A file holding the JSON array")] string opsFile = "",
             [CliArg("force", "Edit even while a Shader Graph window has it open (the window's copy may overwrite the edit)")] bool force = false)
         {
-            string json;
-            try { json = !string.IsNullOrWhiteSpace(opsFile) ? File.ReadAllText(opsFile) : ops; }
-            catch (Exception e) when (e is IOException || e is UnauthorizedAccessException) { cmd.Log.Error($"Can't read --ops-file: {e.Message}"); return ExitCode.NotFound; }
-            if (string.IsNullOrWhiteSpace(json)) { cmd.Log.Error("Pass --ops or --ops-file."); return ExitCode.Failed; }
+            if (!OpsInput.TryRead(cmd, ops, opsFile, out string json, out ExitCode usage)) return usage;
             ShaderGraphOpList list;
             try
             {
                 string trimmed = json.Trim();
                 list = JsonUtility.FromJson<ShaderGraphOpList>(trimmed.StartsWith("[") ? "{\"ops\":" + trimmed + "}" : trimmed);
             }
-            catch (Exception e) { cmd.Log.Error($"The ops aren't valid JSON: {e.Message}"); return ExitCode.Failed; }
-            if (list?.ops == null || list.ops.Length == 0) { cmd.Log.Error("No ops given."); return ExitCode.Failed; }
+            catch (Exception e) { cmd.Log.Error($"The ops aren't valid JSON: {e.Message}"); return ExitCode.InvalidUsage; }
+            if (list?.ops == null || list.ops.Length == 0) { cmd.Log.Error("No ops given."); return ExitCode.InvalidUsage; }
             return RunOps(cmd, path, list.ops, force);
         }
 

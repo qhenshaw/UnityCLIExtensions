@@ -47,6 +47,7 @@ This package works in three layers:
 - [Animation import, clips and avatar masks](#animation-import-clips-and-avatar-masks)
 - [Physics, NavMesh and quality settings](#physics-navmesh-and-quality-settings)
 - [Agent files: the skills and CLAUDE.md](#agent-files-the-skills-and-claudemd)
+- [Testing the package](#testing-the-package)
 - [Commands](#commands)
 - [Files](#files)
 - [Blocking dialogs catalog](Documentation~/blocking-dialogs.md)
@@ -833,6 +834,27 @@ Agents find skills in the project's `.claude/skills/`, so the package puts them 
 - Turn it off per user in Project Settings > CLI Extensions > Keep Skill and CLAUDE.md Current.
 
 `cliext status` also reports the package `version` and `tools`, the folder of the `Tools~` scripts the skill refers to.
+
+## Testing the package
+Two layers. EditMode tests in `Tests/` run inside the Editor: list the package under `testables` in the project's
+`Packages/manifest.json`, then `unity command cliext.test run --filter UnityCLIExtensions.Tests --filter-type assembly`
+(and `UnityCLIExtensions.VFX.Tests` in projects with VFX Graph). `CommandSchemaTests` among them lints every command's
+declared schema: descriptions, kebab-case names, ASCII text, effects, list separators, sentinel defaults, types,
+enum values, GUID support and the all-or-nothing wording of batch edits.
+
+What only shows from outside the Editor is checked by `Tools~/cliext-clitest.ps1`, which drives the running Editor
+through `unity command`:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File <package>/Tools~/cliext-clitest.ps1 -Project <project> [-Filter '^xcut\.'] [-Out results.json] [-Keep]
+```
+
+It checks setup, compile errors and edit batches, test runs, the dialog journal and the watchdog, snippets with
+placeholders, exit codes (a reply dropped by a domain reload is exit 6 with `EDITOR_CONNECTION_LOST`; a real failure
+is exit 6 with its reason on stderr), reply shapes, misspelled and either/or parameters on every batch edit, that the
+installed skills match `Skills~/`, and how Windows PowerShell 5.1 passes quoted arguments. It prints one line per check
+and exits 0 when all pass, 1 when one fails, 2 when no Editor answers. Scratch files go in `Assets/_CliextTests/CliTest`
+and are removed at the end (`-Keep` leaves them).
 
 ## Commands
 All under `unity command --project-path <project>`:

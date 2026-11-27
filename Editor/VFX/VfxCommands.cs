@@ -168,18 +168,15 @@ namespace UnityCLIExtensions.VFX
             [CliArg("ops", "JSON array of ops")] string ops = "",
             [CliArg("ops-file", "A file holding the JSON array, for long lists or awkward shell quoting")] string opsFile = "")
         {
-            string json;
-            try { json = !string.IsNullOrWhiteSpace(opsFile) ? File.ReadAllText(opsFile) : ops; }
-            catch (Exception e) when (e is IOException || e is UnauthorizedAccessException) { cmd.Log.Error($"Can't read --ops-file: {e.Message}"); return ExitCode.NotFound; }
-            if (string.IsNullOrWhiteSpace(json)) { cmd.Log.Error("Pass --ops or --ops-file."); return ExitCode.Failed; }
+            if (!OpsInput.TryRead(cmd, ops, opsFile, out string json, out ExitCode usage)) return usage;
             VfxOpList list;
             try
             {
                 string trimmed = json.Trim();
                 list = JsonUtility.FromJson<VfxOpList>(trimmed.StartsWith("[") ? "{\"ops\":" + trimmed + "}" : trimmed);
             }
-            catch (Exception e) { cmd.Log.Error($"The ops aren't valid JSON: {e.Message}"); return ExitCode.Failed; }
-            if (list?.ops == null || list.ops.Length == 0) { cmd.Log.Error("No ops given."); return ExitCode.Failed; }
+            catch (Exception e) { cmd.Log.Error($"The ops aren't valid JSON: {e.Message}"); return ExitCode.InvalidUsage; }
+            if (list?.ops == null || list.ops.Length == 0) { cmd.Log.Error("No ops given."); return ExitCode.InvalidUsage; }
             return RunOps(cmd, path, list.ops);
         }
 

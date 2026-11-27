@@ -35,11 +35,20 @@ Start with `unity command cliext status`: agent mode, the setup checks still ope
   rewrites files (save prompts, the API updater).
 - Save or discard scene changes before tests, scene switches or builds (`cliext.scene save_open`): an unsaved scene
   stops them at a save prompt.
-- "The Editor closed the connection" (exit 6) after a compile or Play mode change means a domain reload, not a
-  failure: wait, then read the result. `--async true` avoids it for compiles.
-- Batch edits (`edit --ops-file ops.json`) instead of one command per change. On Windows PowerShell 5.1 inline JSON
-  loses its quotes, so write the ops to a file.
-- Give `script eval` and `cliext.eval run` a `--timeout` when the work may take over 30 seconds.
+- Exit 6 means two things. A real failure prints its reason on stderr, usually as an `error:` line (stdout is empty, or
+  holds the command's partial result). A reply dropped by a domain reload prints
+  `{"success":false,"errors":[{"code":"EDITOR_CONNECTION_LOST",...}]}` on stdout with `--format json`: after a compile
+  or Play mode change that is not a failure, so wait, then read the result. `--async true` avoids it for compiles.
+- Batch edits (`edit --ops-file ops.json`) instead of one command per change. Pass exactly one of `--ops` and
+  `--ops-file` (either none or both is exit 2). A batch is all or nothing: an op that fails saves nothing (`saved:
+  false`, `failedAt`, `error`), so fix that op and rerun the whole file.
+- Windows PowerShell 5.1 splits or strips the double quotes inside a native command's arguments: inline JSON loses its
+  quotes, `script eval --code 'return "a b";'` arrives as two arguments, and so does a quoted `git commit -m`
+  message. Put anything with quotes in a file: `--ops-file`, `script eval --file` or `cliext.eval run --file`,
+  `git commit -F`.
+- Give `script eval` and `cliext.eval run` a `--timeout` when the work may take over 30 seconds. On Unity 6.6 and later,
+  `GetInstanceID` and `EditorUtility.InstanceIDToObject` are compile errors in snippets: use `GetEntityId` and
+  `EditorUtility.EntityIdToObject`.
 - Before creating or editing a VFX Graph, load the `unity-cliext-vfx` skill (installed when the project has VFX Graph):
   block keys, slot names, defaults that spawn nothing, and ops templates.
 - After every `cliext.vfx` edit, read `warnings` (a burst left at Count 0 spawns nothing) and `eventAttributes`: from

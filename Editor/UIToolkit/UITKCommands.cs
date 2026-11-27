@@ -123,10 +123,9 @@ namespace UnityCLIExtensions.UIToolkit
             [CliArg("ops", "JSON array of ops")] string ops = "",
             [CliArg("ops-file", "A file holding the JSON array")] string opsFile = "")
         {
-            string json;
-            try { json = !string.IsNullOrWhiteSpace(opsFile) ? File.ReadAllText(opsFile) : ops; path = Resolve(path); }
+            if (!OpsInput.TryRead(cmd, ops, opsFile, out string json, out ExitCode usage)) return usage;
+            try { path = Resolve(path); }
             catch (Exception e) when (e is IOException || e is ArgumentException) { cmd.Log.Error(e.Message); return ExitCode.NotFound; }
-            if (string.IsNullOrWhiteSpace(json)) { cmd.Log.Error("Pass --ops or --ops-file."); return ExitCode.InvalidUsage; }
             UxmlOpList list;
             try { string s = json.Trim(); list = JsonUtility.FromJson<UxmlOpList>(s.StartsWith("[") ? "{\"ops\":" + s + "}" : s); }
             catch (Exception e) { cmd.Log.Error($"The ops aren't valid JSON: {e.Message}"); return ExitCode.InvalidUsage; }
