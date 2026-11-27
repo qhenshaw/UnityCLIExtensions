@@ -443,8 +443,8 @@ Add-Check 'failures.note' 'cliext.dialogs, cliext.watchdog, cliext.failures' 'cl
         Expect ($l.exit -eq 0 -and $mine.Count -eq 2) "log --notes shows $($mine.Count) of the 2 notes: $(Short $l.stdout)"
         Expect (@($mine | Where-Object { $_.unity -and $_.package -and $_.time }).Count -eq 2) "a note without its time or versions: $(Short ($mine | ConvertTo-Json -Compress))"
         $s = Invoke-Cli @('cliext.failures', 'summary', '--since', $since, '--format', 'json')
-        Expect ($s.exit -eq 0 -and (@($s.json) | Where-Object { $_.source -eq 'note' -and $_.kind -eq 'missing' -and $_.command -eq 'cliext.vfx' })) "summary has no note group: $(Short $s.stdout)"
-        Expect (@($s.json) | Where-Object { $_.source -eq 'failure' -and $_.command -eq 'cliext.failures note' }) "summary has no failure group for the refused notes: $(Short $s.stdout)"
+        Expect ($s.exit -eq 0 -and @(@($s.json) | Where-Object { $_.source -eq 'note' -and $_.kind -eq 'missing' -and $_.command -eq 'cliext.vfx' }).Count -gt 0) "summary has no note group: $(Short $s.stdout)"
+        Expect (@(@($s.json) | Where-Object { $_.source -eq 'failure' -and $_.command -eq 'cliext.failures note' }).Count -gt 0) "summary has no failure group for the refused notes: $(Short $s.stdout)"
         $x = Invoke-Cli @('cliext.failures', 'clear', '--notes', 'true', '--format', 'json')
         $after = Invoke-Cli @('cliext.failures', 'log', '--notes', 'true', '--format', 'json')
         Expect ($x.exit -eq 0 -and "$($x.json.file)" -like '*field-notes.jsonl' -and "$($after.stdout)".Trim() -eq '') "clear --notes: exit $($x.exit), file '$($x.json.file)'; after: $(Short $after.stdout)"
@@ -505,7 +505,7 @@ Add-Check 'failures.report-zip' 'cliext.dialogs, cliext.watchdog, cliext.failure
         $readme = [IO.File]::ReadAllText((Join-Path $unz 'README.txt'))
         Expect ($readme -match 'github\.com/qhenshaw/UnityCLIExtensions/issues' -and $readme -match 'field-report\\field-report\.md') 'README.txt lacks the issues link or the file list'
         $skills = @([IO.File]::ReadAllText((Join-Path $unz 'project\skills.json')) | ConvertFrom-Json)
-        Expect ($skills | Where-Object { $_.name -eq 'unity-cliext' -and $_.stamp }) "skills.json has no stamped unity-cliext: $(Short ($skills | ConvertTo-Json -Compress))"
+        Expect (@($skills | Where-Object { $_.name -eq 'unity-cliext' -and $_.stamp }).Count -gt 0) "skills.json has no stamped unity-cliext: $(Short ($skills | ConvertTo-Json -Compress))"
         "$([math]::Round($zip.Length / 1MB, 2)) MB, $(@(Get-ChildItem $unz -Recurse -File).Count) files, all expected ones there; skills: " + (($skills | ForEach-Object { "$($_.name)=$($_.status)" }) -join ', ')
     }
     finally { Remove-Item $out, $unz -Recurse -Force -ErrorAction SilentlyContinue }
@@ -2589,7 +2589,7 @@ function Get-UiInspect([string]$path) {
 function Get-UiSig {
     # The same text Get-UiMemory builds from the imported assets, from inspect's reading of the files.
     $els = New-Object Collections.Generic.List[string]
-    function Walk($nodes) { foreach ($n in @($nodes)) { if ($n -eq $null) { continue }; if ($n.name) { $els.Add("$($n.type)#$($n.name)" + (@(("$($n.class)" -split ' ') | Where-Object { $_ } | ForEach-Object { ".$_" }) -join '') + $(if ($n.text -ne $null) { "=$($n.text)" } else { '' })) }; Walk $n.children } }
+    function Walk($nodes) { foreach ($n in @($nodes)) { if ($n -eq $null) { continue }; if ($n.name) { $els.Add("$($n.type)#$($n.name)" + (@(("$($n.class)" -split ' ') | Where-Object { $_ } | Sort-Object | ForEach-Object { ".$_" }) -join '') + $(if ($n.text -ne $null) { "=$($n.text)" } else { '' })) }; Walk $n.children } }
     Walk (Get-UiInspect $script:uiUxml).tree
     $rules = @((Get-UiInspect $script:uiUss).rules | ForEach-Object { "$($_.selector){" + (@($_.properties | ForEach-Object { ($_ -split ':')[0] }) -join ',') + '}' })
     ($els -join ',') + '|' + ($rules -join ';')
@@ -2603,7 +2603,7 @@ var els = new System.Collections.Generic.List<string>();
 UnityEngine.UIElements.UQueryExtensions.Query<UnityEngine.UIElements.VisualElement>(vta.CloneTree()).ForEach(e =>
 {
     if (string.IsNullOrEmpty(e.name) || e.name.StartsWith("unity-")) return;
-    els.Add(e.GetType().Name + "#" + e.name + string.Concat(e.GetClasses().Where(c => !c.StartsWith("unity-")).Select(c => "." + c)) + (e is UnityEngine.UIElements.TextElement t ? "=" + t.text : ""));
+    els.Add(e.GetType().Name + "#" + e.name + string.Concat(e.GetClasses().Where(c => !c.StartsWith("unity-")).OrderBy(c => c, System.StringComparer.Ordinal).Select(c => "." + c)) + (e is UnityEngine.UIElements.TextElement t ? "=" + t.text : ""));
 });
 var F = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Public;
 var rules = new System.Collections.Generic.List<string>();
