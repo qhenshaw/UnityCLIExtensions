@@ -4890,7 +4890,7 @@ Add-Check 'xcut.skill-freshness' 'Cross-cutting: skill freshness' 'the installed
         foreach ($file in Get-ChildItem $skill.FullName -Recurse -File) {
             $rel = $file.FullName.Substring($skill.FullName.Length)
             $other = Join-Path $installed $rel
-            $norm = { param($p) ((Get-Content $p -Raw) -replace "`r", '' -split "`n" | Where-Object { $_ -notmatch '^<!-- unity-cliext[\w-]* \d' }) -join "`n" }
+            $norm = { param($p) ((Get-Content $p -Raw) -replace "`r", '' -split "`n" | Where-Object { $_ -notmatch '^<!-- [\w-]+ \d+\.\d+\.\d+: installed by Unity CLI Extensions' }) -join "`n" }
             if (-not (Test-Path $other)) { $stale += "$($skill.Name)$rel missing"; continue }
             # The installer fills {{cliext-tools}} with this package's Tools~ path.
             $want = (& $norm $file.FullName).Replace('{{cliext-tools}}', ($tools -replace '\\', '/'))

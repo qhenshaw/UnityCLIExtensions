@@ -865,6 +865,12 @@ The package ships Claude Code skills in `Skills~/`:
   slot names for VFX Graph 17.6, the defaults that spawn nothing, the C# side of event attributes, slow-motion
   captures) and ops templates in `ops/` (`burst.json`, `sparks.json`, `streak-from-source.json`) that apply cleanly
   and pass `cliext.vfx check` once their texture path is set.
+- Area skills with ops files, snippets or templates. These are installed only when their package is in the project:
+  `unity-cliext-shadergraph` (Shader Graph), `unity-cliext-animation` (Animator, clips, Timeline),
+  `unity-cliext-input` (Input System, including PlayMode input test templates), `unity-cliext-uitk` (UI Toolkit)
+  and `unity-cliext-addressables` (Addressables). `unity-cliext-import` (import settings, presets, .unitypackage
+  files) and `unity-cliext-asset-packs` (taking a few assets from a large art pack) are installed in every project.
+- `clarify`, installed in every project: asks the user multiple-choice questions until a task has no open questions.
 
 Agents find skills in the project's `.claude/skills/`, so the package puts them there itself:
 

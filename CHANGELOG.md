@@ -1,6 +1,26 @@
 # Changelog
 All notable changes to Unity CLI Extensions. Versions are git tags: install one with `https://github.com/qhenshaw/UnityCLIExtensions.git#<version>`.
 
+## 0.30.0
+Fixes from the T3 agent runs on 0.29.0, and area skills. 204 EditMode tests and 148 `cliext-clitest.ps1` checks pass.
+- `cliext-clitest.ps1`'s `xcut.skill-freshness` ignores the version stamp of every installed skill (it used to flag `clarify`).
+- **Area skills.** The installer now also installs `unity-cliext-shadergraph`, `-animation`, `-input`, `-uitk` and `-addressables` (each only when its package is in the project), `-import`, `-asset-packs` and `clarify` (always), with ops files, snippets and templates; the CLAUDE.md block says when to load each. `unity-cliext-input` carries PlayMode input test templates; `unity-cliext-asset-packs` indexes and extracts only the needed assets from a large .unitypackage and converts its materials.
+- **Shader Graph:** new `edit` ops `set_target` (alpha clipping, surface type and other Graph Settings, adding the blocks they use, so Alpha Clip Threshold is offered) and `set_mode` (slider with a range, integer, HDR colour). `inspect` shows target settings and property modes.
+- **Timeline:** an Edit-mode `cliext.timeline director --time` scrub puts the bound objects back and leaves the scene clean (`--keep-pose true` keeps the old behaviour); the reply lists each track's active clip; `--read` returns named objects' pose at that time.
+- **Clip references:** a bare model path with several clips, or a clip name two clips share, fails with exit 2 listing the clips and their lengths, in `cliext.animator`, `cliext.anim` and `cliext.timeline add_clip`.
+- **Folders:** `cliext.anim mask`, `cliext.vfx create` and `cliext.shadergraph create` make missing folders, and a folder made on disk but not imported yet no longer gets a stray `<Folder> 1` beside it.
+- **Input:** `cliext.input edit` warns when a control is already bound to another action, and when a binding's groups match no control scheme.
+- **UI Toolkit:** `set_value` returns `matches` like `click`; both warn when the selector matches more than one element.
+- `cliext-play-capture.ps1 -Run "a","b"` works through `powershell -File` (steps split at `;;` or a comma before a command); new `-DryRun`.
+- `cliext.presets set_default` now saves `ProjectSettings/PresetManager.asset`; before, the default lived only in the open Editor. A clean `audit` prints a summary record (`audited`, `presets`, `breaking: 0`, `note`); `list` with no defaults prints `{defaults: 0, note}`.
+- `cliext.presets create --only "<properties>" / --exclude "<properties>"` trim the preset through its excluded properties; the platform settings stay whole unless `--exclude` names `m_PlatformSettings`.
+- New `cliext.physics layers [--set "8=Player;9=Pickup"]`; `set_matrix --only "<layers>"` sets a whole row; `matrix` shows `unnamedIgnored` and takes `--all true`; `material --assign <object>` puts the material on its colliders.
+- New `cliext.navmesh obstacle` (box or capsule, size, center, carve, `--remove`).
+- `cliext.cinemachine set --rig follow|orbital|thirdperson|lookat|fixed`; `set` warns when a follow or look-at target can't move a camera that has no body or aim component.
+- `cliext.splines sample --count N` on a closed spline returns t = k/N (N different points); the help says what open and closed return.
+- `cliext.addressables analyze` no longer counts a "No issues found" result (severity None) as an issue.
+- Watchdog: the Missing signature dialog is brought to the front so the package answers it (rule `missing-signature`, action `focus`; `-Click "Import Anyway"` by hand). `-Status` adds a `note` on Unity-drawn modals, naming `cliext.package import` for this one. `-Click` acts on the blocking dialog before a progress window.
+
 ## 0.29.0
 T1/T2 for the nine systems groups (Cinemachine, Splines, NavMesh, Physics, Quality, import and presets, package import, asset dependencies and diffs, Addressables). `cliext-clitest.ps1` now calls every cliext command in the plan's 21 rows, with failure modes, and 171 EditMode tests pass.
 - **`cliext.package import` no longer opens a dialog.** Unity's non-interactive `ImportPackage` still showed the "Missing signature" modal and blocked the Editor. The package now reads the .unitypackage itself (gzip tar), checks everything first (refusing paths outside Assets/ or an existing Packages/ folder), writes files at their GUID's path, undoes a write that fails partway, and refreshes synchronously. New `--dry-run`; the reply lists created, replaced and unchanged paths; a package already imported exits 6. The obsolete `ImportPackage` call in setup uses `AssetPackage.Package.Import` on 6.6.
