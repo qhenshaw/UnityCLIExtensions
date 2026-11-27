@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using NUnit.Framework;
 using Unity.Cinemachine;
+using UnityEditor;
 using UnityEngine;
 
 namespace UnityCLIExtensions.Cinemachine.Tests
@@ -98,8 +99,9 @@ namespace UnityCLIExtensions.Cinemachine.Tests
             StringAssert.Contains("isn't under Assets/ or Packages/", Catch(() => CinemachineCommands.CheckNewAssetPath("C:/Blends.asset", out _)).Message);
             StringAssert.Contains("must end in .asset", Catch(() => CinemachineCommands.CheckNewAssetPath("Assets/Blends.txt", out _)).Message);
             StringAssert.Contains("pass --asset", Catch(() => CinemachineCommands.CheckNewAssetPath("", out _)).Message);
-            var folder = Catch(() => CinemachineCommands.CheckNewAssetPath("Assets/CmTestNoSuchFolder/Blends.asset", out _));
-            Assert.AreEqual("AnimNotFoundException", folder.GetType().Name);
+            Assert.AreEqual("Assets/CmTestNoSuchFolder/Blends.asset", CinemachineCommands.CheckNewAssetPath("Assets/CmTestNoSuchFolder/Blends.asset", out _),
+                "A missing folder is made when the asset is created (ProjectFolders.Ensure), not refused.");
+            Assert.IsFalse(AssetDatabase.IsValidFolder("Assets/CmTestNoSuchFolder"), "Checking the path makes nothing.");
             Assert.AreEqual("Assets/CmTestBlends.asset", CinemachineCommands.CheckNewAssetPath("Assets/CmTestBlends.asset", out var existing));
             Assert.IsNull(existing);
         }

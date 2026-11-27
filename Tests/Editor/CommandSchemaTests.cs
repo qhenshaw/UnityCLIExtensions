@@ -257,6 +257,17 @@ namespace UnityCLIExtensions.Tests
         }
 
         [Test]
+        public void SceneAssetParameters_CanBeGivenAsScene()
+        {
+            // Agents guess --scene for a scene path, as cliext.scene save_open names it; a command taking a scene asset
+            // under another name accepts --scene too (cliext.diff snapshot --path or --scene).
+            bool TakesScene(Arg a) => Regex.IsMatch(a.Description, @"\bscene \(\.unity\)|\.unity\)? path", RegexOptions.IgnoreCase);
+            AssertNone(Commands.Where(c => c.Args.Any(a => a.Name != "scene" && TakesScene(a)) && !c.Args.Any(a => a.Name == "scene"))
+                    .Select(c => $"{c.Id}: " + string.Join(", ", c.Args.Where(TakesScene).Select(a => "--" + a.Name))),
+                "Commands that take a scene asset but not as --scene");
+        }
+
+        [Test]
         public void AssetPaths_SayGuidWhereverTheGroupAcceptsIt()
         {
             var groupsWithGuid = AllArgs.Where(x => x.arg.Name == "path" && x.arg.Description.Contains("GUID"))

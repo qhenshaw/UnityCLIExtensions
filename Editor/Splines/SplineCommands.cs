@@ -78,10 +78,58 @@ namespace UnityCLIExtensions.Splines
             catch (ArgumentException e) { throw new AnimUsageException($"{arg}: {e.Message}"); }
         }
 
-        private static object DescribeSpline(SplineContainer c, int i, bool knots)
+        /// <summary>
+        /// The world bounds of the curve itself: each Bezier segment's end points plus its extremes on every axis (where
+        /// the derivative is zero). Spline.GetBounds is the hull of the knots and tangent handles, which is larger than the
+        /// curve wherever a tangent points outward (a 6-knot circle of radius 5 gets 10.10 for a 9.74 curve).
+        /// </summary>
+        internal static Bounds CurveBounds(Spline s, Matrix4x4 toWorld)
+        {
+            int curves = s.Closed ? s.Count : s.Count - 1;
+            if (s.Count == 0) return new Bounds(toWorld.MultiplyPoint3x4(Vector3.zero), Vector3.zero);
+            var b = new Bounds(toWorld.MultiplyPoint3x4((Vector3)s[0].Position), Vector3.zero);
+            for (int k = 0; k < curves; k++)
+            {
+                var curve = s.GetCurve(k);
+                // An affine transform maps a Bezier curve to the Bezier curve of the mapped control points.
+                Vector3 p0 = toWorld.MultiplyPoint3x4((Vector3)curve.P0), p1 = toWorld.MultiplyPoint3x4((Vector3)curve.P1),
+                        p2 = toWorld.MultiplyPoint3x4((Vector3)curve.P2), p3 = toWorld.MultiplyPoint3x4((Vector3)curve.P3);
+                b.Encapsulate(p0);
+                b.Encapsulate(p3);
+                for (int axis = 0; axis < 3; axis++)
+                    foreach (double t in DerivativeRoots(p0[axis], p1[axis], p2[axis], p3[axis]))
+                    {
+                        double u = 1 - t;
+                        b.Encapsulate((float)(u * u * u) * p0 + (float)(3 * u * u * t) * p1 + (float)(3 * u * t * t) * p2 + (float)(t * t * t) * p3);
+                    }
+            }
+            return b;
+        }
+
+        /// <summary>The t in (0, 1) where a cubic Bezier coordinate's derivative is zero.</summary>
+        private static IEnumerable<double> DerivativeRoots(double a, double b, double c, double d)
+        {
+            // B'(t)/3 = (b-a)(1-t)^2 + 2(c-b)(1-t)t + (d-c)t^2 = A t^2 + B t + C
+            double qa = (b - a) - 2 * (c - b) + (d - c), qb = 2 * ((c - b) - (b - a)), qc = b - a;
+            var roots = new List<double>();
+            if (Math.Abs(qa) < 1e-12) { if (Math.Abs(qb) > 1e-12) roots.Add(-qc / qb); }
+            else
+            {
+                double disc = qb * qb - 4 * qa * qc;
+                if (disc >= 0)
+                {
+                    double r = Math.Sqrt(disc);
+                    roots.Add((-qb + r) / (2 * qa));
+                    roots.Add((-qb - r) / (2 * qa));
+                }
+            }
+            return roots.Where(t => t > 0 && t < 1);
+        }
+
+        internal static object DescribeSpline(SplineContainer c, int i, bool knots)
         {
             var s = c.Splines[i];
-            var bounds = s.GetBounds(c.transform.localToWorldMatrix);
+            var bounds = CurveBounds(s, c.transform.localToWorldMatrix);
             return new
             {
                 index = i,
@@ -103,7 +151,7 @@ namespace UnityCLIExtensions.Splines
             };
         }
 
-        [CliGroupCommand(Group, "The SplineContainers in the open scenes, each spline's knot count, closed flag, world length and bounds.",
+        [CliGroupCommand(Group, "The SplineContainers in the open scenes, each spline's knot count, closed flag, world length and world bounds of the curve itself (boundsCenter, boundsSize; not the tangent handles).",
             Name = "list", Tags = new[] { "cliext", "splines" }, Effect = CommandEffect.ReadOnly)]
         internal static ExitCode List(CommandContext cmd)
         {

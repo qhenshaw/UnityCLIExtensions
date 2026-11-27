@@ -442,26 +442,111 @@ namespace UnityCLIExtensions.Assets
         private static string FirstSegment(string path) { int dot = path.IndexOf('.'); return dot < 0 ? path : path.Substring(0, dot); }
 
         /// <summary>
-        /// A --only or --exclude name as the property path it names in <paramref name="paths"/>: a path or the start of one
-        /// (m_TextureSettings, m_TextureSettings.m_FilterMode), any case, with or without the m_ (maxTextureSize). A name
-        /// inside the platform settings is refused: the block is kept or excluded whole. An unknown name is invalid usage.
+        /// Importer API property names (what cliext.import batch --set takes) whose serialized name differs from
+        /// m_&lt;Name&gt;: --only and --exclude take either. Each applies only where the preset has the path.
         /// </summary>
-        internal static string ResolveProperty(string given, IList<string> paths, string arg)
+        internal static readonly Dictionary<string, string[]> ApiAliases = new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase)
+        {
+            // TextureImporter
+            ["mipmapEnabled"] = new[] { "m_EnableMipMap" },
+            ["mipmapFilter"] = new[] { "m_MipMapMode" },
+            ["alphaSource"] = new[] { "m_AlphaUsage" },
+            ["heightmapScale"] = new[] { "m_HeightScale" },
+            ["anisoLevel"] = new[] { "m_TextureSettings.m_Aniso" },
+            ["filterMode"] = new[] { "m_TextureSettings.m_FilterMode" },
+            ["mipMapBias"] = new[] { "m_TextureSettings.m_MipBias" },
+            ["wrapMode"] = new[] { "m_TextureSettings.m_WrapU", "m_TextureSettings.m_WrapV", "m_TextureSettings.m_WrapW" },
+            ["wrapModeU"] = new[] { "m_TextureSettings.m_WrapU" },
+            ["wrapModeV"] = new[] { "m_TextureSettings.m_WrapV" },
+            ["wrapModeW"] = new[] { "m_TextureSettings.m_WrapW" },
+            ["swizzleR"] = new[] { "m_Swizzle" },
+            ["swizzleG"] = new[] { "m_Swizzle" },
+            ["swizzleB"] = new[] { "m_Swizzle" },
+            ["swizzleA"] = new[] { "m_Swizzle" },
+            ["spriteImportMode"] = new[] { "m_SpriteMode" },
+            ["spritePixelsPerUnit"] = new[] { "m_SpritePixelsToUnits" },
+            // ModelImporter
+            ["addCollider"] = new[] { "m_AddColliders" },
+            ["normalSmoothingAngle"] = new[] { "normalSmoothAngle" },
+            ["generateAnimations"] = new[] { "m_LegacyGenerateAnimations" },
+            ["skinWeights"] = new[] { "skinWeightsMode" },
+            ["importNormals"] = new[] { "normalImportMode" },
+            ["importBlendShapeNormals"] = new[] { "blendShapeNormalImportMode" },
+            ["importTangents"] = new[] { "tangentImportMode" },
+            ["bakeIK"] = new[] { "m_BakeSimulation" },
+            ["optimizeMeshPolygons"] = new[] { "meshOptimizationFlags" },
+            ["optimizeMeshVertices"] = new[] { "meshOptimizationFlags" },
+            // AudioImporter
+            ["defaultSampleSettings"] = new[] { "m_DefaultSettings" },
+        };
+
+        /// <summary>
+        /// Texture settings that live in each platform's entry of m_PlatformSettings (the API's maxTextureSize,
+        /// textureCompression, ... set the Default platform's), by API name, with their serialized field name.
+        /// </summary>
+        internal static readonly Dictionary<string, string> PlatformFields = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["maxTextureSize"] = "m_MaxTextureSize", ["textureCompression"] = "m_TextureCompression", ["compressionQuality"] = "m_CompressionQuality",
+            ["crunchedCompression"] = "m_CrunchedCompression", ["allowAlphaSplitting"] = "m_AllowsAlphaSplitting", ["resizeAlgorithm"] = "m_ResizeAlgorithm",
+            ["format"] = "m_TextureFormat", ["textureFormat"] = "m_TextureFormat", ["androidETC2FallbackOverride"] = "m_AndroidETC2FallbackOverride",
+            ["overridden"] = "m_Overridden", ["ignorePlatformSupport"] = "m_IgnorePlatformSupport",
+        };
+
+        private static bool Has(IList<string> paths, string prefix) => paths.Any(p => Covers(prefix, p));
+
+        /// <summary>
+        /// A --only or --exclude name as the property paths it names in <paramref name="paths"/>: a path or the start of one
+        /// (m_TextureSettings, m_TextureSettings.m_FilterMode), any case, with or without the m_ (enableMipMap), or the
+        /// importer's API name as cliext.import batch --set takes it (mipmapEnabled, filterMode, wrapMode, ...).
+        /// A texture platform setting by its API name (maxTextureSize, textureCompression, compressionQuality, ...) is the
+        /// whole m_PlatformSettings block (plus the old top-level copy when there is one): --only keeps it, and --exclude
+        /// refuses it, because a preset keeps or excludes that block whole. A path inside the block is refused for both.
+        /// An unknown name is invalid usage.
+        /// </summary>
+        internal static string[] ResolveProperty(string given, IList<string> paths, string arg)
         {
             string g = (given ?? "").Trim();
-            foreach (string c in g.StartsWith("m_", StringComparison.OrdinalIgnoreCase) ? new[] { g } : new[] { g, "m_" + g })
+            bool serialized = g.StartsWith("m_", StringComparison.OrdinalIgnoreCase) || g.Contains(".");
+            if (!serialized && PlatformFields.TryGetValue(g, out string field) && paths.Any(p => p.StartsWith(PlatformBlock + ".", StringComparison.Ordinal) && p.EndsWith("." + field, StringComparison.Ordinal)))
+            {
+                if (arg == "--exclude")
+                    throw new AnimUsageException($"--exclude '{g}' is a platform setting: it lives in every platform's entry of {PlatformBlock}, which a preset keeps or excludes whole. " +
+                                                 $"--exclude {PlatformBlock} drops every platform's size, compression and format; to keep the assets' own {g}, set it on the template first (cliext.import batch --set {g}=...) or leave the preset's {PlatformBlock} as it is.");
+                var withLegacy = new List<string> { PlatformBlock };
+                string legacy = paths.FirstOrDefault(p => string.Equals(p, field, StringComparison.OrdinalIgnoreCase));
+                if (legacy != null) withLegacy.Add(legacy);
+                return withLegacy.ToArray();
+            }
+            if (!serialized && ApiAliases.TryGetValue(g, out string[] alias) && alias.All(a => Has(paths, a))) return alias;
+            foreach (string c in serialized ? new[] { g } : new[] { g, "m_" + g })
             {
                 string hit = paths.FirstOrDefault(p => string.Equals(p, c, StringComparison.OrdinalIgnoreCase) || p.StartsWith(c + ".", StringComparison.OrdinalIgnoreCase));
                 if (hit == null) continue;
                 string resolved = hit.Substring(0, c.Length);
                 if (resolved.StartsWith(PlatformBlock + ".", StringComparison.Ordinal))
                     throw new AnimUsageException($"{arg} '{g}' is inside the platform settings, which a preset keeps or excludes whole: name {PlatformBlock} for all of them, or set the platform values on the template first (cliext.import batch --platform).");
-                return resolved;
+                return new[] { resolved };
+            }
+            if (!serialized)
+            {
+                // A field one level down by its own name (an audio clip's loadType is m_DefaultSettings.m_LoadType).
+                var inner = paths.Where(p => !Covers(PlatformBlock, p))
+                    .Select(p => { var parts = p.Split('.'); int i = Array.FindIndex(parts, 1, s => string.Equals(s, "m_" + g, StringComparison.OrdinalIgnoreCase) || string.Equals(s, g, StringComparison.OrdinalIgnoreCase)); return i < 1 ? null : string.Join(".", parts.Take(i + 1)); })
+                    .Where(p => p != null && !p.Contains("Array")).Distinct().ToList();
+                if (inner.Count == 1) return new[] { inner[0] };
             }
             var tops = paths.Select(FirstSegment).Distinct().ToList();
             string Strip(string t) => t.StartsWith("m_") ? t.Substring(2) : t;
             var close = AnimationErrors.Close(Strip(g), tops.Select(Strip)).Select(c => tops.First(t => Strip(t) == c)).Distinct().ToList();
-            throw new AnimUsageException($"{arg}: the preset has no property '{g}'.{(close.Count > 0 ? $" Did you mean: {string.Join(", ", close)}?" : "")} Properties: {string.Join(", ", tops)}.");
+            if (close.Count == 0)
+            {
+                // An API name a letter off (mipmapEnabld): offer the API name.
+                var api = ApiAliases.Where(kv => kv.Value.All(a => Has(paths, a))).Select(kv => kv.Key)
+                    .Concat(PlatformFields.Where(kv => paths.Any(p => p.StartsWith(PlatformBlock + ".", StringComparison.Ordinal) && p.EndsWith("." + kv.Value, StringComparison.Ordinal))).Select(kv => kv.Key)).ToList();
+                close = AnimationErrors.Close(g, api);
+            }
+            throw new AnimUsageException($"{arg}: the preset has no property '{g}'.{(close.Count > 0 ? $" Did you mean: {string.Join(", ", close)}?" : "")} " +
+                                         $"Properties (the m_ names, or the importer's API names as cliext.import batch --set takes them): {string.Join(", ", tops)}.");
         }
 
         /// <summary>
@@ -469,15 +554,34 @@ namespace UnityCLIExtensions.Assets
         /// and the platform settings (kept whole unless --exclude names m_PlatformSettings); then everything --exclude
         /// names. Empty when both are empty. Names that don't resolve, a name in both, or nothing left are invalid usage.
         /// </summary>
-        internal static string[] Exclusions(IList<string> paths, string only, string exclude)
+        internal static string[] Exclusions(IList<string> paths, string only, string exclude) => Exclusions(paths, only, exclude, null);
+
+        /// <summary>As <see cref="Exclusions(IList{string},string,string)"/>; <paramref name="resolved"/> gets "name -> path" for each name given in another form.</summary>
+        internal static string[] Exclusions(IList<string> paths, string only, string exclude, List<string> resolved)
         {
-            List<string> Names(string text, string arg) =>
-                (text ?? "").Split(new[] { ';', ',' }, StringSplitOptions.RemoveEmptyEntries).Select(x => x.Trim()).Where(x => x.Length > 0)
-                    .Select(x => ResolveProperty(x, paths, arg)).Distinct().ToList();
+            var from = new Dictionary<string, string>(StringComparer.Ordinal);
+            List<string> Names(string text, string arg)
+            {
+                var list = new List<string>();
+                foreach (string x in (text ?? "").Split(new[] { ';', ',' }, StringSplitOptions.RemoveEmptyEntries).Select(x => x.Trim()).Where(x => x.Length > 0))
+                {
+                    var r = ResolveProperty(x, paths, arg);
+                    // Only names that became something else than themselves with m_ (an API name, a platform setting).
+                    bool plain = r.Length == 1 && (string.Equals(r[0], x, StringComparison.OrdinalIgnoreCase) || string.Equals(r[0], "m_" + x, StringComparison.OrdinalIgnoreCase));
+                    if (resolved != null && !plain) resolved.Add($"{x} -> {string.Join(" + ", r)}");
+                    foreach (string p in r) { if (!from.ContainsKey(p)) from[p] = x; if (!list.Contains(p)) list.Add(p); }
+                }
+                return list;
+            }
             var keep = Names(only, "--only");
             var drop = Names(exclude, "--exclude");
             var both = drop.FirstOrDefault(d => keep.Any(k => Covers(k, d) || Covers(d, k)));
-            if (both != null) throw new AnimUsageException($"--only and --exclude both name {both}: name it in one of them.");
+            if (both != null)
+            {
+                var k0 = keep.First(k => Covers(k, both) || Covers(both, k));
+                string via = from.TryGetValue(k0, out string name) && name != k0 ? $" ({name} in --only is {k0})" : "";
+                throw new AnimUsageException($"--only and --exclude both name {both}{via}: name it in one of them.");
+            }
             var excluded = new List<string>();
             if (keep.Count > 0)
             {
@@ -502,18 +606,21 @@ namespace UnityCLIExtensions.Assets
         }
 
         [CliGroupCommand("cliext.presets", "Make a preset from an asset's importer (or any object asset) and save it at --out (.preset). It captures every setting; " +
-                                           "--only \"textureType;mipmapEnabled;maxTextureSize\" keeps just those (property paths such as m_TextureSettings.m_FilterMode, any case, m_ optional) and " +
-                                           "--exclude \"sRGBTexture;alphaUsage;swizzle\" leaves those out, so the assets keep their own values. Left-out properties go in the preset's excluded properties. " +
-                                           "The platform settings (m_PlatformSettings: per-platform size and compression) stay whole: --only keeps them, and they go only when --exclude names m_PlatformSettings. " +
-                                           "Exit 13 when --from or --out's folder is missing, 2 for a folder as --from, a path outside Assets/ or Packages/, or an --only/--exclude name the importer doesn't have (with the property names), " +
+                                           "--only \"textureType;mipmapEnabled;maxTextureSize\" keeps just those and --exclude \"sRGBTexture;alphaSource;filterMode\" leaves those out, so the assets keep their own values. " +
+                                           "Names are the importer's API names as cliext.import batch --set takes them (mipmapEnabled, filterMode, wrapMode, ...) or the serialized property paths (m_EnableMipMap, m_TextureSettings.m_FilterMode; any case, m_ optional); " +
+                                           "the result's resolved lists each name given in another form with the paths it became. Left-out properties go in the preset's excluded properties. " +
+                                           "The platform settings (m_PlatformSettings: every platform's maxTextureSize, textureCompression, compressionQuality, crunchedCompression, format) are kept or excluded whole: " +
+                                           "--only keeps them, so naming one of those in --only keeps the block; --exclude refuses those names and drops the block only when it names m_PlatformSettings. " +
+                                           "--out's folder is made when it is missing (a folder already on disk is imported). " +
+                                           "Exit 13 when --from is missing, 2 for a folder as --from, a path outside Assets/ or Packages/, or an --only/--exclude name the importer doesn't have (with the property names), " +
                                            "6 when --out already exists (pick another path, or asset delete it first).",
             Name = "create", Tags = new[] { "cliext", "assets", "presets" }, Effect = CommandEffect.Destructive)]
         internal static ExitCode Create(
             CommandContext cmd,
             [CliArg("from", "The asset whose import settings to capture", Required = true)] string from,
-            [CliArg("out", "Where to save the .preset", Required = true)] string outPath,
-            [CliArg("only", "Keep only these properties (separated by ';'); the platform settings stay")] string only = "",
-            [CliArg("exclude", "Leave these properties out (separated by ';'); m_PlatformSettings drops the platform settings")] string exclude = "")
+            [CliArg("out", "Where to save the .preset (its folder is made when missing)", Required = true)] string outPath,
+            [CliArg("only", "Keep only these properties (API or m_ names, separated by ';'); the platform settings stay")] string only = "",
+            [CliArg("exclude", "Leave these properties out (API or m_ names, separated by ';'); m_PlatformSettings drops the platform settings")] string exclude = "")
         {
             try
             {
@@ -523,7 +630,7 @@ namespace UnityCLIExtensions.Assets
                 string dst = ProjectPath(outPath, "--out");
                 if (!dst.EndsWith(".preset", StringComparison.OrdinalIgnoreCase)) dst += ".preset";
                 string dir = Path.GetDirectoryName(dst)?.Replace('\\', '/');
-                if (!AssetDatabase.IsValidFolder(dir)) throw new AnimNotFoundException($"--out: no folder '{dir}'. Create it first (asset create_folder --path {dir}).");
+                if (!ProjectFolders.IsProjectFolder(dir)) throw new AnimUsageException($"--out '{dst}': give a path in a folder under Assets/ (or inside a package), such as Assets/Presets/{Path.GetFileName(dst)}.");
                 if (AssetDatabase.LoadMainAssetAtPath(dst) != null || File.Exists(dst))
                 {
                     cmd.Fail($"--out '{dst}' already exists: pick another path, or delete it first (asset delete --asset {dst}) to replace it.");
@@ -534,15 +641,19 @@ namespace UnityCLIExtensions.Assets
                 var preset = new Preset(source);
                 if (!preset.IsValid()) throw new AnimUsageException($"--from '{src}': a preset can't be made from {AnimationErrors.A(source.GetType().Name)}.");
                 var paths = preset.PropertyModifications.Select(m => m.propertyPath).ToList();
-                var excluded = Exclusions(paths, only, exclude);
+                var resolved = new List<string>();
+                var excluded = Exclusions(paths, only, exclude, resolved);
                 if (excluded.Length > 0) preset.excludedProperties = excluded;
+                var made = ProjectFolders.Ensure(dir);
                 AssetDatabase.CreateAsset(preset, dst);
                 int kept = paths.Count(p => !excluded.Any(e => Covers(e, p)));
                 cmd.Result.Write(new
                 {
                     preset = dst, type = TypeName(preset.GetPresetType()), properties = paths.Count,
                     kept = excluded.Length > 0 ? kept : (int?)null,
+                    resolved = resolved.Count > 0 ? resolved : null,
                     excluded = excluded.Length > 0 ? excluded : null,
+                    foldersMade = made.Length > 0 ? made : null,
                     platformSettings = paths.Any(p => Covers(PlatformBlock, p)) ? (excluded.Contains(PlatformBlock) ? "excluded" : "kept") : null
                 });
                 return ExitCode.Success;
