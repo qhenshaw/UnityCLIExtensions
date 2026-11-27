@@ -914,13 +914,15 @@ deletes only the failure log).
 with every character other than a letter or digit replaced by `-`), the failure log and the field notes, and reports by
 cliext command or area:
 - failed tool calls by cause (`cliext`, `pipeline`, `shell`, `hook`, `permission`, `other`), classified as the T3 scorer
-  does, including errors printed by compound calls that exited 0;
+  does, including errors printed by compound calls that exited 0 (the logged errors a console read prints are data,
+  not failures);
 - reads and searches of the package's own source or README;
 - Edit or Write of files cliext commands edit (`.shadergraph`, `.vfx`, `.controller`, `.anim`, `.overrideController`,
   `.mask`, `.playable`, `.inputactions`, `.uxml`, `.uss`, `.preset`), and shell commands that write them;
 - three or more `--help` calls on one command in one transcript;
 - `script eval` and `cliext.eval run` calls, with an excerpt of the snippet;
-- for each area, whether its skill was loaded before the first call in that area;
+- for each area, whether its skill was loaded before the first call in that area (with the Skill tool, or by reading
+  its `SKILL.md` with Read or printing it from the shell);
 - each field note and each failure in the window, matched to the tool call that made it (by time, and by the note's
   text or the failure's command and error), with the 15 calls before it and the 5 after, their arguments, a short
   excerpt of each output, the session id and the transcript path. One that matches no call says so.

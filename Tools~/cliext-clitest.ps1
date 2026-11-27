@@ -480,7 +480,38 @@ Add-Check 'failures.field-report' 'cliext.dialogs, cliext.watchdog, cliext.failu
     }
 }
 
-Add-Check 'failures.report-zip' 'cliext.dialogs, cliext.watchdog, cliext.failures' 'cliext-report.ps1 -NoEditor builds a zip with the field report, state files, versions, skills, the CLAUDE.md block and README.txt (zip and folder deleted after)' {
+Add-Check 'failures.field-report-score' 'cliext.dialogs, cliext.watchdog, cliext.failures' 'cliext-field-report.ps1 classifies as score.py does: a SKILL.md printed from the shell counts as loaded, and logged errors a console read prints are not failed calls' {
+    # A made-up transcript in its own transcript root, so the check doesn't depend on this machine's sessions.
+    $root = Join-Path $work 'fr-transcripts'
+    $slug = $projectPath -replace '[^A-Za-z0-9]', '-'
+    $dir = Join-Path $root "$slug\clitest-session\subagents"
+    New-Item -ItemType Directory -Force $dir | Out-Null
+    $ts = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ss.fffZ')
+    function Use($id, $name, $inp) { @{ type = 'assistant'; timestamp = $ts; sessionId = 'clitest-session'; agentId = 'clitest'; message = @{ role = 'assistant'; content = @(@{ type = 'tool_use'; id = $id; name = $name; input = $inp }) } } | ConvertTo-Json -Depth 8 -Compress }
+    function Res($id, $text) { @{ type = 'user'; timestamp = $ts; sessionId = 'clitest-session'; agentId = 'clitest'; message = @{ role = 'user'; content = @(@{ type = 'tool_result'; tool_use_id = $id; content = $text; is_error = $false }) } } | ConvertTo-Json -Depth 8 -Compress }
+    $lines = @(
+        (Use 't1' 'Bash' @{ command = 'cat /e/Game/.claude/skills/unity-cliext/SKILL.md' }), (Res 't1' '# Unity CLI Extensions'),
+        (Use 't2' 'PowerShell' @{ command = 'Get-Content E:\Game\.claude\skills\unity-cliext-uitk\SKILL.md | Select-Object -First 40' }), (Res 't2' '# uitk'),
+        (Use 't3' 'PowerShell' @{ command = 'unity command console get --tail 5 --format json' }), (Res 't3' "error: NullReferenceException in Player.Update`n{`"logType`":`"Error`",`"message`":`"x`"}"),
+        (Use 't4' 'PowerShell' @{ command = 'unity command scene list --format json' }), (Res 't4' "error: No command named 'scene list'")
+    )
+    [IO.File]::WriteAllText((Join-Path $dir 'agent-clitest.jsonl'), ($lines -join "`n") + "`n")
+    $out = Join-Path $work 'fr-score'
+    $ErrorActionPreference = 'Continue'
+    $log = & powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $tools 'cliext-field-report.ps1') -Project $projectPath -TranscriptRoot $root -Days 1 -Out $out -Quiet 2>&1 | Out-String
+    $exit = $LASTEXITCODE
+    $ErrorActionPreference = 'Stop'
+    Expect ($exit -eq 0) "exit $exit`: $(Short $log)"
+    $r = [IO.File]::ReadAllText((Join-Path $out 'field-report.json')) | ConvertFrom-Json
+    $s = @($r.sessions) | Where-Object { $_.agentId -eq 'clitest' } | Select-Object -First 1
+    Expect ($s -ne $null) "no session for the made-up transcript: $(Short ($r.sessions | ConvertTo-Json -Compress))"
+    $skills = @($s.skillsLoaded) -join ', '
+    Expect ($skills -eq 'unity-cliext (shell), unity-cliext-uitk (shell)') "skills loaded: '$skills', expected both (shell)"
+    Expect ($s.toolCalls -eq 4 -and $s.failedCalls -eq 1 -and $s.embeddedFailures -eq 1) "calls $($s.toolCalls), failed $($s.failedCalls), embedded $($s.embeddedFailures); expected 4, 1 (the guessed scene list), 1"
+    "skills: $skills; 4 calls, 1 failed (the console read's logged errors not counted)"
+}
+
+Add-Check 'failures.report-zip''cliext.dialogs, cliext.watchdog, cliext.failures' 'cliext-report.ps1 -NoEditor builds a zip with the field report, state files, versions, skills, the CLAUDE.md block and README.txt (zip and folder deleted after)' {
     $out = Join-Path $work 'report'
     $unz = Join-Path $work 'report-unzipped'
     try {
