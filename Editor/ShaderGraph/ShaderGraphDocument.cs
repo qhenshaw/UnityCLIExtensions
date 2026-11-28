@@ -279,6 +279,9 @@ namespace UnityCLIExtensions.ShaderGraph
         internal string[] FragmentBlockNames() => graph.fragmentContext.blocks.Select(b => b.value.descriptor?.displayName).ToArray();
         internal Dictionary<string, string> FirstTargetSettings() => ShaderGraphOps.DescribeTargetSettings(graph.activeTargets.First());
 
+        /// <summary>For tests: each keyword as "reference type definition scope value".</summary>
+        internal string[] KeywordSummaries() => graph.keywords.Select(k => $"{k.referenceName} {k.keywordType} {k.keywordDefinition} {k.keywordScope} {k.value}").ToArray();
+
         public bool HasNode(string id) => !string.IsNullOrWhiteSpace(id) && graph.GetNodeFromId(id.Trim()) != null;
 
         public bool TryFindProperty(string idOrName, out AbstractShaderProperty property)
@@ -365,7 +368,7 @@ namespace UnityCLIExtensions.ShaderGraph
                 case "matrix4": return new Matrix4ShaderProperty();
                 case "gradient": return new GradientShaderProperty();
                 case "samplerstate": return new SamplerStateShaderProperty();
-                default: throw new ArgumentException($"Unknown property type '{type}': float, vector2, vector3, vector4, color, texture2d, texture2darray, texture3d, cubemap, boolean, matrix2-4, gradient, samplerstate.");
+                default: throw new ArgumentException($"Unknown property type '{type}': float, vector2, vector3, vector4, color, texture2d, texture2darray, texture3d, cubemap, boolean, matrix2-4, gradient, samplerstate; or keyword, enum_keyword.");
             }
         }
 

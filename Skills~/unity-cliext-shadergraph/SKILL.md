@@ -50,6 +50,11 @@ by their object id; a slot is `<node id>:<slot>`, by slot id, display name or sh
   default). Values: numbers, `true`/`false`, `[x,y,z,w]`, `#RRGGBB`, asset paths, enum names.
 - Other ops: `add_property` (`type`, `name`, `reference`, `value`), `remove`, `unlink`, `move`, `rename`
   (`name`/`reference` of a property), `expose` (`value` true/false), `add_port`/`remove_port` (Custom Function).
+- Keywords are `add_property` too: `type` `keyword` (Boolean) or `enum_keyword` (`entries` "Low, High"), with
+  `definition` (shader_feature, multi_compile, predefined, dynamic_branch) and `scope` (local, global). A pipeline
+  keyword a Custom Function needs (`_MAIN_LIGHT_SHADOWS`, ...) is `reference` that name, `multi_compile`, `global`.
+- A Custom Function's file: `{"op":"set","id":"<node>","setting":"functionSource","value":"<path>.hlsl"}` (the
+  reply's `value` is the file's GUID, as the graph stores it).
 
 ## Graph Settings and property modes
 

@@ -123,6 +123,7 @@ Never scrub with `--keep-pose true` to prove a pose, and never save a scrubbed p
 | animator `set_state` | `state` (name or `Sub/State`), `motion`, `set="speed=1.2;tag=Move;writeDefaultValues=false"` |
 | animator `set_transition` | `from` (state or `Any`), `to` (state or `Exit`), `index`, `conditions="P If;Speed Greater 0.1"` (`""` clears), `set="hasExitTime=true;exitTime=0.9;duration=0.1"` |
 | animator `add_blendtree` | `state` (new or existing), `type` Simple1D (default), SimpleDirectional2D, FreeformDirectional2D, FreeformCartesian2D, Direct; `parameter`, `parameterY` (Float); `children="<model>@<clip>@0;..."` (1D threshold or `@x,y`) |
+| animator `add_behaviour` / `remove_behaviour` | `state` (none: the layer's state machine), `type` (a StateMachineBehaviour class), `set="damage=10;window=0.2"` (its serialized fields); the reply lists every field. `remove_behaviour` takes `index` when there are several |
 | animator others | `set_layer` (`set="defaultWeight=1;blendingMode=Override;avatarMask=<path>"`), `set_default`, `set_parameter` (`value`), `rename_state`, `remove_*`, `add_substatemachine`; every op takes `layer` (name or index, default 0) |
 | anim `edit_clips` | `add_clip` (`name`, `take`, `first`, `last` frames, `set`), `set_clip`, `remove_clip`, `set_events` (`events="0.5:Fn;0.9:Fn:Param"`), `set_mask` (`mask` path or `none`) |
 | anim `edit_clip` (.anim) | `set_key` / `remove_key` (`path`, `type`, `property`, `time`, `value`, `tangent`), `add_event`, `remove_event`, `set_settings` |

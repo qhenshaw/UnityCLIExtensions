@@ -42,6 +42,12 @@ namespace UnityCLIExtensions.ShaderGraph
         /// <summary>For set_mode slider: the range.</summary>
         public float min = float.NaN;
         public float max = float.NaN;
+        /// <summary>For add_property of a keyword: shader_feature (default), multi_compile, predefined or dynamic_branch.</summary>
+        public string definition;
+        /// <summary>For add_property of a keyword: local (default) or global.</summary>
+        public string scope;
+        /// <summary>For add_property of an enum keyword: its entries, "Low, Medium, High" or "Low=LOW, High=HIGH" (reference suffixes).</summary>
+        public string entries;
     }
 
     [Serializable]
@@ -95,6 +101,9 @@ namespace UnityCLIExtensions.ShaderGraph
                 }
                 case "add_property":
                 {
+                    if (ParseKeywordType(op.type) is KeywordType keywordType) return AddKeyword(graph, op, keywordType, aliases);
+                    if (op.definition != null || op.scope != null || op.entries != null)
+                        throw new ArgumentException("definition, scope and entries are for a keyword: type keyword (a Boolean keyword) or enum_keyword.");
                     var property = ShaderGraphDocument.NewProperty(op.type);
                     graph.AddGraphInput(property);
                     property.SetDisplayNameAndSanitizeForGraph(graph, string.IsNullOrWhiteSpace(op.name) ? property.displayName : op.name);
@@ -128,6 +137,13 @@ namespace UnityCLIExtensions.ShaderGraph
                         graph.RemoveNode(node);
                         return new { op = "remove", id, removed = node.name };
                     }
+                    var keyword = graph.keywords.FirstOrDefault(k => k.objectId == id || k.referenceName == id || string.Equals(k.displayName, id, StringComparison.OrdinalIgnoreCase));
+                    if (keyword != null && !doc.TryFindProperty(id, out _))
+                    {
+                        if (keyword.isBuiltIn) throw new ArgumentException($"{keyword.displayName} is a built-in keyword and can't be removed.");
+                        graph.RemoveGraphInput(keyword);
+                        return new { op = "remove", id, removed = keyword.displayName };
+                    }
                     if (!doc.TryFindProperty(id, out var property))
                         throw new ArgumentException($"No node or property '{op.id}'. See cliext.shadergraph inspect for the ids" +
                                                     (graph.properties.Any() ? $" (properties: {string.Join(", ", graph.properties.Select(x => x.displayName))})." : "."));
@@ -142,7 +158,10 @@ namespace UnityCLIExtensions.ShaderGraph
                         var node = doc.FindNode(Id(op.id));
                         var member = Settings(node).FirstOrDefault(p => string.Equals(p.Name, op.setting, StringComparison.OrdinalIgnoreCase))
                                      ?? throw new ArgumentException($"{node.name} has no setting '{op.setting}'. It has: {string.Join(", ", Settings(node).Select(p => p.Name))}");
-                        member.SetValue(node, ValueText.Parse(op.value, member.PropertyType));
+                        string text = op.value;
+                        if (node is CustomFunctionNode && string.Equals(member.Name, "functionSource", StringComparison.OrdinalIgnoreCase))
+                            text = FunctionSourceGuid(text);
+                        member.SetValue(node, ValueText.Parse(text, member.PropertyType));
                         node.Dirty(ModificationScope.Topological);
                         return new { op = "set", id = op.id, setting = member.Name, value = ValueText.Format(member.GetValue(node)) };
                     }
@@ -359,6 +378,103 @@ namespace UnityCLIExtensions.ShaderGraph
                 blocksInactive = inactive.Length > 0 ? inactive : null
             };
         }
+
+        /// <summary>
+        /// A Custom Function's functionSource is the .hlsl file's GUID: Shader Graph reports "Source file does not exist"
+        /// for anything else. Takes a path (Assets/... or Packages/...) or a GUID and returns the GUID of an existing file.
+        /// </summary>
+        internal static string FunctionSourceGuid(string value)
+        {
+            string v = (value ?? "").Trim();
+            if (v.Length == 0) return v;
+            string path = UnityEditor.AssetDatabase.GUIDToAssetPath(v);
+            if (!string.IsNullOrEmpty(path) && UnityEditor.AssetDatabase.LoadMainAssetAtPath(path) != null) return v;
+            string guid = UnityEditor.AssetDatabase.AssetPathToGUID(v.Replace('\\', '/'), UnityEditor.AssetPathToGUIDOptions.OnlyExistingAssets);
+            if (!string.IsNullOrEmpty(guid))
+            {
+                string ext = System.IO.Path.GetExtension(v).ToLowerInvariant();
+                if (ext != ".hlsl" && ext != ".cginc") throw new ArgumentException($"functionSource '{v}' isn't an .hlsl or .cginc file.");
+                return guid;
+            }
+            throw new ArgumentException($"functionSource '{v}' is neither an asset path nor the GUID of an asset. Pass the .hlsl file's path (Assets/...) or its GUID.");
+        }
+
+        public static bool IsKeywordType(string type) => ParseKeywordType(type) != null;
+
+        private static KeywordType? ParseKeywordType(string type)
+        {
+            switch ((type ?? "").Trim().ToLowerInvariant().Replace("-", "_"))
+            {
+                case "keyword": case "boolean_keyword": case "bool_keyword": case "keyword_boolean": case "keyword_bool": return KeywordType.Boolean;
+                case "enum_keyword": case "keyword_enum": return KeywordType.Enum;
+                default: return null;
+            }
+        }
+
+        private static object AddKeyword(GraphData graph, ShaderGraphOp op, KeywordType type, Dictionary<string, string> aliases)
+        {
+            var keyword = new ShaderKeyword(type);
+            switch ((op.definition ?? "shader_feature").Trim().ToLowerInvariant().Replace("-", "_"))
+            {
+                case "shader_feature": case "shaderfeature": keyword.keywordDefinition = KeywordDefinition.ShaderFeature; break;
+                case "multi_compile": case "multicompile": keyword.keywordDefinition = KeywordDefinition.MultiCompile; break;
+                case "predefined": keyword.keywordDefinition = KeywordDefinition.Predefined; break;
+                case "dynamic_branch": case "dynamicbranch": keyword.keywordDefinition = KeywordDefinition.DynamicBranch; break;
+                default: throw new ArgumentException($"'{op.definition}' isn't a keyword definition: shader_feature, multi_compile, predefined or dynamic_branch.");
+            }
+            switch ((op.scope ?? "local").Trim().ToLowerInvariant())
+            {
+                case "local": keyword.keywordScope = KeywordScope.Local; break;
+                case "global": keyword.keywordScope = KeywordScope.Global; break;
+                default: throw new ArgumentException($"'{op.scope}' isn't a keyword scope: local or global.");
+            }
+            if (type == KeywordType.Enum && !string.IsNullOrWhiteSpace(op.entries))
+            {
+                var list = new List<KeywordEntry>();
+                foreach (string part in op.entries.Split(',').Select(s => s.Trim()).Where(s => s.Length > 0))
+                {
+                    int eq = part.IndexOf('=');
+                    string display = eq < 0 ? part : part.Substring(0, eq).Trim();
+                    string reference = eq < 0 ? part.ToUpperInvariant().Replace(' ', '_') : part.Substring(eq + 1).Trim();
+                    list.Add(new KeywordEntry(list.Count + 1, display, reference));
+                }
+                if (list.Count < 2) throw new ArgumentException("An enum keyword needs at least two entries (\"Low, High\").");
+                keyword.entries = list;
+            }
+            else if (op.entries != null && type != KeywordType.Enum)
+                throw new ArgumentException("entries are for type enum_keyword.");
+            graph.AddGraphInput(keyword);
+            keyword.SetDisplayNameAndSanitizeForGraph(graph, string.IsNullOrWhiteSpace(op.name) ? keyword.displayName : op.name);
+            keyword.SetReferenceNameAndSanitizeForGraph(graph, string.IsNullOrWhiteSpace(op.reference) ? null : op.reference);
+            if (op.value != null)
+            {
+                string v = op.value.Trim();
+                if (type == KeywordType.Boolean)
+                    keyword.value = (bool)ValueText.Parse(v, typeof(bool)) ? 1 : 0;
+                else
+                {
+                    int index = keyword.entries.FindIndex(e => string.Equals(e.displayName, v, StringComparison.OrdinalIgnoreCase) || string.Equals(e.referenceName, v, StringComparison.OrdinalIgnoreCase));
+                    if (index < 0 && !(int.TryParse(v, out index) && index >= 0 && index < keyword.entries.Count))
+                        throw new ArgumentException($"'{v}' isn't an entry of {keyword.displayName}: {string.Join(", ", keyword.entries.Select(e => e.displayName))}.");
+                    keyword.value = index;
+                }
+            }
+            if (!string.IsNullOrEmpty(op.@as)) aliases[op.@as] = keyword.objectId;
+            return new AddedItem { op = "add_property", id = keyword.objectId, alias = op.@as, type = type + " keyword", name = keyword.displayName };
+        }
+
+        public static object DescribeKeyword(ShaderKeyword k) => new
+        {
+            id = k.objectId,
+            name = k.displayName,
+            reference = k.referenceName,
+            type = k.keywordType.ToString(),
+            definition = k.keywordDefinition.ToString(),
+            scope = k.keywordScope.ToString(),
+            entries = k.keywordType == KeywordType.Enum ? k.entries.Select(e => $"{e.displayName}={e.referenceName}").ToArray() : null,
+            value = k.keywordType == KeywordType.Enum && k.value >= 0 && k.value < k.entries.Count ? (object)k.entries[k.value].displayName : k.keywordType == KeywordType.Boolean ? (object)(k.value != 0) : k.value,
+            builtIn = k.isBuiltIn ? true : (bool?)null
+        };
 
         private static string ValueHint(Type t) =>
             t == typeof(bool) ? "true or false" : t.IsEnum ? string.Join(", ", Enum.GetNames(t)) : "a number";

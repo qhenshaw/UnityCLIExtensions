@@ -127,7 +127,7 @@ function Compile-AndWait {
 function Get-Diagnostics {
     $r = Invoke-Cli @('cliext.compile', 'diagnostics', '--warnings', 'false', '--format', 'json')
     $items = @()
-    if ($r.json -ne $null) { $items = @($r.json) }
+    if ($r.json -ne $null) { $items = @(@($r.json) | Where-Object { -not ($_.PSObject.Properties.Name -contains 'clean') }) }
     return , $items
 }
 
@@ -509,6 +509,37 @@ Add-Check 'failures.field-report-score' 'cliext.dialogs, cliext.watchdog, cliext
     Expect ($skills -eq 'unity-cliext (shell), unity-cliext-uitk (shell)') "skills loaded: '$skills', expected both (shell)"
     Expect ($s.toolCalls -eq 4 -and $s.failedCalls -eq 1 -and $s.embeddedFailures -eq 1) "calls $($s.toolCalls), failed $($s.failedCalls), embedded $($s.embeddedFailures); expected 4, 1 (the guessed scene list), 1"
     "skills: $skills; 4 calls, 1 failed (the console read's logged errors not counted)"
+}
+
+Add-Check 'failures.field-report-attribution' 'cliext.dialogs, cliext.watchdog, cliext.failures' 'cliext-field-report.ps1 puts a failure in a line of several commands on the one its error belongs to (a snippet error on the snippet, a wait timeout on wait_until), and reads a session copied into a second file once' {
+    $root = Join-Path $work 'fr-attr-transcripts'
+    $slug = $projectPath -replace '[^A-Za-z0-9]', '-'
+    $dir = Join-Path $root $slug
+    New-Item -ItemType Directory -Force $dir | Out-Null
+    $ts = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ss.fffZ')
+    function Use($id, $cmd) { @{ type = 'assistant'; timestamp = $ts; sessionId = 'clitest-attr'; message = @{ role = 'assistant'; content = @(@{ type = 'tool_use'; id = $id; name = 'PowerShell'; input = @{ command = $cmd } }) } } | ConvertTo-Json -Depth 8 -Compress }
+    function Res($id, $text) { @{ type = 'user'; timestamp = $ts; sessionId = 'clitest-attr'; message = @{ role = 'user'; content = @(@{ type = 'tool_result'; tool_use_id = $id; content = $text; is_error = $true }) } } | ConvertTo-Json -Depth 8 -Compress }
+    $lines = @(
+        (Use 'a1' 'unity command cliext.wait idle --format json | Out-Null; unity command cliext.eval run --file x.cs --format json; unity command cliext.compile diagnostics --format json'),
+        (Res 'a1' 'Exit code 6 error: RUNTIME_EXCEPTION: Runtime Error. NullReferenceException'),
+        (Use 'a2' 'unity command cliext.failures note --file n.json | Out-Null; unity command cliext.playmode wait_until --file ready.cs'),
+        (Res 'a2' "Exit code 6 error: Not ready after 50 s; the snippet last returned 'x'.")
+    )
+    $text = ($lines -join "`n") + "`n"
+    [IO.File]::WriteAllText((Join-Path $dir 'clitest-attr.jsonl'), $text)
+    [IO.File]::WriteAllText((Join-Path $dir 'clitest-attr-copy.jsonl'), $text)
+    $out = Join-Path $work 'fr-attr'
+    $ErrorActionPreference = 'Continue'
+    $log = & powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $tools 'cliext-field-report.ps1') -Project $projectPath -TranscriptRoot $root -Days 1 -Out $out -Quiet 2>&1 | Out-String
+    $exit = $LASTEXITCODE
+    $ErrorActionPreference = 'Stop'
+    Expect ($exit -eq 0) "exit $exit`: $(Short $log)"
+    $r = [IO.File]::ReadAllText((Join-Path $out 'field-report.json')) | ConvertFrom-Json
+    $rows = (@($r.failedByCommand) | ForEach-Object { "$($_.command)=$($_.count)" } | Sort-Object) -join ', '
+    Expect ($rows -eq 'cliext.eval run=1, cliext.playmode wait_until=1') "failed calls by command: '$rows', expected cliext.eval run=1, cliext.playmode wait_until=1"
+    $sessions = @(@($r.sessions) | Where-Object { $_.sessionId -eq 'clitest-attr' }).Count
+    Expect ($sessions -eq 1) "the session copied into two files was read $sessions times"
+    "by command: $rows; the copied session read once"
 }
 
 Add-Check 'failures.report-zip' 'cliext.dialogs, cliext.watchdog, cliext.failures' 'cliext-report.ps1 -NoEditor builds a zip with the field report, state files, versions, skills, the CLAUDE.md block and README.txt (zip and folder deleted after)' {
@@ -5377,7 +5408,7 @@ Add-Check 'env.ps51-quoted-code' 'Environment' 'the core skill says to pass C# s
 Add-Check 'env.skill-pipeline-names' 'Environment' 'the core skill names the Pipeline commands agents guess wrong (scene list_open, scene get_hierarchy, editor.playmode start), each of which the Editor has and the guess scene list it doesn''t; and it says to write ops files with the Write tool, that capture --camera needs a Camera, and to check the scene diff after a save' {
     $skill = Get-Content (Join-Path $packageRoot 'Skills~\unity-cliext\SKILL.md') -Raw
     $missing = @()
-    foreach ($w in @('scene list_open', 'scene get_hierarchy', 'editor.playmode start', 'Write tool', 'capture game_view --camera', 'Camera component', 'Cinemachine brain')) {
+    foreach ($w in @('scene list_open', 'scene get_hierarchy', 'editor.playmode start', 'Write tool', 'capture game_view --camera', 'Camera component', 'drivenBy: CinemachineBrain', 'cliext.scene save_open')) {
         if ($skill -notmatch [regex]::Escape($w)) { $missing += $w }
     }
     Expect ($missing.Count -eq 0) "the core skill doesn't say: $($missing -join ', ')"

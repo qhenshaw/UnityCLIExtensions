@@ -216,5 +216,40 @@ namespace UnityCLIExtensions.ShaderGraph.Tests
             Assert.AreEqual("false", reopened.FirstTargetSettings()["alphaClip"].ToLowerInvariant());
             Assert.AreEqual("Default", ShaderGraphOps.PropertyMode(reopened.FindProperty("Amount")));
         }
+
+        [Test]
+        public void AddProperty_OfKeywords_SavesTheirDefinitionScopeAndEntries()
+        {
+            var doc = NewGraph("Keywords");
+            var aliases = new Dictionary<string, string>();
+            Apply(doc, aliases, new ShaderGraphOp { op = "add_property", type = "keyword", name = "Main Light Shadows", reference = "_MAIN_LIGHT_SHADOWS", definition = "multi_compile", scope = "global" });
+            Apply(doc, aliases, new ShaderGraphOp { op = "add_property", type = "enum_keyword", name = "Quality", reference = "_QUALITY", entries = "Low, High", value = "High" });
+            StringAssert.Contains("shader_feature, multi_compile", Assert.Throws<ArgumentException>(() =>
+                Apply(doc, aliases, new ShaderGraphOp { op = "add_property", type = "keyword", name = "Bad", definition = "sometimes" })).Message);
+            StringAssert.Contains("for a keyword", Assert.Throws<ArgumentException>(() =>
+                Apply(doc, aliases, new ShaderGraphOp { op = "add_property", type = "float", name = "F", scope = "global" })).Message);
+            doc.Save();
+            var keywords = ShaderGraphDocument.Open(doc.path).KeywordSummaries();
+            CollectionAssert.Contains(keywords, "_MAIN_LIGHT_SHADOWS Boolean MultiCompile Global 0");
+            CollectionAssert.Contains(keywords, "_QUALITY Enum ShaderFeature Local 1");
+            Apply(ShaderGraphDocument.Open(doc.path), new Dictionary<string, string>(), new ShaderGraphOp { op = "remove", id = "Quality" });
+        }
+
+        [Test]
+        public void SetFunctionSource_ToAPath_StoresTheFilesGuid()
+        {
+            var doc = NewGraph("FunctionSource");
+            string hlsl = $"{Folder}/Glow_{Guid.NewGuid():N}.hlsl";
+            File.WriteAllText(hlsl, "void Glow_float(float In, out float Out) { Out = In; }\n");
+            AssetDatabase.ImportAsset(hlsl);
+            var aliases = new Dictionary<string, string>();
+            Apply(doc, aliases, new ShaderGraphOp { op = "add_node", type = "Utility/Custom Function", @as = "cf" });
+            var set = Apply(doc, aliases, new ShaderGraphOp { op = "set", id = "$cf", setting = "functionSource", value = hlsl });
+            Assert.AreEqual(AssetDatabase.AssetPathToGUID(hlsl), set.GetType().GetProperty("value").GetValue(set));
+            Assert.AreEqual(AssetDatabase.AssetPathToGUID(hlsl), ShaderGraphOps.FunctionSourceGuid(AssetDatabase.AssetPathToGUID(hlsl)));
+            Assert.AreEqual(AssetDatabase.AssetPathToGUID(hlsl), ShaderGraphOps.FunctionSourceGuid(hlsl));
+            StringAssert.Contains("neither an asset path nor the GUID", Assert.Throws<ArgumentException>(() =>
+                Apply(doc, aliases, new ShaderGraphOp { op = "set", id = "$cf", setting = "functionSource", value = "Assets/Nope/Missing.hlsl" })).Message);
+        }
     }
 }

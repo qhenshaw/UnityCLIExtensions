@@ -30,7 +30,7 @@ namespace UnityCLIExtensions.Animation
         public string conditions;
         /// <summary>For motions: an AnimationClip path (or a sub-asset: Assets/Char.fbx@Run).</summary>
         public string motion;
-        /// <summary>For add_blendtree: Simple1D, SimpleDirectional2D, FreeformDirectional2D, FreeformCartesian2D, Direct.</summary>
+        /// <summary>For add_blendtree: Simple1D, SimpleDirectional2D, FreeformDirectional2D, FreeformCartesian2D, Direct. For add_behaviour/remove_behaviour: the StateMachineBehaviour class.</summary>
         public string type;
         public string parameter;
         public string parameterY;
@@ -152,6 +152,50 @@ namespace UnityCLIExtensions.Animation
                 done.Add(prop != null ? prop.Name : field.Name);
             }
             return done;
+        }
+
+        /// <summary>A StateMachineBehaviour class by name or full name, from every loaded assembly.</summary>
+        public static Type FindBehaviourType(string name)
+        {
+            string n = name.Trim();
+            var all = TypeCache.GetTypesDerivedFrom<StateMachineBehaviour>().Where(t => !t.IsAbstract && !t.IsGenericTypeDefinition).ToList();
+            var m = all.Where(t => t.FullName == n).ToList();
+            if (m.Count == 0) m = all.Where(t => string.Equals(t.Name, n, StringComparison.OrdinalIgnoreCase)).ToList();
+            if (m.Count == 1) return m[0];
+            if (m.Count > 1) throw new ArgumentException($"'{n}' names {m.Count} behaviours: {string.Join(", ", m.Select(t => t.FullName))}. Use the full name.");
+            throw new ArgumentException($"No StateMachineBehaviour class '{n}'." + (all.Count == 0
+                ? " The project has none: write one (a class deriving from StateMachineBehaviour), compile, then add it."
+                : AnimationErrors.Hint(n, all.Select(t => t.Name), "Behaviours", "the project's scripts")));
+        }
+
+        /// <summary>Sets serialized fields (public or [SerializeField]) from "name=value;name=value", as the Inspector would.</summary>
+        public static List<string> SetSerialized(UnityEngine.Object target, string pairs)
+        {
+            var done = new List<string>();
+            if (string.IsNullOrWhiteSpace(pairs)) return done;
+            var so = new SerializedObject(target);
+            foreach (string pair in pairs.Split(new[] { ';' }, StringSplitOptions.RemoveEmptyEntries))
+            {
+                int eq = pair.IndexOf('=');
+                if (eq <= 0) throw new ArgumentException($"'{pair}' isn't name=value.");
+                string name = pair.Substring(0, eq).Trim(), text = pair.Substring(eq + 1).Trim();
+                var p = so.FindProperty(name) ?? so.FindProperty("m_" + name)
+                        ?? throw new ArgumentException($"{target.GetType().Name} has no serialized field '{name}'. It has: {string.Join(", ", SerializedFields(target).Keys)}.");
+                SerializedText.Write(p, text);
+                done.Add(p.name);
+            }
+            so.ApplyModifiedPropertiesWithoutUndo();
+            return done;
+        }
+
+        /// <summary>A behaviour's own serialized fields and their values (not m_Script or Unity's own).</summary>
+        public static Dictionary<string, string> SerializedFields(UnityEngine.Object target)
+        {
+            var fields = new Dictionary<string, string>();
+            var p = new SerializedObject(target).GetIterator();
+            for (bool enter = true; p.NextVisible(enter); enter = false)
+                if (p.name != "m_Script") fields[p.name] = SerializedText.Read(p);
+            return fields;
         }
 
         private static bool IsSimple(Type t) => t.IsPrimitive || t.IsEnum || t == typeof(string) || t == typeof(Motion) || t == typeof(AvatarMask);
@@ -357,8 +401,40 @@ namespace UnityCLIExtensions.Animation
                     }
                     return new { op = "add_blendtree", state = op.state, type = tree.blendType.ToString(), children = tree.children.Length };
                 }
+                case "add_behaviour":
+                case "add_behavior":
+                {
+                    if (string.IsNullOrWhiteSpace(op.type)) throw new ArgumentException("add_behaviour needs type: a StateMachineBehaviour class in the project (its name or full name).");
+                    var behaviourType = FindBehaviourType(op.type);
+                    StateMachineBehaviour added;
+                    string on;
+                    if (string.IsNullOrWhiteSpace(op.state)) { added = root.AddStateMachineBehaviour(behaviourType); on = $"layer {layers[li].name}"; }
+                    else { var (state, _) = FindState(root, op.state); added = state.AddStateMachineBehaviour(behaviourType); on = op.state; }
+                    if (added == null)
+                        throw new ArgumentException($"Unity didn't add {behaviourType.Name} to {on}: it found no script for the class. A StateMachineBehaviour has to be in a runtime " +
+                                                    $"(not Editor-only) assembly, in a .cs file named {behaviourType.Name}.cs. {behaviourType.Name} is in {behaviourType.Assembly.GetName().Name}.");
+                    var done = SetSerialized(added, op.set);
+                    return new { op = "add_behaviour", on, type = behaviourType.FullName, set = done, fields = SerializedFields(added) };
+                }
+                case "remove_behaviour":
+                case "remove_behavior":
+                {
+                    if (string.IsNullOrWhiteSpace(op.type)) throw new ArgumentException("remove_behaviour needs type (the behaviour's class name) and state (none for the layer's state machine).");
+                    StateMachineBehaviour[] list;
+                    string on;
+                    AnimatorState st = null;
+                    if (string.IsNullOrWhiteSpace(op.state)) { list = root.behaviours; on = $"layer {layers[li].name}"; }
+                    else { st = FindState(root, op.state).state; list = st.behaviours; on = op.state; }
+                    var matches = list.Where(b => b != null && (string.Equals(b.GetType().Name, op.type.Trim(), StringComparison.OrdinalIgnoreCase) || b.GetType().FullName == op.type.Trim())).ToList();
+                    if (matches.Count == 0) throw new ArgumentException($"{on} has no {op.type} behaviour. It has: {(list.Length == 0 ? "none" : string.Join(", ", list.Where(b => b != null).Select(b => b.GetType().Name)))}.");
+                    if (op.index < 0 || op.index >= matches.Count) throw new ArgumentException($"{on} has {matches.Count} {op.type} behaviour(s); index {op.index} is out of range.");
+                    var keep = list.Where(b => b != matches[op.index]).ToArray();
+                    if (st != null) st.behaviours = keep; else root.behaviours = keep;
+                    UnityEngine.Object.DestroyImmediate(matches[op.index], true);
+                    return new { op = "remove_behaviour", on, type = op.type };
+                }
                 default:
-                    throw new ArgumentException($"Unknown op '{op.op}'. Ops: remove_state, rename_state, set_state, set_default, add_substatemachine, remove_substatemachine, set_transition, remove_transition, remove_parameter, set_parameter, set_layer, remove_layer, add_blendtree.");
+                    throw new ArgumentException($"Unknown op '{op.op}'. Ops: remove_state, rename_state, set_state, set_default, add_substatemachine, remove_substatemachine, set_transition, remove_transition, remove_parameter, set_parameter, set_layer, remove_layer, add_blendtree, add_behaviour, remove_behaviour.");
             }
         }
 

@@ -893,10 +893,14 @@ namespace UnityCLIExtensions.UIToolkit
                         return ExitCode.Failed;
                     }
                 }
-                using (var submit = NavigationSubmitEvent.GetPooled()) { submit.target = target; target.SendEvent(submit); }
-                using (var click = ClickEvent.GetPooled()) { click.target = target; target.SendEvent(click); }
+                // Name the target before its handlers run: a handler that rebuilds the UI can remove it from the tree.
+                string path = PathOf(target);
                 WarnIfAmbiguous(cmd, selector, match, "clicked");
-                cmd.Result.Write(new { clicked = PathOf(target), matches = match.Count });
+                using (var submit = NavigationSubmitEvent.GetPooled()) { submit.target = target; target.SendEvent(submit); }
+                if (target.panel != null)
+                    using (var click = ClickEvent.GetPooled()) { click.target = target; target.SendEvent(click); }
+                bool removed = target.panel == null;
+                cmd.Result.Write(new { clicked = path, matches = match.Count, removedByHandler = removed ? true : (bool?)null });
                 return ExitCode.Success;
             }
             catch (ArgumentException e) { return LiveFail(cmd, e); }

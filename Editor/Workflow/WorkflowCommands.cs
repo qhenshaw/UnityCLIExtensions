@@ -264,14 +264,25 @@ namespace UnityCLIExtensions
         }
 
         [CliGroupCommand(CompileGroup, "The standing compile errors and warnings: each assembly's messages from its last compile, with file, line, column and code. Errors first. " +
-                                       "Kept in Library/CLIExtensions/compile.json, so it answers after a domain reload and when nothing recompiled.",
+                                       "Kept in Library/CLIExtensions/compile.json, so it answers after a domain reload and when nothing recompiled. " +
+                                       "With none, it writes one record {\"clean\":true,\"errors\":0} instead, so an empty reply is never a clean one.",
             Tags = new[] { "editor", "cliext", "scripts/compile" }, MainThreadRequired = true, Effect = CommandEffect.ReadOnly)]
         internal static ExitCode Diagnostics(
             CommandContext cmd,
             [CliArg("warnings", "Include warnings")] bool warnings = true)
         {
+            int count = 0;
             foreach (var message in CompileDiagnostics.Current(warnings))
+            {
                 cmd.Result.WriteRecord(message);
+                count++;
+            }
+            // One record per message, so a clean compile would print nothing, which reads like a dropped reply: say so.
+            if (count == 0)
+            {
+                if (warnings) cmd.Result.WriteRecord(new { clean = true, errors = 0, warnings = 0 });
+                else cmd.Result.WriteRecord(new { clean = true, errors = 0 });
+            }
             return ExitCode.Success;
         }
 

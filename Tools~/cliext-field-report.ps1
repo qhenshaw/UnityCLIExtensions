@@ -284,6 +284,23 @@ public static class CliextFieldReport
 
     class UnityCall { public string Group; public string Command; public int Pos; }
 
+    static readonly Regex SnippetErrorRx = new Regex(@"COMPILATION_ERROR|RUNTIME_EXCEPTION|error CS\d{4}");
+    static readonly Regex WaitTimeoutRx = new Regex(@"Not ready after \d+|'cliext\.playmode wait_until' did not complete");
+    static readonly Regex ScriptCmdRx = new Regex(@"^(script eval|cliext\.eval run|cliext\.playmode wait_until)$");
+
+    /// <summary>
+    /// In a line of several unity commands, the one an error's wording belongs to: a C# compile or runtime error
+    /// comes from a snippet (script eval, cliext.eval run, wait_until), a "Not ready after" from wait_until. Null when
+    /// the wording names no kind, or when no command of that kind is on the line.
+    /// </summary>
+    static UnityCall SignatureCommand(List<UnityCall> unity, string said)
+    {
+        if (unity.Count < 2 || string.IsNullOrEmpty(said)) return null;
+        if (WaitTimeoutRx.IsMatch(said)) return unity.LastOrDefault(x => x.Command == "cliext.playmode wait_until");
+        if (SnippetErrorRx.IsMatch(said)) return unity.LastOrDefault(x => ScriptCmdRx.IsMatch(x.Command));
+        return null;
+    }
+
     static List<UnityCall> UnityCommands(string text)
     {
         var list = new List<UnityCall>();
@@ -605,7 +622,18 @@ public static class CliextFieldReport
             try { t = Parse(f.Key, f.Value); } catch (IOException) { continue; }
             if (t.Calls.Count > 0 && (!t.End.HasValue || t.End.Value >= since)) transcripts.Add(t);
         }
-        transcripts = transcripts.OrderBy(t => t.Start ?? DateTime.MinValue).ToList();
+        // A resumed or forked session can leave a second file holding a copy of the first's tool calls (same
+        // tool_use ids): read each call once, from the longest file, and skip a file that is mostly a copy.
+        var seenCalls = new HashSet<string>();
+        var distinct = new List<Transcript>();
+        foreach (var t in transcripts.OrderByDescending(x => x.Calls.Count))
+        {
+            int copied = t.Calls.Count(c => c.Id.Length > 0 && seenCalls.Contains(c.Id));
+            if (copied * 2 >= t.Calls.Count) continue;
+            foreach (var c in t.Calls) if (c.Id.Length > 0) seenCalls.Add(c.Id);
+            distinct.Add(t);
+        }
+        transcripts = distinct.OrderBy(t => t.Start ?? DateTime.MinValue).ToList();
 
         var normRoots = packageRoots.Where(r => !string.IsNullOrEmpty(r))
             .Select(r => r.Replace('\\', '/').TrimEnd('/').ToLowerInvariant()).Distinct().ToList();
@@ -656,14 +684,19 @@ public static class CliextFieldReport
                     if (unity.Count > 0)
                     {
                         UnityCall u = unity[unity.Count - 1];
+                        string said = c.EmbeddedOnly ? c.EmbeddedLines[0] : (c.Result ?? "");
+                        // Several commands on one line: the error's own wording names the one that failed
+                        // (a snippet's compile or runtime error, a wait's timeout), before any guess by position.
+                        UnityCall bySignature = SignatureCommand(unity, said);
                         if (c.EmbeddedOnly)
                         {
                             string line = c.EmbeddedLines[0];
                             Match nm = Regex.Match(line, @"No command named '([\w.]+)");
-                            UnityCall named = unity.FirstOrDefault(x => line.Contains(x.Command));
-                            u = named ?? unity.FirstOrDefault(x => x.Group.StartsWith("cliext")) ?? unity[0];
+                            UnityCall named = unity.LastOrDefault(x => line.Contains(x.Command));
+                            u = named ?? bySignature ?? unity.LastOrDefault(x => x.Group.StartsWith("cliext")) ?? unity[unity.Count - 1];
                             if (nm.Success) u = new UnityCall { Group = nm.Groups[1].Value, Command = nm.Groups[1].Value + " (no such command)" };
                         }
+                        else if (bySignature != null) u = bySignature;
                         key = u.Command; area = AreaOfGroup(u.Group);
                     }
                     else { key = "(" + c.Name + ")"; area = "(none)"; }

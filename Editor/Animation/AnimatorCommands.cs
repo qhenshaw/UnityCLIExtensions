@@ -46,6 +46,7 @@ namespace UnityCLIExtensions.Animation
                                 "set_default, add_substatemachine, remove_substatemachine, set_transition (from, to or Exit, from Any; conditions=\"Speed Greater 0.1;Grounded If\"; set=\"hasExitTime=false;duration=0.1\"), " +
                                 "remove_transition, remove_parameter (also strips its conditions), set_parameter (default value), set_layer (set=\"defaultWeight=1;blendingMode=Additive;iKPass=true\"), remove_layer (layer, required). Ops take layer (name or index, default the first). " +
                                 "add_blendtree (state, type Simple1D|SimpleDirectional2D|FreeformDirectional2D|FreeformCartesian2D|Direct, parameter, parameterY, children=\"Assets/Walk.anim@0;Assets/Run.anim@1\"). " +
+                                "add_behaviour (state, or none for the layer's state machine; type: a StateMachineBehaviour class; set=\"damage=10;window=0.2\" sets its serialized fields), remove_behaviour (state, type, index). " +
                                 "Pipeline's animation.animator commands add states, transitions, parameters and layers. An op that fails saves nothing: the controller is left as it was.",
             Name = "edit", Tags = new[] { "cliext", "animation" }, Effect = CommandEffect.Destructive)]
         internal static ExitCode Edit(

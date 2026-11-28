@@ -1,6 +1,16 @@
 # Changelog
 All notable changes to Unity CLI Extensions. Versions are git tags: install one with `https://github.com/qhenshaw/UnityCLIExtensions.git#<version>`.
 
+## 0.33.0
+Fixes from the first field report (a new game project on 0.32.1). 220 EditMode tests pass, and the 56 `cliext-clitest.ps1` checks of the changed groups (compile, failures, sg, anim, uitk, xcut, env) pass.
+- `cliext-clitest.ps1`: new check `failures.field-report-attribution`; `env.skill-pipeline-names` looks for the 0.32.1 save rule's wording.
+- `cliext.uitk click` names the element it clicked even when its handler rebuilds the UI and removes it. It had returned `clicked: ""` though the click worked. The reply's `removedByHandler: true` says so, and the ClickEvent is not sent to a removed element.
+- `cliext.compile diagnostics` writes one record `{"clean":true,"errors":0}` when there is nothing to report. It had printed nothing, which looked like a dropped reply.
+- `cliext.shadergraph add_property` (and the edit op) adds keywords: `--type keyword` (Boolean) or `enum_keyword` with `--entries`, `--definition` shader_feature, multi_compile, predefined or dynamic_branch, and `--scope` local or global. `inspect` describes each keyword (reference, type, definition, scope, entries, value), and `remove` takes one.
+- `cliext.shadergraph` `set` of a Custom Function's `functionSource` takes the `.hlsl` file's path and stores its GUID. A path had been stored as given, and the node then reported "Source file does not exist". A path or GUID with no asset fails.
+- `cliext.animator edit` has `add_behaviour` (a StateMachineBehaviour on a state or the layer's state machine, with `set` for its serialized fields; the reply lists them) and `remove_behaviour`.
+- `cliext-field-report.ps1`: in a line of several unity commands, a failure goes to the command its error belongs to (a snippet's compile or runtime error to the snippet command, "Not ready after" to `wait_until`), not the first cliext command. A session copied into a second transcript file (a resume or fork) is read once.
+
 ## 0.32.1
 - `cliext.scene save_open` reports what each save writes. For every scene, against its file on disk: `changedObjects`, then `changes` with old and new values (up to 50), `total`, and `drivenByCinemachineBrain`. A copy of the file is captured, then the scene in memory. Camera values a CinemachineBrain writes in Edit mode (position, rotation, lens) are marked `drivenBy: CinemachineBrain` with a note. Saves had been carrying them unreported. `--dry-run` reports the same without saving; `--changes false` skips the comparison.
 - The `unity-cliext` skill says to save with `save_open` and report objects in its reply that the task didn't touch.

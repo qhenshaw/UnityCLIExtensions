@@ -72,7 +72,7 @@ namespace UnityCLIExtensions.ShaderGraph
                 blocksAvailable = ShaderGraphOps.AvailableBlocks(graph).Select(d => d.displayName).ToArray(),
                 nodes = graph.GetNodes<AbstractMaterialNode>().Where(n => !blocks.Contains(n.objectId)).Select(n => ShaderGraphOps.DescribeNode(graph, n, details)).ToArray(),
                 properties = graph.properties.Select(ShaderGraphOps.DescribeProperty).ToArray(),
-                keywords = graph.keywords.Select(k => k.displayName).ToArray(),
+                keywords = graph.keywords.Select(ShaderGraphOps.DescribeKeyword).ToArray(),
                 compile = ShaderGraphDocument.Compile(doc.path, graph)
             });
             return ExitCode.Success;
@@ -116,21 +116,32 @@ namespace UnityCLIExtensions.ShaderGraph
             [CliArg("y", "Graph position (leave out to place it automatically)")] float y = float.NaN)
             => RunOps(cmd, path, new[] { new ShaderGraphOp { op = "add_node", type = type, x = x, y = y } }, false);
 
-        [CliGroupCommand(Group, "Add a property (--type float, vector2-4, color, texture2d, cubemap, boolean, ...) with a name, reference and default value; then save and compile. " +
+        [CliGroupCommand(Group, "Add a property (--type float, vector2-4, color, texture2d, cubemap, boolean, ...) or a keyword (--type keyword for a Boolean keyword, enum_keyword with --entries) " +
+                                "with a name, reference and default value; then save and compile. A keyword takes --definition shader_feature (default), multi_compile, predefined or dynamic_branch " +
+                                "and --scope local (default) or global: a multi_compile global keyword with --reference _MAIN_LIGHT_SHADOWS declares URP's own keyword. " +
                                 "Properties are exposed to materials; hide one with the edit op {\"op\":\"expose\",\"id\":\"<property>\",\"value\":\"false\"}.",
             Name = "add_property", Tags = new[] { "cliext", "shadergraph" }, Effect = CommandEffect.Destructive)]
         internal static ExitCode AddProperty(
             CommandContext cmd,
             [CliArg("path", "The .shadergraph asset path or GUID", Required = true)] string path,
-            [CliArg("type", "The property type: float, vector2, vector3, vector4, color, texture2d, texture2darray, texture3d, cubemap, boolean, matrix2-4, gradient, samplerstate", Required = true)] string type,
+            [CliArg("type", "The property type: float, vector2, vector3, vector4, color, texture2d, texture2darray, texture3d, cubemap, boolean, matrix2-4, gradient, samplerstate; or keyword, enum_keyword", Required = true)] string type,
             [CliArg("name", "Display name")] string name = "",
-            [CliArg("reference", "Reference name, such as _BaseColor")] string reference = "",
-            [CliArg("value", "Default value: a number, true/false, an [x,y,z,w] vector or colour (or #RRGGBB), or a texture asset path")] string value = null)
+            [CliArg("reference", "Reference name, such as _BaseColor (for a keyword, the define: _MAIN_LIGHT_SHADOWS)")] string reference = "",
+            [CliArg("value", "Default value: a number, true/false, an [x,y,z,w] vector or colour (or #RRGGBB), or a texture asset path; an enum keyword's entry")] string value = null,
+            [CliArg("definition", "Keywords only: shader_feature (default), multi_compile, predefined, dynamic_branch")] string definition = null,
+            [CliArg("scope", "Keywords only: local (default), global")] string scope = null,
+            [CliArg("entries", "enum_keyword only: \"Low, High\" or \"Low=LOW, High=HIGH\"")] string entries = null)
         {
             // An unknown --type is a bad argument (exit 2), not a failed edit.
-            try { ShaderGraphDocument.NewProperty(type); }
-            catch (ArgumentException e) { cmd.Fail(e.Message); return ExitCode.InvalidUsage; }
-            return RunOps(cmd, path, new[] { new ShaderGraphOp { op = "add_property", type = type, name = name, reference = reference, value = value } }, false);
+            if (!ShaderGraphOps.IsKeywordType(type))
+            {
+                try { ShaderGraphDocument.NewProperty(type); }
+                catch (ArgumentException e) { cmd.Fail(e.Message); return ExitCode.InvalidUsage; }
+            }
+            return RunOps(cmd, path, new[] { new ShaderGraphOp { op = "add_property", type = type, name = name, reference = reference, value = value,
+                                                                 definition = string.IsNullOrEmpty(definition) ? null : definition,
+                                                                 scope = string.IsNullOrEmpty(scope) ? null : scope,
+                                                                 entries = string.IsNullOrEmpty(entries) ? null : entries } }, false);
         }
 
         [CliGroupCommand(Group, "Remove a node, block or property (with its links); then save and compile.",

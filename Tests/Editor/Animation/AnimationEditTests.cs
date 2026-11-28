@@ -248,5 +248,36 @@ namespace UnityCLIExtensions.Tests
             Assert.IsTrue(AnimatorEditing.TryApplyAll(c, new[] { new AnimatorOp { op = "set_state", state = "Idle", motion = model } }, new List<object>(), out _, out string error), error);
             Assert.AreEqual("Only", c.layers[0].stateMachine.states.First(s => s.state.name == "Idle").state.motion.name);
         }
+
+        [Test]
+        public void AddBehaviour_AddsItWithItsFields_AndRemoveBehaviourTakesItOff()
+        {
+            var c = MakeController();
+            string path = AssetDatabase.GetAssetPath(c);
+            var results = new List<object>();
+            Assert.IsTrue(AnimatorEditing.TryApplyAll(c, new[]
+            {
+                new AnimatorOp { op = "add_behaviour", state = "Run", type = nameof(CliExtTestBehaviour), set = "damage=12.5;hits=3" },
+                new AnimatorOp { op = "add_behaviour", type = typeof(CliExtTestBehaviour).FullName }
+            }, results, out _, out string error), error);
+            var reloaded = AssetDatabase.LoadAssetAtPath<AnimatorController>(path);
+            var run = reloaded.layers[0].stateMachine.states.First(s => s.state.name == "Run").state;
+            var b = run.behaviours.OfType<CliExtTestBehaviour>().Single();
+            Assert.AreEqual(12.5f, b.damage);
+            Assert.AreEqual(3, b.Hits);
+            Assert.AreEqual(1, reloaded.layers[0].stateMachine.behaviours.OfType<CliExtTestBehaviour>().Count());
+
+            AnimatorEditing.TryApplyAll(c, new[] { new AnimatorOp { op = "add_behaviour", state = "Run", type = "NoSuchBehaviour" } }, new List<object>(), out _, out string missing);
+            StringAssert.Contains("No StateMachineBehaviour class 'NoSuchBehaviour'", missing);
+            AnimatorEditing.TryApplyAll(c, new[] { new AnimatorOp { op = "add_behaviour", state = "Run", type = nameof(CliExtTestBehaviour), set = "nope=1" } }, new List<object>(), out _, out string field);
+            StringAssert.Contains("no serialized field 'nope'", field);
+            StringAssert.Contains("damage", field);
+            Assert.AreEqual(1, AssetDatabase.LoadAssetAtPath<AnimatorController>(path).layers[0].stateMachine.states.First(s => s.state.name == "Run").state.behaviours.Length);
+
+            Assert.IsTrue(AnimatorEditing.TryApplyAll(c, new[] { new AnimatorOp { op = "remove_behaviour", state = "Run", type = nameof(CliExtTestBehaviour) } }, new List<object>(), out _, out error), error);
+            Assert.AreEqual(0, AssetDatabase.LoadAssetAtPath<AnimatorController>(path).layers[0].stateMachine.states.First(s => s.state.name == "Run").state.behaviours.Length);
+            AnimatorEditing.TryApplyAll(c, new[] { new AnimatorOp { op = "remove_behaviour", state = "Run", type = nameof(CliExtTestBehaviour) } }, new List<object>(), out _, out string none);
+            StringAssert.Contains("has no CliExtTestBehaviour behaviour", none);
+        }
     }
 }

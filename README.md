@@ -553,9 +553,13 @@ and compile; `edit` applies a JSON list of ops with one save:
 ```
 A slot is `<node id>:<slot>`, by slot id, display name or shader name. Linking a property (its name or id) to a slot
 adds a property node for it. `set` takes a node's input slot (`slot`), a node's own setting (`setting`: a Custom
-Function's `functionBody`, a texture type, ... as `inspect --id` lists them), or a property's default (no slot).
+Function's `functionBody`, a texture type, ... as `inspect --id` lists them), or a property's default (no slot). A
+Custom Function's `functionSource` takes the `.hlsl` file's path or GUID and stores the GUID; a path to nothing fails.
 Ops: `add_node`, `add_property` (type: float, vector2-4, color, texture2d, texture2darray, texture3d, cubemap,
-boolean, matrix2-4, gradient, samplerstate), `add_block`, `add_port`/`remove_port` (Custom Function ports),
+boolean, matrix2-4, gradient, samplerstate; or `keyword` for a Boolean keyword and `enum_keyword` with
+`entries` "Low, High" or "Low=LOW, High=HIGH", each with `definition` shader_feature (default), multi_compile,
+predefined or dynamic_branch and `scope` local or global; `reference` is the define, and `inspect` lists them under
+`keywords`), `add_block`, `add_port`/`remove_port` (Custom Function ports),
 `remove`, `set`, `link`, `unlink` (every link into `to`, or only the one from `from`), `move`, `rename` (a property's
 name and reference), `expose`, `set_target`, `set_mode`. Links are type-checked as the window checks them.
 
@@ -648,7 +652,9 @@ Pipeline's `animation.animator` commands create controllers and add layers, para
   `add_substatemachine`, `remove_substatemachine`, `set_transition` (`from` a state or `Any`, `to` a state or `Exit`,
   `index` among several, `conditions` as `Param Mode [Threshold]` separated by `;`, checked against the parameter's
   type), `remove_transition`, `remove_parameter` (also removes the conditions that use it), `set_parameter` (default
-  value), `set_layer`, `remove_layer`, `add_blendtree` (on a new or existing state). A motion is a clip path, or a
+  value), `set_layer`, `remove_layer`, `add_blendtree` (on a new or existing state), `add_behaviour` (`type`, a
+  StateMachineBehaviour class, on `state` or, without one, on the layer's state machine; `set` takes its serialized
+  fields, public or `[SerializeField]`; the reply lists them all) and `remove_behaviour` (`type`, `index`). A motion is a clip path, or a
   model's clip as `Assets/Char.fbx@Run`. A bare model path is its clip only when it has one; with several it fails
   (exit 2) listing them, and so does a name two of its clips share (a model can import a 1-frame pose under the same
   name): cut a uniquely named clip with `cliext.anim edit_clips` (`add_clip`). The same holds for `cliext.anim` and
@@ -1031,7 +1037,7 @@ All under `unity command --project-path <project>`:
 | `cliext.scene save_open [--scene <path>] [--dry-run true] [--changes false]` | Saves open scenes that have unsaved changes and a file (or only `--scene`) and returns their paths; `--dry-run` lists them and saves nothing. Per scene, `scenes` lists what the save writes against the file (`changedObjects`, `changes` with old and new values), and marks camera values a CinemachineBrain wrote in Edit mode as `drivenBy: CinemachineBrain`. |
 | `cliext.wait idle [--refresh true] [--timeout 120] [--settle-frames 3]` | Waits until the Editor is idle. |
 | `cliext.compile run [--warnings true] [--timeout 300] [--async true] [--stop-play true]` | Refreshes, compiles, and returns structured errors and warnings. `--async true` answers at once and compiles after; `--stop-play true` leaves Play mode first. |
-| `cliext.compile diagnostics [--warnings true]` | The standing errors and warnings, one record each. |
+| `cliext.compile diagnostics [--warnings true]` | The standing errors and warnings, one record each; with none, one record `{"clean":true,"errors":0}`. |
 | `cliext.playmode set_fast --enabled true\|false` | Turns fast Play mode (no domain or scene reload) on or off. |
 | `cliext.playmode check_statics [--include-reset true]` | Static state that would survive between Play sessions without a domain reload. |
 | `cliext.playmode time_scale --value <n>` | Sets `Time.timeScale` (slow motion for captures) and returns the previous value. |
